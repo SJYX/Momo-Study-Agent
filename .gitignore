@@ -1,0 +1,11 @@
+# Keys and secrets
+config.py
+.env
+
+# Python caching
+__pycache__/
+*.pyc
+
+# IDEs
+.vscode/
+.idea/
