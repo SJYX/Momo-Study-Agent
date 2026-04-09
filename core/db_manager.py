@@ -2,7 +2,7 @@ import sqlite3
 import os
 import json
 import re
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from config import DB_PATH, TEST_DB_PATH
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -218,10 +218,10 @@ def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
     conn.close()
     return dict(row) if row else None
 
-def find_word_in_community(voc_id: str) -> Optional[dict]:
+def find_word_in_community(voc_id: str) -> Optional[Tuple[dict, str]]:
     """
     跨用户查重：在所有 history_*.db 中寻找该单词。
-    返回找到的第一个非空记录字典。
+    返回: (笔记字典, 来源库文件名) 若找到，否则返回 None。
     """
     current_db_name = os.path.basename(DB_PATH)
     data_dir = os.path.dirname(DB_PATH)
@@ -231,14 +231,12 @@ def find_word_in_community(voc_id: str) -> Optional[dict]:
     
     for db_file in db_files:
         if db_file == current_db_name:
-            continue # 跳过当前用户的库
+            continue
             
         full_path = os.path.join(data_dir, db_file)
         note = get_word_note(voc_id, db_path=full_path)
         if note:
-            # 标记来源（可选日志记录）
-            # print(f"    [Cache Hit] 从社区库 {db_file} 命中缓存数据")
-            return note
+            return note, db_file
             
     return None
 

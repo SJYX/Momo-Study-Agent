@@ -16,39 +16,57 @@ class ProfileManager:
         files = glob.glob(os.path.join(self.profiles_dir, "*.env"))
         return [os.path.basename(f).replace(".env", "") for f in files]
 
-    def select_profile(self):
-        """交互式选择用户 Profile。"""
-        profiles = self.list_profiles()
-        
-        print("\n" + "="*30)
-        print("👤  Momo Study Agent - 用户选择")
-        print("="*30)
-        
-        if not profiles:
-            print("  [Note] 未发现已有用户。")
-            return "NEW_USER"
-
-        for i, username in enumerate(profiles, 1):
-            print(f"  {i}. {username}")
-        print(f"  {len(profiles)+1}. [创建新用户]")
-        
-        try:
-            choice = input(f"\n请选择用户序号 (1-{len(profiles)+1}): ").strip()
-            if not choice:
-                # 默认选第一个
-                return profiles[0]
+    def pick_profile(self) -> Optional[str]:
+        """展示菜单供用户选择、创建或退出。"""
+        import msvcrt
+        while True:
+            profiles = self.list_profiles()
+            print("\n" + "="*30)
+            print("👤  Momo Study Agent - 用户选择")
+            print("="*30)
             
-            idx = int(choice)
-            if 1 <= idx <= len(profiles):
-                return profiles[idx-1]
-            elif idx == len(profiles) + 1:
-                return "NEW_USER"
-            else:
-                print("❌ 无效选择，请重试。")
-                return self.select_profile()
-        except ValueError:
-            print("❌ 请输入数字。")
-            return self.select_profile()
+            for i, p in enumerate(profiles, 1):
+                print(f"  {i}. {p}")
+            
+            create_idx = len(profiles) + 1
+            print(f"  {create_idx}. [创建新用户]")
+            print("-" * 30)
+            print(f"提示: 请输入序号 (1-{create_idx})，或按 [Esc] 键直接退出程序")
+
+            # 监听键盘输入
+            input_str = ""
+            while True:
+                if msvcrt.kbhit():
+                    ch = msvcrt.getch()
+                    if ord(ch) == 27:  # Esc
+                        print("\n[Exit] 用户取消选择，程序退出。")
+                        sys.exit(0)
+                    elif ch == b'\r':  # Enter
+                        print() # 换行
+                        break
+                    elif ch.isdigit():
+                        digit = ch.decode('utf-8')
+                        input_str += digit
+                        print(digit, end='', flush=True)
+                    elif ord(ch) == 8: # Backspace
+                        if input_str:
+                            input_str = input_str[:-1]
+                            print('\b \b', end='', flush=True)
+
+            choice = input_str.strip()
+            if not choice:
+                continue
+
+            if choice.isdigit():
+                idx = int(choice)
+                if 1 <= idx <= len(profiles):
+                    return profiles[idx-1]
+                elif idx == create_idx:
+                    from core.config_wizard import ConfigWizard
+                    wizard = ConfigWizard(self.profiles_dir)
+                    return wizard.run_setup()
+            
+            print("❌ 无效的选择，请重新输入。")
 
 def get_active_profile(profiles_dir):
     """助手函数：获取当前活跃用户。"""

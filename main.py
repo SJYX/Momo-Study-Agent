@@ -11,6 +11,7 @@ from core.db_manager import (
 )
 from core.logger import setup_logger
 from datetime import datetime, timedelta
+import msvcrt
 
 # 终端编码修正已移至 if __name__ == "__main__" 或入口函数中
 
@@ -21,47 +22,93 @@ class StudyFlowManager:
         # 初始化日志系统
         self.logger = setup_logger(ACTIVE_USER)
         self.momo = MaiMemoAPI(MOMO_TOKEN)
+        
+        init_db()  # 初始化主库
 
-        # 根据配置选择 AI 提供商
+        # A. 展示运行信息
         self.logger.info(f"👤 [User] 当前用户: {ACTIVE_USER}")
         if AI_PROVIDER == "mimo":
             if not MIMO_API_KEY:
                 raise ValueError("MIMO_API_KEY is required when using Mimo provider")
             self.ai_client = MimoClient(MIMO_API_KEY)
-            self.logger.info(f"🤖 使用小米 Mimo 模型: {self.ai_client.model_name}")
+            self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (小米 Mimo)")
         else:
             if not GEMINI_API_KEY:
                 raise ValueError("GEMINI_API_KEY is required when using Gemini provider")
             self.ai_client = GeminiClient(GEMINI_API_KEY)
-            self.logger.info(f"🤖 使用 Google Gemini 模型: {self.ai_client.model_name}")
+            self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (Google Gemini)")
 
-        init_db()  # 初始化主库
-        
-    def run(self):
-        """核心运行循环"""
-        # 1. 模式选择
+    def _check_esc_interrupt(self):
+        """检查是否按下 Esc 键中断程序。"""
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ord(ch) == 27:  # Esc
+                print("\n" + "!"*30)
+                self.logger.warning(" 检测到 Esc 键，正在紧急中断任务并保存进度...")
+                print("!"*30)
+                raise KeyboardInterrupt
+
+    def _interruptible_sleep(self, seconds: float):
+        """支持 Esc 中断的休眠。"""
+        start_time = time.time()
+        while time.time() - start_time < seconds:
+            self._check_esc_interrupt()
+            time.sleep(0.1)
+
+    def _get_mode_selection(self) -> str:
+        """支持 Esc 中断的模式选择界面。"""
         print("\n" + "-"*20)
         print("模式选择:")
         print("  1. [今日任务] 获取今天待学/待复习的单词 (默认)")
         print("  2. [未来预习] 预习接下来几天的单词")
-        mode_input = input("请输入选项 (1/2): ").strip()
+        print("-" * 20)
+        print("提示: 请输入选项 (1/2)，或按 [Esc] 键直接退出程序")
 
-        if mode_input == "2":
+        input_str = ""
+        while True:
+            if msvcrt.kbhit():
+                ch = msvcrt.getch()
+                if ord(ch) == 27:  # Esc
+                    print("\n[Exit] 用户取消选择。")
+                    sys.exit(0)
+                elif ch == b'\r':  # Enter
+                    print() 
+                    break
+                elif ch.isdigit():
+                    digit = ch.decode('utf-8')
+                    input_str += digit
+                    print(digit, end='', flush=True)
+                elif ord(ch) == 8: # Backspace
+                    if input_str:
+                        input_str = input_str[:-1]
+                        print('\b \b', end='', flush=True)
+        return input_str.strip() or "1"
+        
+    def run(self):
+        """核心运行循环"""
+        # A. 展示运行信息
+        self.logger.info(f"👤 [User] 当前用户: {ACTIVE_USER}")
+        if AI_PROVIDER == "mimo":
+            self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (小米 Mimo)")
+        else:
+            self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (Google Gemini)")
+
+        # B. 模式选择 (带 Esc 支持)
+        mode = self._get_mode_selection()
+
+        if mode == "2":
             days = input("请输入要预习的天数 (例如 3 或 7): ").strip()
             days = int(days) if days.isdigit() else 3
-            
-            # 计算日期范围 (北京时间)
             start_dt = datetime.now()
             end_dt = start_dt + timedelta(days=days)
-            # 格式化为 ISO 格式
             start_date = start_dt.strftime("%Y-%m-%dT00:00:00.000Z")
             end_date = end_dt.strftime("%Y-%m-%dT23:59:59.000Z")
             
-            self.logger.info(f"🚩 [未来模式] 正在获取接下来的 {days} 天单词 ({start_dt.strftime('%m-%d')} ~ {end_dt.strftime('%m-%d')})...")
+            self.logger.info(f"🚩 [未来模式] 预习接下来 {days} 天单词 ({start_dt.strftime('%m-%d')} ~ {end_dt.strftime('%m-%d')})...")
             res = self.momo.query_study_records(start_date, end_date)
             words = res.get("data", {}).get("records", []) if res else []
         else:
-            self.logger.info("🚩 [今日模式] 正在获取今日待学单词...")
+            self.logger.info("🚩 [今日模式] 获取今日待学单词...")
             res = self.momo.get_today_items(limit=500)
             words = res.get("data", {}).get("today_items", []) if res else []
 
@@ -69,6 +116,7 @@ class StudyFlowManager:
             self.logger.info("📭 未发现待处理单词，流程结束。")
             return
 
+        print("\n提示: 任务运行中可按住 [Esc] 键随时中断并保存。")
         self.logger.info(f"🚀 [Start] 启动学习流 (共计 {len(words)} 个单词, DRY_RUN={DRY_RUN})")
         
         # 2. 单词分流
@@ -76,17 +124,20 @@ class StudyFlowManager:
         pending_words = []
         
         for w in words:
+            self._check_esc_interrupt()
             voc_id = w.get("voc_id")
             spell = w.get("voc_spelling")
             
             # A. 检查当前用户副本
             if is_processed(voc_id):
+                self.logger.info(f"  ⏭️ [Skipped] {spell} - 单词已存在于本地库")
                 continue
             
             # B. 跨用户缓存检查 (Zero-Cost Cache)
-            community_note = find_word_in_community(voc_id)
-            if community_note:
-                self.logger.info(f"  🏆 [Cache Hit] 发现社区贡献记录: {spell}")
+            cache_res = find_word_in_community(voc_id)
+            if cache_res:
+                community_note, source_db = cache_res
+                self.logger.info(f"  🏆 [Cache Hit] {spell} - 命中社区库 {source_db}")
                 # 迁移数据：保存到当前库 + 同步到墨墨 + 标记处理
                 save_ai_word_note(voc_id, community_note)
                 if not DRY_RUN:
@@ -124,7 +175,7 @@ class StudyFlowManager:
             if i + BATCH_SIZE < len(pending_words):
                 sleep_time = 0.5 if BATCH_SIZE == 1 else 2
                 self.logger.info(f"⏳ 缓冲 {sleep_time:.1f} 秒...")
-                time.sleep(sleep_time)
+                self._interruptible_sleep(sleep_time)
 
     def _process_results(self, batch_words, ai_results, current_start, total):
         """将 AI 结果映射回原始单词并持久化。"""
