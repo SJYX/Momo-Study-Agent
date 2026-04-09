@@ -72,7 +72,8 @@ GEMINI_API_KEY="你的_API_KEY"
 ---
 
 ## 💡 工程文档
-- [Maimemo API 开发手册](file:///c:/Users/112560/OneDrive%20-%20Grundfos/Desktop/Work/Misc/MoMo_Script/momo_api_summary.md): 整理好的 Maimemo OpenAPI 开发指北。
+- [Maimemo API 开发手册](docs/momo_api_summary.md): 整理好的 Maimemo OpenAPI 开发指北。
+- [Maimemo OpenAPI 规范](docs/maimemo_openapi.yaml): 官方 OpenAPI (YAML) 完整声明文件。
 
 ---
 *Momo Study Agent - 你的私人雅思考霸备考助手。*
