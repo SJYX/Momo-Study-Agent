@@ -59,3 +59,143 @@
 2026-04-09 22:18:05 - INFO - ⏳ 缓冲 0.5 秒...
 2026-04-09 22:18:06 - INFO - 正在处理批次 6 (进度: 6/248)...
 2026-04-09 22:18:13 - INFO - 用户中止运行
+2026-04-09 22:26:12 - INFO - 👤 [User] 当前用户: Asher
+2026-04-09 22:26:12 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-09 22:26:12 - INFO - 👤 [User] 当前用户: Asher
+2026-04-09 22:26:12 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-09 22:26:17 - INFO - 🚩 [未来模式] 预习接下来 3 天单词 (04-09 ~ 04-12)...
+2026-04-09 22:26:19 - INFO - 🚀 [Start] 启动学习流 (共计 362 个单词, DRY_RUN=False)
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] dramatic - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] in accordance with - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] reduction - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] organ - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] witness - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] rate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] altitude - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] co-ordinate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] revision - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] durable - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] concentrate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] handy - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] collapse - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] intimidate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] settlement - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] confront - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] intimate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] spark - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] compete - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] deadly - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] profession - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] mobilize - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] motive - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] yield - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] rally - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] evoke - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] prior - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] inflation - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] subordinate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] tariff - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] conquer - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] enterprise - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] lobby - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] tempt - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] desolate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] remedy - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] submerge - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] consolidate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] emerge - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] breach - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] startle - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] signify - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] inaugurate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] tremble - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] barren - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] allege - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] immense - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] despise - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] brilliant - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] agency - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] indigenous - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] inhabit - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] descent - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] loose - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] descendant - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] envisage - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] wreck - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] doom - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] freight - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] forthcoming - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] antique - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] beforehand - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] nuisance - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] grind - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] aerial - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] sideways - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] momentum - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] canoe - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] tractor - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] steamer - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] psychiatry - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] philosophy - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] tar - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] geometry - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] fraction - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] appraisal - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] trench - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] affluent - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] ridge - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] fuss - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] aisle - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] appall - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] avenue - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] furious - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] sore - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] superfluous - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] stiff - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] stale - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] plight - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] stagnant - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] strenuous - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] erosion - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] decay - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] corrode - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] perish - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] stationary - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] bibliography - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] harden - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] comprehend - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] excerpt - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] biography - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] manuscript - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] essay - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] literature - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] fabulous - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] intelligible - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] illiterate - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] literary - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] script - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] fiction - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] literacy - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] masterpiece - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] comprehension - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] alphabet - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] blueprint - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] graph - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] chart - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] diagram - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO -   ⏭️ [Skipped] metaphor - 单词已存在于本地库
+2026-04-09 22:26:19 - INFO - 💎 [AI Phase] 共有 243 个单词需要调用 AI 模型解析
+2026-04-09 22:26:19 - INFO - 正在处理批次 1 (进度: 1/243)...
+2026-04-09 22:26:29 - INFO - [1/243] ✅ conservative 释义已同步
+2026-04-09 22:26:30 - INFO - ✨ 批次统计: 成功 1/1
+2026-04-09 22:26:30 - INFO - ⏳ 缓冲 0.5 秒...
+2026-04-09 22:26:30 - INFO - 正在处理批次 2 (进度: 2/243)...
+2026-04-09 22:26:40 - INFO - [2/243] ✅ overtake 释义已同步
+2026-04-09 22:26:40 - INFO - ✨ 批次统计: 成功 1/1
+2026-04-09 22:26:40 - INFO - ⏳ 缓冲 0.5 秒...
+2026-04-09 22:26:40 - INFO - 正在处理批次 3 (进度: 3/243)...
+2026-04-09 22:26:51 - INFO - [3/243] ✅ enormous 释义已同步
+2026-04-09 22:26:51 - INFO - ✨ 批次统计: 成功 1/1
+2026-04-09 22:26:51 - INFO - ⏳ 缓冲 0.5 秒...
+2026-04-09 22:26:51 - WARNING -  检测到 Esc 键，正在紧急中断任务并保存进度...
+2026-04-09 22:26:51 - INFO - 用户中止运行
