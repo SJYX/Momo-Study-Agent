@@ -15,7 +15,7 @@ import time
 import json
 
 # ── 路径修正 ──────────────────────────────────────────────────────────────────
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT_DIR)
 
 from dotenv import load_dotenv

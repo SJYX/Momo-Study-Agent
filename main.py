@@ -1,138 +1,103 @@
-import traceback
 import sys
 import io
 import time
-import os
-from dotenv import load_dotenv
-
+from config import MOMO_TOKEN, GEMINI_API_KEY, BATCH_SIZE, DRY_RUN
 from maimemo_api import MaiMemoAPI
-from db_manager import init_db, is_processed, mark_processed
 from gemini_client import GeminiClient
+from db_manager import init_db, is_processed, mark_processed, save_ai_word_note
 
-# 解决终端中文的输出乱码
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+# 终端编码修正已移至 if __name__ == "__main__" 或入口函数中
 
-# 加载 .env 变量
-load_dotenv()
-
-MOMO_TOKEN = os.getenv("MOMO_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# 【安全开关】
-DRY_RUN = True
-# 【仅仅处理新词开关】
-ONLY_PROCESS_NEW = False
-
-def chunk_list(lst, chunk_size):
-    for i in range(0, len(lst), chunk_size):
-        yield lst[i:i + chunk_size]
-
-def main():
-    print("====== 🚀 启动极简全自动背单词黑科技流 (SQLite去重版) ======")
-    init_db()
+class StudyFlowManager:
+    """墨墨背单词 AI 助记主流程管理器。"""
     
-    if not MOMO_TOKEN or not GEMINI_API_KEY:
-        print("[错误] 未在 .env 文件中发现有效的 MOMO_TOKEN 或 GEMINI_API_KEY！请检查 .env 是否配置好！")
-        return
-
-    gem_client = GeminiClient(GEMINI_API_KEY)
-    momo = MaiMemoAPI(MOMO_TOKEN)
-    
-    res = momo.get_today_items()
-    if not res or not res.get("success"):
-        print("[错误] 墨墨背单词接口数据抓取挫败，请检查网络和Token！")
-        return
+    def __init__(self):
+        self.momo = MaiMemoAPI(MOMO_TOKEN)
+        self.gemini = GeminiClient(GEMINI_API_KEY)
+        init_db()  # 初始化主库
         
-    all_items = res.get("data", {}).get("today_items", [])
-    print(f"[*] 从墨墨拉取到 {len(all_items)} 个待复习原始单词。")
-    
-    # 获取需要处理的干净词汇表（过滤老词、过滤已经落库的词）
-    word_dict = {}
-    db_skipped_count = 0
-    
-    for item in all_items:
-        spelling = item.get("voc_spelling")
-        voc_id = item.get("voc_id")
+    def run(self):
+        print(f"🚀 [Start] 启动学习流 (DRY_RUN={DRY_RUN})")
         
-        if ONLY_PROCESS_NEW and not item.get("is_new", False):
-            continue
+        # 1. 获取今日单词
+        res = self.momo.get_today_items(limit=100)
+        if not res or not res.get("success"):
+            print("  [Error] 无法获取今日单词列表。")
+            return
             
-        if is_processed(voc_id):
-            db_skipped_count += 1
-            continue
+        words = res["data"]["today_items"]
+        print(f"  [Info] 今日待学单词共: {len(words)} 个")
+        
+        # 2. 过滤已处理单词
+        pending_words = []
+        for w in words:
+            if not is_processed(w["voc_id"]):
+                pending_words.append(w)
+        
+        if not pending_words:
+            print("  [Finish] 所有单词均已解析过，流程结束。")
+            return
             
-        word_dict[spelling] = voc_id
+        print(f"  [Info] 待解析新词: {len(pending_words)} 个")
         
-    target_words = list(word_dict.keys())
-    print(f"[*] SQLite 去重过滤了 {db_skipped_count} 个历史查重词。")
-    print(f"[*] 本次真正需要送向 Gemini 处理的新单词共计 {len(target_words)} 个。\n")
-    
-    if not target_words:
-        print("🎉 太棒了，当前没有任何生词需要 AI 紧急救援！")
-        return
-        
-    BATCH_SIZE = 15
-    batches = list(chunk_list(target_words, BATCH_SIZE))
-    
-    for idx, batch in enumerate(batches):
-        print(f"---> 开始向 Gemini 请求第 {idx+1}/{len(batches)} 批次 (约 {len(batch)} 词)...")
-        
-        ai_results = gem_client.generate_mnemonics(batch)
-        
-        if not ai_results:
-            print("[警告] 本批次生成异常全军覆没或解析错位，跳过此批次。")
-            continue
+        # 3. 按 BATCH_SIZE 进行批处理
+        for i in range(0, len(pending_words), BATCH_SIZE):
+            batch = pending_words[i : i + BATCH_SIZE]
+            batch_spellings = [w["voc_spelling"] for w in batch]
             
-        for ai_item in ai_results:
-            w_spell = ai_item.get("spelling", "")
-            w_id = word_dict.get(w_spell)
+            print(f"\n📦 [Batch] 正在处理批次 {i//BATCH_SIZE + 1} ({len(batch)} 词)...")
             
-            if w_id and w_spell:
-                # 完整的知识图谱留存在 SQLite 中备用
-                raw_full_text = f"### {w_spell}\n\n"
-                raw_full_text += f"{ai_item.get('basic_meanings', '')}\n\n"
-                raw_full_text += f"**[IELTS Focus]**\n{ai_item.get('ielts_focus', '')}\n\n"
-                raw_full_text += f"**[Collocations]**\n{ai_item.get('collocations', '')}\n\n"
-                raw_full_text += f"**[Traps]**\n{ai_item.get('traps', '')}\n\n"
-                raw_full_text += f"**[Synonyms]**\n{ai_item.get('synonyms', '')}\n\n"
-                raw_full_text += f"**[Discrimination]**\n{ai_item.get('discrimination', '')}\n\n"
-                raw_full_text += f"**[Example Sentences]**\n{ai_item.get('example_sentences', '')}\n\n"
-                raw_full_text += f"**[Memory Aid]**\n{ai_item.get('memory_aid', '')}\n\n"
+            # AI 生成
+            ai_results = self.gemini.generate_mnemonics(batch_spellings)
+            if not ai_results:
+                print(f"  [Skip] 批次 {i//BATCH_SIZE + 1} AI 调用失败。")
+                continue
                 
-                # 将 10 个维度打包保存进 SQLite 图谱
-                ai_item["raw_full_text"] = raw_full_text
+            # 4. 结果对照并保存
+            self._process_results(batch, ai_results)
+            
+            # 频率控制（保护 Gemini 和 Maimemo）
+            if i + BATCH_SIZE < len(pending_words):
+                print(f"⏳ 休息 10 秒后处理下一批...")
+                time.sleep(10)
+
+    def _process_results(self, batch_words, ai_results):
+        """将 AI 结果映射回原始单词并持久化。"""
+        # 转为字典加速查找
+        ai_dict = {item["spelling"].lower(): item for item in ai_results}
+        
+        success_count = 0
+        for w in batch_words:
+            spell = w["voc_spelling"].lower()
+            voc_id = w["voc_id"]
+            
+            if spell in ai_dict:
+                payload = ai_dict[spell]
                 
-                # 提取 AI 的精准核心翻译，直接用于覆盖替换墨墨原生的字典释义
-                momo_interpretation = ai_item.get('basic_meanings', '').strip()
+                # A. 写入本地库 (DB Isolation)
+                save_ai_word_note(voc_id, payload)
                 
-                print(f"  > [💡AI 捕获] {w_spell} 的结构化知识图谱提取成功！")
-                
+                # B. 同步至墨墨 (Sync to Maimemo)
                 if not DRY_RUN:
-                    time.sleep(0.5) 
-                    # 核心改动：不再作为助记塞入，而是强力接管墨墨原生释义卡片
-                    success = momo.sync_interpretation(w_id, momo_interpretation, tags=["雅思"])
-                    if success:
-                        print("    ┗ ✅ [入库同步] -> 墨墨原生释义已升级重铸")
-                        mark_processed(w_id, ai_item) # 10大维度数据打入 SQLite 本地雷达
-                    else:
-                        print("    ┗ ❌ [入库同步] -> 原生释义写入失败")
-        
-        # 防止过高频调用导致 Gemini 限流
-        if idx < len(batches) - 1:
-            time.sleep(4)
-
-    print("\n====== 🎉 全线任务打卡结束 ======")
-    if DRY_RUN:
-        print("\n⚠️ 提示：当前系统工作在安全模拟 (DRY RUN) 模式。")
-        print("未向墨墨真实写入任何数据，也没有标记数据库。")
-        print("修改 main.py 中的 DRY_RUN = False 即可大开杀戒真实写入并留档 SQLite！")
+                    brief_note = f"{payload.get('basic_meanings','')}\n[IELTS] {payload.get('ielts_focus','')}"
+                    self.momo.sync_interpretation(voc_id, brief_note, tags=["雅思"])
+                
+                # C. 标记已处理 (Mark Processed)
+                mark_processed(voc_id, spell)
+                success_count += 1
+                print(f"  ✅ {spell} 处理成功")
+            else:
+                print(f"  ⚠️ {spell} 在 AI 返回中缺失")
+                
+        print(f"✨ 批次统计: 成功 {success_count}/{len(batch_words)}")
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     try:
-        main()
+        manager = StudyFlowManager()
+        manager.run()
     except KeyboardInterrupt:
-        print("\n\n[中止] 用户手动退出了程序。")
+        print("\n[Stop] 用户中止运行")
     except Exception as e:
-        print(f"\n[崩溃] 代码运行发生了致命异常：{e}")
-        traceback.print_exc()
+        print(f"\n[Crash] 系统异常: {e}")

@@ -5,7 +5,7 @@ import sys
 from dotenv import load_dotenv
 
 # Add root directory to path so we can import project modules
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from gemini_client import GeminiClient
 

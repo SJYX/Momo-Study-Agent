@@ -14,8 +14,8 @@ import io
 import os
 import random
 
-# ── 将项目根目录加入 import 路径（tests/ 是子目录）──────────────────────────
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ── 路径修正 ──────────────────────────────────────────────────────────────────
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT_DIR)
 
 from dotenv import load_dotenv

@@ -1,135 +1,116 @@
 import sqlite3
 import os
 import json
+from config import DB_PATH, TEST_DB_PATH
 
-# ── 路径配置 ───────────────────────────────────────────────────────────────────
-_DATA_DIR    = os.path.join(os.path.dirname(__file__), "data")
-DB_PATH      = os.path.join(_DATA_DIR, "history.db")   # 正式库
-TEST_DB_PATH = os.path.join(_DATA_DIR, "test.db")      # 测试库（隔离，不影响正式数据）
+# ──────────────────────────────────────────────────────────────────────────────
+# 通用内部工具 (Internal Helpers)
+# ──────────────────────────────────────────────────────────────────────────────
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 通用内部工具
-# ══════════════════════════════════════════════════════════════════════════════
-def _conn(db_path: str) -> sqlite3.Connection:
-    """打开连接前确保目录存在。"""
+def _get_conn(db_path: str) -> sqlite3.Connection:
+    """打开连接前确保父目录存在。"""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     return sqlite3.connect(db_path)
 
-
 def _create_tables(cur: sqlite3.Cursor):
     """建表 DDL，正式库和测试库共用同一套 Schema。"""
-    cur.execute("DROP TABLE IF EXISTS processed_words")   # 清理废旧表
+    # 1. 单词处理历史记录（主表，最小化存储，仅用于判定是否处理过）
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS processed_words (
+            voc_id TEXT PRIMARY KEY,
+            spelling TEXT,
+            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # 2. 增强型 AI 笔记表 (10+ 维度全量知识图谱)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_word_notes (
-            voc_id            TEXT PRIMARY KEY,
-            spelling          TEXT,
-            basic_meanings    TEXT,
-            ielts_focus       TEXT,
-            collocations      TEXT,
-            traps             TEXT,
-            synonyms          TEXT,
-            discrimination    TEXT,
+            voc_id TEXT PRIMARY KEY,
+            spelling TEXT,
+            basic_meanings TEXT,
+            ielts_focus TEXT,
+            collocations TEXT,
+            traps TEXT,
+            synonyms TEXT,
+            discrimination TEXT,
             example_sentences TEXT,
-            memory_aid        TEXT,
-            raw_full_text     TEXT,
-            created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+            memory_aid TEXT,
+            raw_full_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 3. 运行日志表
     cur.execute("""
         CREATE TABLE IF NOT EXISTS test_run_logs (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
-            total_today     INTEGER,
-            sample_size     INTEGER,
-            words_sampled   TEXT,       -- JSON 数组
-            ai_call_count   INTEGER,
-            words_returned  INTEGER,
-            success         INTEGER,    -- 1=成功, 0=失败
-            error_msg       TEXT,
-            ai_results_json TEXT        -- 完整 AI 返回 JSON
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            total_count INTEGER,
+            sample_count INTEGER,
+            sample_words TEXT,
+            ai_calls INTEGER,
+            success_parsed INTEGER,
+            is_dry_run BOOLEAN,
+            error_msg TEXT,
+            ai_results_json TEXT
         )
     """)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 初始化与通用操作
+# ──────────────────────────────────────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 初始化
-# ══════════════════════════════════════════════════════════════════════════════
 def init_db(db_path: str = None):
-    """初始化数据库（默认正式库）。"""
+    """初始化数据库环境。"""
     path = db_path or DB_PATH
-    conn = _conn(path)
-    cur  = conn.cursor()
+    conn = _get_conn(path)
+    cur = conn.cursor()
     _create_tables(cur)
     conn.commit()
     conn.close()
 
-
-def init_test_db():
-    """初始化测试专用数据库 data/test.db。"""
-    init_db(db_path=TEST_DB_PATH)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 正式库：去重 & 写入
-# ══════════════════════════════════════════════════════════════════════════════
-def is_processed(voc_id: str) -> bool:
-    conn = _conn(DB_PATH)
-    cur  = conn.cursor()
-    cur.execute("SELECT 1 FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
-    result = cur.fetchone() is not None
+def is_processed(voc_id: str, db_path: str = None) -> bool:
+    """检查单词是否已存在于处理历史中。"""
+    path = db_path or DB_PATH
+    conn = _get_conn(path)
+    cur = conn.cursor()
+    _create_tables(cur) # 兜底建表
+    cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
+    res = cur.fetchone()
     conn.close()
-    return result
+    return res is not None
 
-
-def mark_processed(voc_id: str, payload: dict):
-    conn = _conn(DB_PATH)
-    cur  = conn.cursor()
-    cur.execute("""
-        INSERT OR IGNORE INTO ai_word_notes (
-            voc_id, spelling, basic_meanings, ielts_focus, collocations,
-            traps, synonyms, discrimination, example_sentences, memory_aid, raw_full_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        str(voc_id),
-        payload.get("spelling", ""),
-        payload.get("basic_meanings", ""),
-        payload.get("ielts_focus", ""),
-        payload.get("collocations", ""),
-        payload.get("traps", ""),
-        payload.get("synonyms", ""),
-        payload.get("discrimination", ""),
-        payload.get("example_sentences", ""),
-        payload.get("memory_aid", ""),
-        payload.get("raw_full_text", ""),
-    ))
+def mark_processed(voc_id: str, spelling: str, db_path: str = None):
+    """将单词标记为已处理。"""
+    path = db_path or DB_PATH
+    conn = _get_conn(path)
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO processed_words (voc_id, spelling) VALUES (?, ?)", (str(voc_id), spelling))
     conn.commit()
     conn.close()
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 核心数据持久化 (Persistence)
+# ──────────────────────────────────────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 测试库：写入 ai_word_notes（结构与正式库完全一致）
-# ══════════════════════════════════════════════════════════════════════════════
-def save_test_word_note(voc_id: str, payload: dict):
-    """
-    将单个 AI 分析结果按 ai_word_notes 字段结构写入测试库。
-    使用 INSERT OR REPLACE 以便重复测试可覆盖旧记录。
-    """
-    # 组装 raw_full_text（与正式流程保持一致）
-    spell         = payload.get("spelling", "")
-    raw_full_text = payload.get("raw_full_text") or _build_raw(payload)
+def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None):
+    """保存 AI 生成的详细笔记到指定库。"""
+    path = db_path or DB_PATH
+    conn = _get_conn(path)
+    cur = conn.cursor()
+    _create_tables(cur) # 确保环境
+    
+    spell = payload.get("spelling", "")
+    raw_full_text = payload.get("raw_full_text") or _build_raw_markdown(payload)
 
-    conn = _conn(TEST_DB_PATH)
-    cur  = conn.cursor()
-    _create_tables(cur)   # 确保表存在（首次独立运行场景）
     cur.execute("""
         INSERT OR REPLACE INTO ai_word_notes (
             voc_id, spelling, basic_meanings, ielts_focus, collocations,
             traps, synonyms, discrimination, example_sentences, memory_aid, raw_full_text
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        str(voc_id),
-        spell,
+        str(voc_id), spell,
         payload.get("basic_meanings", ""),
         payload.get("ielts_focus", ""),
         payload.get("collocations", ""),
@@ -138,58 +119,52 @@ def save_test_word_note(voc_id: str, payload: dict):
         payload.get("discrimination", ""),
         payload.get("example_sentences", ""),
         payload.get("memory_aid", ""),
-        raw_full_text,
+        raw_full_text
     ))
     conn.commit()
     conn.close()
 
-
-def _build_raw(payload: dict) -> str:
-    """按正式流程的格式拼接 raw_full_text。"""
+def _build_raw_markdown(payload: dict) -> str:
+    """按标准格式拼接完整的 Markdown 预览。"""
     spell = payload.get("spelling", "")
-    text  = f"### {spell}\n\n"
-    text += f"{payload.get('basic_meanings', '')}\n\n"
-    text += f"**[IELTS Focus]**\n{payload.get('ielts_focus', '')}\n\n"
-    text += f"**[Collocations]**\n{payload.get('collocations', '')}\n\n"
-    text += f"**[Traps]**\n{payload.get('traps', '')}\n\n"
-    text += f"**[Synonyms]**\n{payload.get('synonyms', '')}\n\n"
-    text += f"**[Discrimination]**\n{payload.get('discrimination', '')}\n\n"
-    text += f"**[Example Sentences]**\n{payload.get('example_sentences', '')}\n\n"
-    text += f"**[Memory Aid]**\n{payload.get('memory_aid', '')}\n\n"
+    text = f"### {spell}\n\n{payload.get('basic_meanings', '')}\n\n"
+    for field in ["ielts_focus", "collocations", "traps", "synonyms", "discrimination", "example_sentences", "memory_aid"]:
+        val = payload.get(field)
+        if val:
+            text += f"**[{field.replace('_', ' ').upper()}]**\n{val}\n\n"
     return text
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 测试专用 (Testing Specific)
+# ──────────────────────────────────────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 测试库：运行日志
-# ══════════════════════════════════════════════════════════════════════════════
+def save_test_word_note(voc_id: str, payload: dict):
+    """【测试专用】写入测试库隔离环境。"""
+    save_ai_word_note(voc_id, payload, db_path=TEST_DB_PATH)
+
 def log_test_run(
-    total_today:    int,
-    sample_size:    int,
-    words_sampled:  list,
-    ai_call_count:  int,
-    words_returned: int,
-    success:        bool,
-    error_msg:      str  = "",
-    ai_results:     list = None,
+    total_count: int,
+    sample_count: int,
+    words_sampled: list,
+    ai_calls: int,
+    success_parsed: int,
+    is_dry_run: bool = True,
+    error_msg: str = "",
+    ai_results: list = None
 ) -> int:
-    """将测试脚本的一次运行摘要写入测试库的 test_run_logs 表，返回新行 id。"""
-    conn = _conn(TEST_DB_PATH)
-    cur  = conn.cursor()
+    """记录运行汇总日志（仅存入测试库）。"""
+    conn = _get_conn(TEST_DB_PATH)
+    cur = conn.cursor()
     _create_tables(cur)
+    ai_json = json.dumps(ai_results, ensure_ascii=False) if ai_results else ""
     cur.execute("""
         INSERT INTO test_run_logs (
-            total_today, sample_size, words_sampled,
-            ai_call_count, words_returned, success, error_msg, ai_results_json
+            total_count, sample_count, sample_words, ai_calls, 
+            success_parsed, is_dry_run, error_msg, ai_results_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        total_today,
-        sample_size,
-        json.dumps(words_sampled, ensure_ascii=False),
-        ai_call_count,
-        words_returned,
-        1 if success else 0,
-        error_msg or "",
-        json.dumps(ai_results or [], ensure_ascii=False),
+        total_count, sample_count, ",".join(words_sampled),
+        ai_calls, success_parsed, is_dry_run, error_msg, ai_json
     ))
     conn.commit()
     row_id = cur.lastrowid
