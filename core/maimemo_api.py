@@ -195,6 +195,17 @@ class MaiMemoAPI:
         }
         return self._request("POST", "/study/add_words", json=payload)
 
+    def query_study_records(self, start_date: str, end_date: str, limit: int = 1000) -> Optional[Dict]:
+        """按计划日期查询学习记录 (公测新接口)"""
+        payload = {
+            "next_study_date": {
+                "start": start_date,
+                "end": end_date
+            },
+            "limit": limit
+        }
+        return self._request("POST", "/study/query_study_records", json=payload)
+
 # ================= 用法示例 =================
 if __name__ == "__main__":
     from config import MOMO_TOKEN

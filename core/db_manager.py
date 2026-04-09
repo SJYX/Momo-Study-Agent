@@ -2,6 +2,7 @@ import sqlite3
 import os
 import json
 import re
+from typing import Optional, Dict
 from config import DB_PATH, TEST_DB_PATH
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -205,6 +206,41 @@ def _build_raw_markdown(payload: dict) -> str:
         if val:
             text += f"**[{field.replace('_', ' ').upper()}]**\n{val}\n\n"
     return text
+
+def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
+    """获取单个单词的完整 AI 笔记内容"""
+    path = db_path or DB_PATH
+    conn = _get_conn(path)
+    conn.row_factory = sqlite3.Row # 使结果可以通过列名访问
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def find_word_in_community(voc_id: str) -> Optional[dict]:
+    """
+    跨用户查重：在所有 history_*.db 中寻找该单词。
+    返回找到的第一个非空记录字典。
+    """
+    current_db_name = os.path.basename(DB_PATH)
+    data_dir = os.path.dirname(DB_PATH)
+    
+    # 获取所有的用户历史数据库
+    db_files = [f for f in os.listdir(data_dir) if f.startswith("history_") and f.endswith(".db")]
+    
+    for db_file in db_files:
+        if db_file == current_db_name:
+            continue # 跳过当前用户的库
+            
+        full_path = os.path.join(data_dir, db_file)
+        note = get_word_note(voc_id, db_path=full_path)
+        if note:
+            # 标记来源（可选日志记录）
+            # print(f"    [Cache Hit] 从社区库 {db_file} 命中缓存数据")
+            return note
+            
+    return None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 测试专用 (Testing Specific)
