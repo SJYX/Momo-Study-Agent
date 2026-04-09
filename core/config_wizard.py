@@ -88,10 +88,14 @@ class ConfigWizard:
         print("  ✅ 墨墨验证成功！")
 
         # AI 提供商选择
-        print("\n3. 请选择 AI 引擎:")
-        print("   1: 小米 Mimo (mimo-v2-flash)")
-        print("   2: Google Gemini (gemini-2.0-flash)")
-        ai_choice = input("请输入选项 (1/2): ").strip()
+        while True:
+            print("\n3. 请选择 AI 引擎:")
+            print("   1: 小米 Mimo (mimo-v2-flash)")
+            print("   2: Google Gemini (gemini-2.0-flash)")
+            ai_choice = input("请输入选项 (1/2): ").strip()
+            if ai_choice in ["1", "2"]:
+                break
+            print("❌ 无效选项，请输入 1 或 2。")
         
         provider = "mimo" if ai_choice == "1" else "gemini"
         ai_key = ""
