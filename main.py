@@ -33,7 +33,7 @@ class StudyFlowManager:
         print(f"🚀 [Start] 启动学习流 (DRY_RUN={DRY_RUN})")
         
         # 1. 获取今日单词
-        res = self.momo.get_today_items(limit=100)
+        res = self.momo.get_today_items(limit=500)
         if not res or not res.get("success"):
             print("  [Error] 无法获取今日单词列表。")
             return
