@@ -19,8 +19,14 @@ def clean_for_maimemo(text: str) -> str:
       - 行首 Markdown 列表 '- ' 或 '* ' → 替换为 '• '
       - 行首 '### ' / '## ' / '# '     → 去掉 '#'，保留标题文字
     """
-    if not text or not isinstance(text, str):
-        return text
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        # 防阶：如果模型返回了对象或列表，将其转为字符串处理
+        try:
+            return json.dumps(text, ensure_ascii=False)
+        except:
+            return str(text)
 
     # 1. 处理行首标题 (### foo → foo)
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)

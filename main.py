@@ -5,7 +5,7 @@ from config import MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY, BATCH_SIZE, DRY_RUN
 from maimemo_api import MaiMemoAPI
 from gemini_client import GeminiClient
 from mimo_client import MimoClient
-from db_manager import init_db, is_processed, mark_processed, save_ai_word_note
+from db_manager import init_db, is_processed, mark_processed, save_ai_word_note, clean_for_maimemo
 
 # 终端编码修正已移至 if __name__ == "__main__" 或入口函数中
 
@@ -58,7 +58,7 @@ class StudyFlowManager:
             batch = pending_words[i : i + BATCH_SIZE]
             batch_spellings = [w["voc_spelling"] for w in batch]
             
-            print(f"\n📦 [Batch] 正在处理批次 {i//BATCH_SIZE + 1} ({len(batch)} 词)...")
+            print(f"\n📦 [Batch] 正在处理批次 {i//BATCH_SIZE + 1} (进度: {i+len(batch)}/{len(pending_words)})...")
             
             # AI 生成
             ai_results = self.ai_client.generate_mnemonics(batch_spellings)
@@ -67,7 +67,7 @@ class StudyFlowManager:
                 continue
                 
             # 4. 结果对照并保存
-            self._process_results(batch, ai_results)
+            self._process_results(batch, ai_results, current_start=i, total=len(pending_words))
             
             # 频率控制（结合 Mimo 高达 100 RPM 的限额，单线程完全无需顾虑被拉黑，仅保留微小停顿防止墨墨接口并发拦截）
             if i + BATCH_SIZE < len(pending_words):
@@ -75,13 +75,14 @@ class StudyFlowManager:
                 print(f"⏳ 缓冲 {sleep_time:.1f} 秒...")
                 time.sleep(sleep_time)
 
-    def _process_results(self, batch_words, ai_results):
+    def _process_results(self, batch_words, ai_results, current_start, total):
         """将 AI 结果映射回原始单词并持久化。"""
         # 转为字典加速查找
         ai_dict = {item["spelling"].lower(): item for item in ai_results}
         
         success_count = 0
-        for w in batch_words:
+        for idx, w in enumerate(batch_words):
+            current_num = current_start + idx + 1
             spell = w["voc_spelling"].lower()
             voc_id = w["voc_id"]
             
@@ -102,17 +103,17 @@ class StudyFlowManager:
                             has_intp = True
                             
                     if has_intp:
-                        print(f"  [Protect] {spell} 在墨墨中已存在释义，仅保存本地，跳过大盘覆盖。")
+                        print(f"  [{current_num}/{total}] [Protect] {spell} 在墨墨中已存在释义，跳过推送")
                     else:
-                        brief_note = f"{payload.get('basic_meanings','')}\n[IELTS] {payload.get('ielts_focus','')}"
+                        brief_note = clean_for_maimemo(payload.get('basic_meanings', ''))
                         self.momo.sync_interpretation(voc_id, brief_note, tags=["雅思"])
+                        print(f"  [{current_num}/{total}] ✅ {spell} 释义已同步")
                 
                 # C. 标记已处理 (Mark Processed)
                 mark_processed(voc_id, spell)
                 success_count += 1
-                print(f"  ✅ {spell} 处理成功")
             else:
-                print(f"  ⚠️ {spell} 在 AI 返回中缺失")
+                print(f"  [{current_num}/{total}] ⚠️ {spell} 在 AI 返回中缺失")
                 
         print(f"✨ 批次统计: 成功 {success_count}/{len(batch_words)}")
 
