@@ -1,95 +1,80 @@
-import os
-import json
-import io
 import sys
+import io
 import time
-from dotenv import load_dotenv
+import os
 
+# ── 路径修正 ──────────────────────────────────────────────────────────────────
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT_DIR)
+
+from config import MOMO_TOKEN, GEMINI_API_KEY, TEST_DB_PATH, DB_PATH
 from maimemo_api import MaiMemoAPI
-from db_manager import init_db, is_processed, mark_processed
 from gemini_client import GeminiClient
+from db_manager import init_db, save_ai_word_note, mark_processed
 
-# 解决终端中文的输出乱码
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+# 终端编码修正 (Windows 友好)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
-load_dotenv()
-MOMO_TOKEN = os.getenv("MOMO_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-def main():
-    print("====== 🍎 启动 'apple' 全流程实战：分析 -> 入库 -> 同步墨墨 ======")
-    init_db()
+def run_apple_test(dry_run: bool = True):
+    """
+    针对单词 'apple' 执行全流程实战测试。
+    """
+    db_path = TEST_DB_PATH if dry_run else DB_PATH
+    mode_name = "【安全模拟】" if dry_run else "【真实同步】"
     
-    if not MOMO_TOKEN or not GEMINI_API_KEY:
-        print("[错误] 未在 .env 文件中发现有效的 MOMO_TOKEN 或 GEMINI_API_KEY！")
-        return
-
-    gem_client = GeminiClient(GEMINI_API_KEY)
+    print(f"====== {mode_name} 启动 'apple' 实战测试 ======")
+    init_db(db_path)
+    
     momo = MaiMemoAPI(MOMO_TOKEN)
+    gemini = GeminiClient(GEMINI_API_KEY)
     
     word = "apple"
     
-    # 步骤 1: 获取 voc_id
-    print(f"[*] 步骤 1: 正在从墨墨官方查询单词 '{word}' 的详细资料...")
+    # 1. 获取 voc_id
+    print(f"[*] 步骤 1: 获取 '{word}' 的 voc_id...")
     voc_res = momo.get_vocabulary(word)
     if not voc_res or not voc_res.get("success"):
-        print(f"[错误] 无法查询到单词 '{word}'，可能是 Token 失效或网络问题。")
+        print(f"  [Error] 无法获取 '{word}' 资料。")
         return
-    
-    # 官方返回结构可能是 {"success": true, "data": {"vocabulary": {"id": "...", ...}}}
-    # 需要根据实际返回结构提取
+        
     voc_data = voc_res.get("data", {}).get("voc", {})
     voc_id = voc_data.get("id")
     if not voc_id:
-        print(f"[错误] 解析返回数据失败，未找到 '{word}' 的 voc_id。原数据: {voc_res}")
+        print(f"  [Error] 未发现 voc_id。")
         return
+    print(f"  ┗ ✅ voc_id: {voc_id}")
     
-    print(f"    ┗ ✅ 成功获取 voc_id: {voc_id}")
-    
-    # 步骤 2: Gemini 分析
-    print(f"[*] 步骤 2: 正在请求 Gemini ({gem_client.model_name}) 进行雅思考霸级分析...")
-    ai_results = gem_client.generate_mnemonics([word])
-    
+    # 2. AI 解析
+    print(f"[*] 步骤 2: 请求 AI 解析...")
+    ai_results = gemini.generate_mnemonics([word])
     if not ai_results:
-        print("[错误] Gemini 返回为空，请检查模型状态或网络。")
+        print(f"  [Error] AI 返回为空。")
         return
+        
+    payload = ai_results[0]
+    print(f"  ┗ ✅ AI 解析成功")
     
-    ai_item = ai_results[0]
-    print(f"    ┗ ✅ AI 分析完成，已捕获结构化知识图谱。")
+    # 3. 存储
+    print(f"[*] 步骤 3: 写入本地库 ({os.path.basename(db_path)})...")
+    save_ai_word_note(voc_id, payload, db_path=db_path)
+    print(f"  ┗ ✅ 存储成功")
     
-    # 步骤 3: 构造完整文本并入库
-    print(f"[*] 步骤 3: 正在将知识图谱入库 (SQLite)...")
-    
-    raw_full_text = f"### {word}\n\n"
-    raw_full_text += f"{ai_item.get('basic_meanings', '')}\n\n"
-    raw_full_text += f"**[IELTS Focus]**\n{ai_item.get('ielts_focus', '')}\n\n"
-    raw_full_text += f"**[Collocations]**\n{ai_item.get('collocations', '')}\n\n"
-    raw_full_text += f"**[Traps]**\n{ai_item.get('traps', '')}\n\n"
-    raw_full_text += f"**[Synonyms]**\n{ai_item.get('synonyms', '')}\n\n"
-    raw_full_text += f"**[Discrimination]**\n{ai_item.get('discrimination', '')}\n\n"
-    raw_full_text += f"**[Example Sentences]**\n{ai_item.get('example_sentences', '')}\n\n"
-    raw_full_text += f"**[Memory Aid]**\n{ai_item.get('memory_aid', '')}\n\n"
-    
-    ai_item["raw_full_text"] = raw_full_text
-    
-    mark_processed(voc_id, ai_item)
-    print(f"    ┗ ✅ SQLite 入库成功。")
-    
-    # 步骤 4: 同步到墨墨
-    print(f"[*] 步骤 4: 正在同步到墨墨 (覆盖原生释义)...")
-    momo_interpretation = ai_item.get('basic_meanings', '').strip()
-    
-    # 注意：这里我们使用 create_interpretation，如果已经存在可能会报错或覆盖，取决于墨墨 API 逻辑
-    # 实际上 main.py 也是直接调用的 create_interpretation
-    success = momo.sync_interpretation(voc_id, momo_interpretation, tags=["雅思"])
-    
-    if success:
-        print("    ┗ ✅ [入库同步] -> 墨墨原生释义已升级重铸")
+    # 4. 同步
+    print(f"[*] 步骤 4: 同步至墨墨...")
+    if not dry_run:
+        brief_note = f"{payload.get('basic_meanings','')}\n[IELTS] {payload.get('ielts_focus','')}"
+        success = momo.sync_interpretation(voc_id, brief_note, tags=["雅思"])
+        if success:
+            mark_processed(voc_id, word, db_path=db_path)
+            print(f"  ┗ ✅ 墨墨同步成功！")
+        else:
+            print(f"  ┗ ❌ 墨墨同步失败。")
     else:
-        print(f"    ┗ ❌ [入库同步] -> 写入失败。")
+        print(f"  ┗ [跳过] 安全模式，未执行真实同步。")
 
-    print("\n====== 🎉 'apple' 全流程演示任务打卡结束 ======")
+    print("\n====== 测试任务结束 ======")
 
 if __name__ == "__main__":
-    main()
+    # 默认先跑安全模式
+    run_apple_test(dry_run=True)

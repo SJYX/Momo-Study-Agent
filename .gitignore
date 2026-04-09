@@ -1,5 +1,4 @@
 # Keys and secrets
-config.py
 .env
 
 # Python caching
