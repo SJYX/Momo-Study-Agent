@@ -1,7 +1,47 @@
 import sqlite3
 import os
 import json
+import re
 from config import DB_PATH, TEST_DB_PATH
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 文本清洗工具 (Text Sanitizer for MaiMemo)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def clean_for_maimemo(text: str) -> str:
+    """
+    将 Markdown 格式的字符串转为墨墨背单词兼容的纯文本。
+    规则：
+      - 保留换行符 \n（墨墨支持，关键！）
+      - **bold** / __bold__  → 去掉标记，保留文字
+      - *italic* / _italic_  → 去掉标记，保留文字
+      - `code`               → 去掉反引号，保留文字
+      - 行首 Markdown 列表 '- ' 或 '* ' → 替换为 '• '
+      - 行首 '### ' / '## ' / '# '     → 去掉 '#'，保留标题文字
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    # 1. 处理行首标题 (### foo → foo)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+    # 2. 行首无序列表符号 (- item 或 * item → • item)
+    text = re.sub(r'^[\-\*]\s+', '• ', text, flags=re.MULTILINE)
+
+    # 3. 去掉加粗/斜体标记，保留内容（顺序重要：先处理 ** 再处理 *）
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'\1', text, flags=re.DOTALL)  # ***bold+italic***
+    text = re.sub(r'\*\*(.+?)\*\*',     r'\1', text, flags=re.DOTALL)  # **bold**
+    text = re.sub(r'__(.+?)__',         r'\1', text, flags=re.DOTALL)  # __bold__
+    text = re.sub(r'\*(.+?)\*',         r'\1', text, flags=re.DOTALL)  # *italic*
+    text = re.sub(r'_(.+?)_',           r'\1', text, flags=re.DOTALL)  # _italic_
+
+    # 4. 去掉行内代码反引号
+    text = re.sub(r'`(.+?)`', r'\1', text)
+
+    # 5. 收尾：去掉首尾多余空白，但保留内部换行节奏
+    text = text.strip()
+
+    return text
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 通用内部工具 (Internal Helpers)
@@ -36,10 +76,26 @@ def _create_tables(cur: sqlite3.Cursor):
             discrimination TEXT,
             example_sentences TEXT,
             memory_aid TEXT,
+            word_ratings TEXT,
             raw_full_text TEXT,
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # 无缝升表（兼容已经生成的本地 SQLite 环境）
+    for col, col_def in [
+        ("prompt_tokens", "INTEGER DEFAULT 0"),
+        ("completion_tokens", "INTEGER DEFAULT 0"),
+        ("total_tokens", "INTEGER DEFAULT 0"),
+        ("word_ratings", "TEXT"),
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE ai_word_notes ADD COLUMN {col} {col_def}")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
 
     # 3. 运行日志表
     cur.execute("""
@@ -102,24 +158,34 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None):
     _create_tables(cur) # 确保环境
     
     spell = payload.get("spelling", "")
+    # raw_full_text 保留原始 Markdown，供本地预览/评估报告使用
     raw_full_text = payload.get("raw_full_text") or _build_raw_markdown(payload)
+
+    # 其余字段入库前清洗为墨墨兼容的纯文本（保留换行，去除 Markdown 标记）
+    def _c(field: str) -> str:
+        return clean_for_maimemo(payload.get(field, ""))
 
     cur.execute("""
         INSERT OR REPLACE INTO ai_word_notes (
             voc_id, spelling, basic_meanings, ielts_focus, collocations,
-            traps, synonyms, discrimination, example_sentences, memory_aid, raw_full_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            traps, synonyms, discrimination, example_sentences, memory_aid,
+            word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         str(voc_id), spell,
-        payload.get("basic_meanings", ""),
-        payload.get("ielts_focus", ""),
-        payload.get("collocations", ""),
-        payload.get("traps", ""),
-        payload.get("synonyms", ""),
-        payload.get("discrimination", ""),
-        payload.get("example_sentences", ""),
-        payload.get("memory_aid", ""),
-        raw_full_text
+        _c("basic_meanings"),
+        _c("ielts_focus"),
+        _c("collocations"),
+        _c("traps"),
+        _c("synonyms"),
+        _c("discrimination"),
+        _c("example_sentences"),
+        _c("memory_aid"),
+        _c("word_ratings"),
+        raw_full_text,
+        payload.get("prompt_tokens", 0),
+        payload.get("completion_tokens", 0),
+        payload.get("total_tokens", 0)
     ))
     conn.commit()
     conn.close()
@@ -128,7 +194,7 @@ def _build_raw_markdown(payload: dict) -> str:
     """按标准格式拼接完整的 Markdown 预览。"""
     spell = payload.get("spelling", "")
     text = f"### {spell}\n\n{payload.get('basic_meanings', '')}\n\n"
-    for field in ["ielts_focus", "collocations", "traps", "synonyms", "discrimination", "example_sentences", "memory_aid"]:
+    for field in ["ielts_focus", "collocations", "traps", "synonyms", "discrimination", "example_sentences", "memory_aid", "word_ratings"]:
         val = payload.get(field)
         if val:
             text += f"**[{field.replace('_', ' ').upper()}]**\n{val}\n\n"

@@ -19,7 +19,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 sys.path.insert(0, ROOT_DIR)
 
 from dotenv import load_dotenv
-from gemini_client import GeminiClient
+from mimo_client import MimoClient
 from db_manager import log_test_run
 
 # ── 终端编码 ──────────────────────────────────────────────────────────────────
@@ -27,7 +27,6 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # ── 测试数据 ──────────────────────────────────────────────────────────────────
 TARGET_WORDS = ["run", "subject", "minute"]
@@ -90,15 +89,11 @@ def analyze_diff(res_10, res_20):
             print("  ⚠️  [结论] 内容存在微调或语义压缩。")
 
 def main():
-    if not GEMINI_API_KEY:
-        print("[错误] 未找到 GEMINI_API_KEY")
-        return
-
-    gem = GeminiClient(GEMINI_API_KEY)
+    mimo = MimoClient()
     
-    print(f"\n🚀 [Batch 1] 开始请求 10 个单词 (含重点词)...")
+    print(f"\n🚀 [Batch 1] 开始请求 10 个单词 (含重点词) using {mimo.model_name}...")
     t1_start = time.time()
-    results_10 = gem.generate_mnemonics(WORDS_10)
+    results_10 = mimo.generate_mnemonics(WORDS_10)
     t1_end = time.time()
     print(f"   ✅ 完成，耗时: {t1_end - t1_start:.1f}s")
 
@@ -109,7 +104,7 @@ def main():
 
     print(f"\n🚀 [Batch 2] 开始请求 20 个单词 (含相同重点词 + 更多干扰)...")
     t2_start = time.time()
-    results_20 = gem.generate_mnemonics(WORDS_20)
+    results_20 = mimo.generate_mnemonics(WORDS_20)
     t2_end = time.time()
     print(f"   ✅ 完成，耗时: {t2_end - t2_start:.1f}s")
     

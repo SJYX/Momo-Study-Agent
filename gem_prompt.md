@@ -18,7 +18,8 @@ Each object in the JSON array must follow this exact schema:
     "synonyms": "[Content for Writing Synonym Upgrades]",
     "discrimination": "[Content for Synonym Discrimination, empty string if N/A]",
     "example_sentences": "[Content for Example Sentence]",
-    "memory_aid": "[Content for Memory Aid]"
+    "memory_aid": "[Content for Memory Aid]",
+    "word_ratings": "[Content for Word Ratings]"
   }
 ]
 
@@ -59,22 +60,30 @@ Format Rules (CRITICAL):
 *(Limit to 3-5 high-value chunks)*
 
 ### Field: "traps"
-- **Trap:** [Explain common misunderstanding 1, e.g., meaning confusion]
+- **Trap:** [Explain common misunderstanding 1, e.g., meaning confusion, preposition mismatch (like set up vs set off), or part-of-speech grammatical traps]
 
 ### Field: "synonyms"
 - **[Basic English chunk using the target word] → [Advanced Synonym 1] / [Advanced Synonym 2]**
 
 ### Field: "discrimination" [OPTIONAL]
 *(CRITICAL RULE: Include this section ONLY IF the target word has a highly confusable synonym that is frequently tested in IELTS Reading or Writing. If there is no high-value, exam-relevant synonym to compare, OMIT this section entirely by returning an empty string "".)*
-- **[Target Word]** vs **[Synonym]**：**[Target Word]** 侧重于 [core nuance/context in Chinese]；而 **[Synonym]** 侧重于 [core nuance/context in Chinese]。
+- **[Target Word]** vs **[Synonym]**：**[Target Word]** 侧重于 [核心含义细微差别 / 语体正式程度 / 常见搭配对象]；而 **[Synonym]** 侧重于 [与之对比的区别]。
 
 ### Field: "example_sentences"
-- *[English sentence 1]* [Chinese translation of sentence 1]
+- *[Writing Task 2 Context]: [English sentence with the **Target Word/Collocation** in bold]* [Chinese translation]
+- *[Speaking Context]: [English sentence with the **Target Word/Collocation** in bold]* [Chinese translation]
+*(CRITICAL RULE: The sentences MUST be strictly related to high-frequency IELTS topics like Education, Technology, Environment, or Society. Ensure band 7+ syntactic complexity for the Writing example.)*
 
 ### Field: "memory_aid"
 - **记忆法一（核心逻辑）：** [Explain the underlying semantic logic connecting all meanings in Chinese]
 - **记忆法二（词根词缀/构词法）：** [Explain the etymology, prefixes, or suffixes in Chinese.]
 - **记忆法三（场景/图像联想）：** [Create a vivid, memorable scene, story, or visual hook in Chinese to remember the word's IELTS context]
+
+### Field: "word_ratings"
+*(Rate the following 3 dimensions on a scale of 1-10, and provide a 1-sentence justification in Chinese)*
+- **提分杠杆率 (ROI): [X]/10** - [Brief reason]
+- **学术输出潜力 (Academic Yield): [X]/10** - [Brief reason]
+- **易错踩坑指数 (Trap Probability): [X]/10** - [Brief reason]
 
 ========================
 Execution

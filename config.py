@@ -11,11 +11,17 @@ load_dotenv()
 # API Keys
 MOMO_TOKEN = os.getenv("MOMO_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MIMO_API_KEY = os.getenv("MIMO_API_KEY")
+MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.mioffice.cn/v1")
 
 # 模型设置 (AI Settings)
 # 优先级：环境变量 > 默认模型
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "20"))
+MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2-flash")
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
+
+# 当前使用的 AI 提供商: "gemini" 或 "mimo"
+AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini")
 
 # 重试机制 (Retry Logic)
 MAX_RETRIES = 3

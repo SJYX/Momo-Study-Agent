@@ -39,8 +39,12 @@ pip install -r requirements.txt
 # 墨墨 OpenAPI Access Token
 MOMO_TOKEN="你的_TOKEN"
 
-# Google Gemini API Key
+# Google Gemini API Key (默认使用)
 GEMINI_API_KEY="你的_API_KEY"
+
+# 或者使用小米 Mimo API Key (可选)
+# MIMO_API_KEY="你的_MIMO_API_KEY"
+# AI_PROVIDER=mimo  # 设置为 mimo 时使用小米模型
 ```
 
 ### 3. 开始实战 (Practical Operation)
