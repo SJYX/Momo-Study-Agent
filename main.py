@@ -183,4 +183,14 @@ if __name__ == "__main__":
         get_logger().error(f"系统异常: {e}", exc_info=True)
     finally:
         print("\n" + "="*30)
-        input("✅ 任务处理完毕。按 [回车键] 退出程序...")
+        try:
+            import msvcrt
+            print("任务处理完毕。请按 [Esc] 键退出程序...")
+            while True:
+                if msvcrt.kbhit():
+                    char = msvcrt.getch()
+                    if ord(char) == 27:  # 27 is the ASCII code for Esc
+                        break
+        except ImportError:
+            # 非 Windows 环境或导入失败时的兜底方案
+            input("任务处理完毕。按 [回车键] 退出程序...")
