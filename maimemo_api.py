@@ -23,7 +23,7 @@ class MaiMemoAPI:
         time.sleep(0.5) 
         url = f"{self.base_url}{endpoint}"
         response = requests.request(method, url, headers=self.headers, **kwargs)
-        if response.status_code == 200:
+        if 200 <= response.status_code < 300:
             return response.json()
         else:
             print(f"[API Error] {method} {endpoint} -> {response.status_code}: {response.text}")
@@ -76,6 +76,24 @@ class MaiMemoAPI:
     def delete_interpretation(self, interpretation_id: str) -> Optional[Dict]:
         """删除释义"""
         return self._request("DELETE", f"/interpretations/{interpretation_id}")
+
+    def sync_interpretation(self, voc_id: str, interpretation: str, tags: List[str] = None) -> bool:
+        """智能同步：存在则更新，不存在则创建"""
+        # 1. 检查是否存在已有释义
+        res = self.list_interpretations(voc_id)
+        if res and res.get("success"):
+            intps = res.get("data", {}).get("interpretations", [])
+            if intps:
+                # 已存在，执行更新 (取第一个)
+                intp_id = intps[0].get("id")
+                print(f"    [*] 发现已有释义 ({intp_id})，正在执行覆盖更新...")
+                update_res = self.update_interpretation(intp_id, interpretation, tags)
+                return update_res and update_res.get("success")
+        
+        # 2. 不存在，执行创建
+        print(f"    [*] 未发现已有释义，正在执行创建...")
+        create_res = self.create_interpretation(voc_id, interpretation, tags)
+        return create_res and create_res.get("success")
 
     # ==========================
     # 3. 助记管理 (Notes)

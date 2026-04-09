@@ -1,15 +1,13 @@
 import os
 import json
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 class GeminiClient:
     def __init__(self, api_key: str, prompt_file: str = "gem_prompt.md"):
-        genai.configure(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
         self.prompt_file = prompt_file
-        self.model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=self._load_instruction()
-        )
+        self.model_name = "gemini-3-flash-preview"
 
     def _load_instruction(self) -> str:
         if not os.path.exists(self.prompt_file):
@@ -19,17 +17,17 @@ class GeminiClient:
 
     def generate_mnemonics(self, words_batch: list) -> list:
         prompt = f"""
-        我给你 {len(words_batch)} 个英语单词。请按系统设定为每个词生成一句绝妙助记法。
-        请严格以 JSON 数组格式原样返回，包含 spelling 和 mnemonic 两项，不要有其余任何解释文字：
-        [
-            {{"spelling": "单词1", "mnemonic": "助记1"}},
-            {{"spelling": "单词2", "mnemonic": "助记2"}}
-        ]
-
+        请处理以下 {len(words_batch)} 个英语单词，严格遵循系统设定中的全维度 JSON 数组格式返回分析：
         待处理单词列表: {", ".join(words_batch)}
         """
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self._load_instruction()
+                )
+            )
             text = response.text.strip()
             
             # 清洗包裹的 Markdown 字符

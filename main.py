@@ -86,21 +86,37 @@ def main():
             
         for ai_item in ai_results:
             w_spell = ai_item.get("spelling", "")
-            mnemonic = ai_item.get("mnemonic", "")
             w_id = word_dict.get(w_spell)
             
-            if w_id and mnemonic:
-                print(f"  > [💡AI 妙语] {w_spell}: {mnemonic}")
+            if w_id and w_spell:
+                # 完整的知识图谱留存在 SQLite 中备用
+                raw_full_text = f"### {w_spell}\n\n"
+                raw_full_text += f"{ai_item.get('basic_meanings', '')}\n\n"
+                raw_full_text += f"**[IELTS Focus]**\n{ai_item.get('ielts_focus', '')}\n\n"
+                raw_full_text += f"**[Collocations]**\n{ai_item.get('collocations', '')}\n\n"
+                raw_full_text += f"**[Traps]**\n{ai_item.get('traps', '')}\n\n"
+                raw_full_text += f"**[Synonyms]**\n{ai_item.get('synonyms', '')}\n\n"
+                raw_full_text += f"**[Discrimination]**\n{ai_item.get('discrimination', '')}\n\n"
+                raw_full_text += f"**[Example Sentences]**\n{ai_item.get('example_sentences', '')}\n\n"
+                raw_full_text += f"**[Memory Aid]**\n{ai_item.get('memory_aid', '')}\n\n"
+                
+                # 将 10 个维度打包保存进 SQLite 图谱
+                ai_item["raw_full_text"] = raw_full_text
+                
+                # 提取 AI 的精准核心翻译，直接用于覆盖替换墨墨原生的字典释义
+                momo_interpretation = ai_item.get('basic_meanings', '').strip()
+                
+                print(f"  > [💡AI 捕获] {w_spell} 的结构化知识图谱提取成功！")
                 
                 if not DRY_RUN:
                     time.sleep(0.5) 
-                    # 将这句助记作为 `AI专供助记` 分类创建进笔记薄中
-                    success = momo.create_note(w_id, "AI专供", mnemonic)
+                    # 核心改动：不再作为助记塞入，而是强力接管墨墨原生释义卡片
+                    success = momo.sync_interpretation(w_id, momo_interpretation, tags=["雅思"])
                     if success:
-                        print("    ┗ ✅ [入库同步] -> 墨墨端已可见")
-                        mark_processed(w_id, w_spell) # 标记入库，下次不再处理
+                        print("    ┗ ✅ [入库同步] -> 墨墨原生释义已升级重铸")
+                        mark_processed(w_id, ai_item) # 10大维度数据打入 SQLite 本地雷达
                     else:
-                        print("    ┗ ❌ [入库同步] -> 写入失败")
+                        print("    ┗ ❌ [入库同步] -> 原生释义写入失败")
         
         # 防止过高频调用导致 Gemini 限流
         if idx < len(batches) - 1:

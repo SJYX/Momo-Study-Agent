@@ -10,5 +10,5 @@ __pycache__/
 .vscode/
 .idea/
 
-# Private Documents (Only visible locally)
-PROJECT_PLAN.md
+# Data and databases
+data/
