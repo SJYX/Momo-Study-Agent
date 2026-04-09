@@ -27,10 +27,8 @@ pm = ProfileManager(PROFILES_DIR)
 wizard = ConfigWizard(PROFILES_DIR)
 
 if not ACTIVE_USER:
-    # 交互式选择或创建用户
-    ACTIVE_USER = pm.select_profile()
-    if ACTIVE_USER == "NEW_USER":
-        ACTIVE_USER = wizard.run_setup()
+    # 交互式选择或创建用户 (内部已集成向导)
+    ACTIVE_USER = pm.pick_profile()
 
 # 加载选中用户的配置文件
 profile_env = os.path.join(PROFILES_DIR, f"{ACTIVE_USER}.env")

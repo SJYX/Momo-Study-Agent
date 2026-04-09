@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+from typing import Optional, List
 
 # 强制 UTF-8 编码避免 Windows 终端乱码
 if hasattr(sys.stdout, 'reconfigure'):
@@ -71,4 +72,4 @@ class ProfileManager:
 def get_active_profile(profiles_dir):
     """助手函数：获取当前活跃用户。"""
     pm = ProfileManager(profiles_dir)
-    return pm.select_profile()
+    return pm.pick_profile()
