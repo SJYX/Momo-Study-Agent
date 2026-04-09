@@ -5,8 +5,8 @@ import json
 # 注入根目录以正确导入模块
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from mimo_client import MimoClient
-from db_manager import save_test_word_note, log_test_run, is_processed, mark_processed, TEST_DB_PATH
+from core.mimo_client import MimoClient
+from core.db_manager import save_test_word_note, log_test_run, is_processed, mark_processed, TEST_DB_PATH
 
 def test_pipeline():
     print("=== Mimo Pipeline Validation Test ===")

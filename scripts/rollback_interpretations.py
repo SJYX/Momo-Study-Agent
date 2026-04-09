@@ -7,8 +7,8 @@ import sqlite3
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-from maimemo_api import MaiMemoAPI
-from db_manager import clean_for_maimemo, DB_PATH
+from core.maimemo_api import MaiMemoAPI
+from core.db_manager import clean_for_maimemo, DB_PATH
 from config import MOMO_TOKEN
 
 def rollback():

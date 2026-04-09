@@ -7,7 +7,7 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-from mimo_client import MimoClient
+from core.mimo_client import MimoClient
 
 import io
 

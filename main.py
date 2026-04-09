@@ -2,10 +2,10 @@ import sys
 import io
 import time
 from config import MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY, BATCH_SIZE, DRY_RUN, AI_PROVIDER
-from maimemo_api import MaiMemoAPI
-from gemini_client import GeminiClient
-from mimo_client import MimoClient
-from db_manager import init_db, is_processed, mark_processed, save_ai_word_note, clean_for_maimemo
+from core.maimemo_api import MaiMemoAPI
+from core.gemini_client import GeminiClient
+from core.mimo_client import MimoClient
+from core.db_manager import init_db, is_processed, mark_processed, save_ai_word_note, clean_for_maimemo
 
 # 终端编码修正已移至 if __name__ == "__main__" 或入口函数中
 
