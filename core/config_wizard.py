@@ -21,8 +21,8 @@ class ConfigWizard:
         """联网验证墨墨 Token"""
         print("  正在验证墨墨 Token...")
         api = MaiMemoAPI(token)
-        # 尝试拉取一个小数据，如果 401 会由 MaiMemoAPI 打印错误
-        res = api.get_today_items(limit=1)
+        # 用低门槛的 get_study_progress 探针，避免因新号没领书卡死
+        res = api.get_study_progress()
         return res is not None and res.get("success") is True
 
     def validate_mimo(self, api_key: str) -> bool:

@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 PROFILES_DIR = os.path.join(DATA_DIR, "profiles")
-PROMPT_FILE = os.path.join(BASE_DIR, "gem_prompt.md")
-SCORE_PROMPT_FILE = os.path.join(BASE_DIR, "score_prompt.md")
-REFINE_PROMPT_FILE = os.path.join(BASE_DIR, "refine_prompt.md")
+PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "gem_prompt.md")
+SCORE_PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "score_prompt.md")
+REFINE_PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "refine_prompt.md")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PROFILES_DIR, exist_ok=True)

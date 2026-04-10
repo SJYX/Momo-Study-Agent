@@ -22,6 +22,7 @@ class IterationManager:
 
     def run_iteration(self, familiarity_threshold: float = 3.0):
         """主循环：筛选薄弱词并执行迭代逻辑。"""
+        self.notepad_additions = []
         weak_words = self._get_weak_words_from_db(familiarity_threshold)
         if not weak_words:
             self.logger.info("🎉 没有发现需要迭代的薄弱单词。", module="iteration_manager", function="run_iteration")
@@ -50,11 +51,50 @@ class IterationManager:
                     self._handle_level_2_refinement(w)
                 else:
                     self.logger.info(f"  [Wait] {spell} 熟悉度有提升 ({last_fam} -> {current_fam})，保持观察", module="iteration_manager", function="run_iteration")
+                    
+        # 批量处理云词本弱词追加
+        if getattr(self, 'notepad_additions', None):
+            self._sync_weak_words_notepad()
+
+    def _sync_weak_words_notepad(self):
+        notepad_title = "MomoAgent: 薄弱词攻坚"
+        res = self.momo.list_notepads(limit=100)
+        target_notepad = None
+        if res and res.get("notepads"):
+            for np in res["notepads"]:
+                if np.get("title") == notepad_title:
+                    target_notepad = np
+                    break
+                    
+        current_content = ""
+        if target_notepad:
+            detail = self.momo.get_notepad(target_notepad["id"])
+            if detail and detail.get("notepad"):
+                current_content = detail["notepad"].get("content", "")
+        
+        # 解析换行获取纯单词并追加
+        existing_words = [w.strip() for w in current_content.split('\n') if w.strip()]
+        new_words = [w for w in self.notepad_additions if w not in existing_words]
+        
+        if not new_words:
+            self.logger.info("云词本包含所有薄弱词，无需追加。", module="iteration_manager", function="_sync_weak_words_notepad")
+            return
+            
+        merged_content = "\n".join(existing_words + new_words)
+        try:
+            if target_notepad:
+                self.momo.update_notepad(target_notepad["id"], notepad_title, merged_content, "反复遗忘的难点词隔离库", ["AI"], "UNPUBLISHED")
+                self.logger.info(f"✅ 成功追加 {len(new_words)} 个薄弱词至云词本: {notepad_title}", module="iteration_manager", function="_sync_weak_words_notepad")
+            else:
+                self.momo.create_notepad(notepad_title, merged_content, "反复遗忘的难点词隔离库", ["AI"], "UNPUBLISHED")
+                self.logger.info(f"✨ 新建云词本并导入 {len(new_words)} 个薄弱词: {notepad_title}", module="iteration_manager", function="_sync_weak_words_notepad")
+        except Exception as e:
+            self.logger.error(f"同步云词本发生异常: {e}", error=str(e), module="iteration_manager")
 
     def _get_weak_words_from_db(self, threshold: float) -> List[Dict]:
         """从数据库中筛选薄弱词（利用 json_extract）。"""
+        from core.db_manager import _get_conn, _row_to_dict
         conn = _get_conn(DB_PATH)
-        conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         # 筛选逻辑：在 ai_word_notes 中且熟悉度 < threshold
         # 我们从最新快照中取熟悉度
@@ -75,10 +115,19 @@ class IterationManager:
         return rows
 
     def _get_last_recorded_fam(self, voc_id: str) -> float:
-        """获取该单词在 it_level 变化时的熟悉度基准。"""
-        # 简化版：从 history 中找最后一次 Level 变更的记录
-        progress = get_latest_progress(voc_id)
-        return progress["familiarity_short"] if progress else 0.0
+        """获取该单词在最后一次 it_level 变更时的熟悉度基准。"""
+        conn = _get_conn(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+        row = cur.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            history = json.loads(row[0])
+            if history:
+                # 取最后一条记录中的 baseline
+                return history[-1].get("baseline_fam", 0.0)
+        return 0.0
 
     def _handle_level_1_selection(self, word: Dict):
         """Level 1: 从现有三种助记中选优。"""
@@ -138,6 +187,8 @@ class IterationManager:
                 if sync_res and sync_res.get("success"):
                     self.logger.info(f"  🔥 {spell} 强力重炼助记已同步 (Level 2)", module="iteration_manager", function="_handle_level_2_refinement")
                     self._update_it_state(voc_id, word["it_level"] + 1, "Power Refined", new_note, text)
+                    if hasattr(self, 'notepad_additions'):
+                        self.notepad_additions.append(spell)
             else:
                 raise ValueError("重炼返回格式错误（需为数组）")
         except Exception as e:
@@ -148,10 +199,15 @@ class IterationManager:
         conn = _get_conn(DB_PATH)
         cur = conn.cursor()
         
+        # 获取当前熟悉度作为基准
+        current_progress = get_latest_progress(voc_id)
+        current_fam = current_progress["familiarity_short"] if current_progress else 0.0
+
         history_item = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "level": level,
-            "reason": reason
+            "reason": reason,
+            "baseline_fam": current_fam
         }
         
         # 获取旧 history

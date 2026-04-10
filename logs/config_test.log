@@ -1,3 +1,0 @@
-{"timestamp": "2026-04-10 13:40:39,991", "level": "INFO", "message": "使用YAML配置创建的日志器测试", "module": "test_config", "function": "test_config_system", "line": 0, "user": "config_test", "extra": {"module": "test_config", "function": "test_config_system"}}
-{"timestamp": "2026-04-10 13:40:39,992", "level": "WARNING", "message": "Staging环境日志测试", "module": "test_config", "function": "test_staging", "line": 0, "user": "unknown", "extra": {"module": "test_config", "function": "test_staging"}}
-{"timestamp": "2026-04-10 13:40:39,993", "level": "ERROR", "message": "参数覆盖测试", "module": "test_config", "function": "test_override", "line": 0, "user": "unknown", "extra": {"module": "test_config", "function": "test_override"}}

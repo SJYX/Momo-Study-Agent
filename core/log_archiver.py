@@ -12,6 +12,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+try:
+    from core.logger import get_logger
+except ImportError:
+    import logging
+    def get_logger(): return logging.getLogger(__name__)
+
 class LogCompressor:
     """日志压缩器"""
 
@@ -90,9 +96,9 @@ class LogArchiver:
                 try:
                     compressed_path = self.compressor.compress_file(str(log_file))
                     archived_files.append(compressed_path)
-                    print(f"已归档: {log_file} -> {compressed_path}")
+                    get_logger().info(f"已归档: {log_file} -> {compressed_path}", module="log_archiver")
                 except Exception as e:
-                    print(f"归档失败 {log_file}: {e}")
+                    get_logger().error(f"归档失败 {log_file}: {e}", error=str(e), module="log_archiver")
 
         return archived_files
 
@@ -133,9 +139,9 @@ class LogArchiver:
                 try:
                     os.remove(compressed_file)
                     removed_files.append(str(compressed_file))
-                    print(f"已清理过期归档: {compressed_file}")
+                    get_logger().info(f"已清理过期归档: {compressed_file}", module="log_archiver")
                 except Exception as e:
-                    print(f"清理失败 {compressed_file}: {e}")
+                    get_logger().error(f"清理失败 {compressed_file}: {e}", error=str(e), module="log_archiver")
 
         return removed_files
 
@@ -206,25 +212,29 @@ def auto_archive_logs(log_dir: str = "logs", config: Optional[dict] = None):
 
     archiver = LogArchiver(log_dir, compression_format, compress_after_days)
 
-    print(f"开始归档日志文件 (超过 {compress_after_days} 天的文件)...")
+    logger = get_logger()
+    logger.info(f"开始归档日志文件 (超过 {compress_after_days} 天的文件)...", module="log_archiver")
     archived = archiver.archive_old_logs()
 
-    print(f"成功归档 {len(archived)} 个文件")
+    logger.info(f"成功归档 {len(archived)} 个文件", module="log_archiver")
 
     # 清理过期归档
     keep_days = config.get("archive_retention_days", 30)
-    print(f"清理超过 {keep_days} 天的归档文件...")
+    logger.info(f"清理超过 {keep_days} 天的归档文件...", module="log_archiver")
     removed = archiver.cleanup_old_archives(keep_days)
 
-    print(f"清理了 {len(removed)} 个过期归档文件")
+    logger.info(f"清理了 {len(removed)} 个过期归档文件", module="log_archiver")
 
     # 显示统计信息
     stats = archiver.get_archive_stats()
-    print("\n归档统计:")
-    print(f"  日志文件: {stats['total_log_files']} 个")
-    print(f"  压缩文件: {stats['total_compressed_files']} 个")
-    print(f"  日志总大小: {stats['total_size_logs'] / 1024:.1f} KB")
-    print(f"  压缩总大小: {stats['total_size_compressed'] / 1024:.1f} KB")
-    print(f"  压缩率: {stats['compression_ratio']:.1f}%")
+    stats_msg = (
+        f"归档统计:\n"
+        f"  日志文件: {stats['total_log_files']} 个\n"
+        f"  压缩文件: {stats['total_compressed_files']} 个\n"
+        f"  日志总大小: {stats['total_size_logs'] / 1024:.1f} KB\n"
+        f"  压缩总大小: {stats['total_size_compressed'] / 1024:.1f} KB\n"
+        f"  压缩率: {stats['compression_ratio']:.1f}%"
+    )
+    logger.info(stats_msg, module="log_archiver", extra_stats=stats)
 
     return archived, removed

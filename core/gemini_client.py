@@ -78,7 +78,11 @@ class GeminiClient:
                 item['raw_full_text'] = json.dumps(item, ensure_ascii=False)
             return results, metadata
         except Exception as e:
-            print(f"  [JSON Parse Error]: {str(e)[:120]}")
+            try:
+                from core.logger import get_logger
+                get_logger().error("[JSON Parse Error]", error=str(e), module="gemini_client")
+            except:
+                print(f"  [JSON Parse Error]: {str(e)[:120]}")
             return [], {}
 
 def _extract_json_array(text: str) -> str:

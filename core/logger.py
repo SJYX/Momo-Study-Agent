@@ -356,14 +356,19 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
     if logger.handlers:
         return ContextLogger(logger)
 
-    # 选择格式器
+    # 文件格式器：按配置决定是否 JSON
     if config["use_structured"]:
-        formatter = StructuredFormatter()
+        file_formatter = StructuredFormatter()
     else:
-        formatter = logging.Formatter(
+        file_formatter = logging.Formatter(
             '%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+
+    # 控制台格式器：永远使用增强可读性的文本
+    console_formatter = logging.Formatter(
+        '[%(levelname)s] %(message)s'
+    )
 
     # Handler 1: 轮转文件输出
     file_handler = RotatingFileHandler(
@@ -372,13 +377,13 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
         backupCount=config["backup_count"],
         encoding=config["encoding"]
     )
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(file_formatter)
     file_handler.setLevel(getattr(logging, config["file_level"]))
     logger.addHandler(file_handler)
 
     # Handler 2: 控制台输出
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
+    console_handler.setFormatter(console_formatter)
     console_handler.setLevel(getattr(logging, config["console_level"]))
     logger.addHandler(console_handler)
 

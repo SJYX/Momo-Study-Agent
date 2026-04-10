@@ -100,7 +100,11 @@ class MimoClient:
             
             return results, metadata
         except Exception as e:
-            print(f"  [Mimo Parse Error]: {str(e)[:120]}")
+            try:
+                from core.logger import get_logger
+                get_logger().error("[JSON Parse Error]", error=str(e), module="mimo_client")
+            except:
+                print(f"  [Mimo Parse Error]: {str(e)[:120]}")
             return [], {}
 
 

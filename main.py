@@ -79,12 +79,8 @@ class StudyFlowManager:
                     function="__init__"
                 )
         
-        # 异步同步数据库，避免阻塞启动
-        import threading
-        sync_thread = threading.Thread(target=sync_databases, daemon=True)
-        sync_thread.start()
-        self.logger.info("数据库同步已在后台启动...", module="main", function="__init__")
-
+        # 移除强制启动同步，改为主循环中互动式检查
+        
         # A. 提示词多版本归档
         prompts = [
             (PROMPT_FILE, "main"),
@@ -97,7 +93,7 @@ class StudyFlowManager:
             self.prompt_hashes[p_type] = h
             archive_prompt_file(p_path, h, p_type)
             self.logger.info(f"📝 [Prompt] {p_type.capitalize()} 版本: {h}", module="main", function="__init__")
-
+        
         self.prompt_version = self.prompt_hashes["main"]
 
         # B. 初始化 AI 客户端
@@ -134,60 +130,89 @@ class StudyFlowManager:
                 sys.exit(0)
 
     def run(self):
-        self.logger.info("🚩 正在同步数据...")
-        
-        # 获取今日任务
-        res_today = self.momo.get_today_items(limit=500)
-        today_task = res_today.get("data", {}).get("today_items", []) if res_today else []
-        
-        # 获取预习计划
-        start_dt = datetime.now()
-        end_dt = start_dt + timedelta(days=7)
-        res_future = self.momo.query_study_records(
-            start_dt.strftime("%Y-%m-%dT00:00:00.000Z"), 
-            end_dt.strftime("%Y-%m-%dT23:59:59.000Z")
-        )
-        future_task = res_future.get("data", {}).get("records", []) if res_future else []
+        # 启动时执行 Dry Run 检查一致性
+        self.logger.info("正在检测云端数据同步状态...")
+        stats = sync_databases(dry_run=True)
+        un_up = stats.get('upload', 0)
+        un_down = stats.get('download', 0)
+        if un_up > 0 or un_down > 0:
+            print(f"\n[!] 发现同步差异: 云端有 {un_down} 条新数据，本地有 {un_up} 条待上传。")
+            ch = input("是否立即进行合并？(Y/N, 默认 Y): ").strip().lower()
+            if ch != 'n':
+                self.logger.info("🚩 正在同步数据库，请稍候...")
+                sync_databases(dry_run=False)
+                self.logger.info("✅ 数据同步完成。")
+            else:
+                self.logger.warning("用户选择跳过同步，可能导致本地运行基于旧数据。")
 
-        print("\n" + "="*35)
-        print(f"👤 用户: {ACTIVE_USER} | 模式选择")
-        print("="*35)
-        print(f"  1. [今日任务] 处理今日待复习 ({len(today_task)} 个)")
-        print(f"  2. [未来计划] 处理未来 7 天待学 ({len(future_task)} 个)")
-        print(f"  3. [智能迭代] 优化薄弱词助记 (基于数据反馈)")
-        print("-" * 35)
-        print("提示: 输入序号开始，或按 [Esc] 退出")
+        while True:
+            # 获取今日任务
+            res_today = self.momo.get_today_items(limit=500)
+            today_task = res_today.get("data", {}).get("today_items", []) if res_today else []
+            
+            # 获取预习计划
+            start_dt = datetime.now()
+            end_dt = start_dt + timedelta(days=7)
+            res_future = self.momo.query_study_records(
+                start_dt.strftime("%Y-%m-%dT00:00:00.000Z"), 
+                end_dt.strftime("%Y-%m-%dT23:59:59.000Z")
+            )
+            future_task = res_future.get("data", {}).get("records", []) if res_future else []
 
-        choice = self._wait_for_choice(["1", "2", "3"])
-        
-        if choice == "1":
-            self._process_word_list(today_task, "今日任务")
-        elif choice == "2":
-            # 允许用户自定义预习天数
-            print("\n" + "-"*35)
-            try:
-                days_input = input("请输入预习天数 (建议 1-14 天, 直接回车默认为 7): ").strip()
-                if not days_input:
-                    days = 7
-                    selected_task = future_task # 复用初始获取的 7 天数据
-                else:
-                    days = int(days_input)
-                    if days <= 0: raise ValueError
-                    self.logger.info(f"正在重新获取未来 {days} 天的任务...")
-                    end_dt = start_dt + timedelta(days=days)
-                    res_new = self.momo.query_study_records(
-                        start_dt.strftime("%Y-%m-%dT00:00:00.000Z"), 
-                        end_dt.strftime("%Y-%m-%dT23:59:59.000Z")
-                    )
-                    selected_task = res_new.get("data", {}).get("records", []) if res_new else []
-                
-                self.logger.info(f"已选取未来 {days} 天任务，共 {len(selected_task)} 个单词")
-                self._process_word_list(selected_task, f"未来 {days} 天计划")
-            except ValueError:
-                print("❌ 输入无效，必须是正整数。取消预习任务。")
-        elif choice == "3":
-            im = IterationManager(self.ai_client, self.momo, self.logger)
-            im.run_iteration(familiarity_threshold=3.0)
+            print("\n" + "="*35)
+            print(f"👤 用户: {ACTIVE_USER} | 模式选择")
+            print("="*35)
+            print(f"  1. [今日任务] 处理今日待复习 ({len(today_task)} 个)")
+            print(f"  2. [未来计划] 处理未来 7 天待学 ({len(future_task)} 个)")
+            print(f"  3. [智能迭代] 优化薄弱词助记 (基于数据反馈)")
+            print(f"  4. [同步&退出] 保存所有数据并安全退出")
+            print("-" * 35)
+
+            choice = self._wait_for_choice(["1", "2", "3", "4"])
+            
+            if choice == "1":
+                self._process_word_list(today_task, "今日任务")
+                self._trigger_post_run_sync()
+            elif choice == "2":
+                # 允许用户自定义预习天数
+                print("\n" + "-"*35)
+                try:
+                    days_input = input("请输入预习天数 (建议 1-14 天, 直接回车默认为 7): ").strip()
+                    if not days_input:
+                        days = 7
+                        selected_task = future_task # 复用初始获取的 7 天数据
+                    else:
+                        days = int(days_input)
+                        if days <= 0: raise ValueError
+                        self.logger.info(f"正在重新获取未来 {days} 天的任务...")
+                        end_dt = start_dt + timedelta(days=days)
+                        res_new = self.momo.query_study_records(
+                            start_dt.strftime("%Y-%m-%dT00:00:00.000Z"), 
+                            end_dt.strftime("%Y-%m-%dT23:59:59.000Z")
+                        )
+                        selected_task = res_new.get("data", {}).get("records", []) if res_new else []
+                    
+                    self.logger.info(f"已选取未来 {days} 天任务，共 {len(selected_task)} 个单词")
+                    self._process_word_list(selected_task, f"未来 {days} 天计划")
+                    self._trigger_post_run_sync()
+                except ValueError:
+                    print("❌ 输入无效，必须是正整数。回到主菜单。")
+            elif choice == "3":
+                im = IterationManager(self.ai_client, self.momo, self.logger)
+                im.run_iteration(familiarity_threshold=3.0)
+                self._trigger_post_run_sync()
+            elif choice == "4":
+                self.logger.info("正在执行最后的数据同步...")
+                sync_databases(dry_run=False)
+                self.logger.info("✅ 已安全保存所有数据至云端。再见！")
+                break
+
+    def _trigger_post_run_sync(self):
+        """主流程结束后触发一次非阻塞或快捷的同步。"""
+        self.logger.info("🔁 正在后台将最新进度推送到云端...", module="main")
+        import threading
+        t = threading.Thread(target=sync_databases, kwargs={'dry_run': False}, daemon=True)
+        t.start()
 
     def _process_word_list(self, word_list, name):
         if not word_list:
@@ -286,15 +311,19 @@ class StudyFlowManager:
                 # 写入 AI 笔记（函数内自管连接，流生命周期极短）
                 save_ai_word_note(vid, payload, metadata=meta)
                 
+                sync_success = True
                 if not DRY_RUN:
                     res = self.momo.list_interpretations(vid)
                     if not (res and res.get("success") and res.get("data", {}).get("interpretations", [])):
                         brief = clean_for_maimemo(payload.get('basic_meanings', ''))
                         self.logger.info(f"[{num}/{total}] ✅ {spell} 同步中...")
-                        self.momo.sync_interpretation(vid, brief, tags=["雅思"])
+                        sync_success = self.momo.sync_interpretation(vid, brief, tags=["雅思"])
                 
-                # 标记处理完成（函数内自管连接）
-                mark_processed(vid, spell)
+                # 只有同步成功（或跳过同步）才标记为已处理
+                if sync_success:
+                    mark_processed(vid, spell)
+                else:
+                    self.logger.error(f"❌ {spell} 同步至墨墨失败，流程将跳过标记以便下次重试")
             else:
                 self.logger.warning(f"{spell} 结果缺失")
 
@@ -358,6 +387,4 @@ if __name__ == "__main__":
             print(f"程序崩溃: {e}")
             print(f"日志系统也出现错误: {log_error}")
     finally:
-        print("\n请按 [Esc] 键关闭窗口...")
-        while True:
-            if msvcrt.kbhit() and ord(msvcrt.getch()) == 27: break
+        print("\n程序已安全退出。")

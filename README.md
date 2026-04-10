@@ -115,37 +115,60 @@ print(f"总日志数: {stats['total_logs']}")
 4.  **API Key**
 向导会自动完成连通性测试并为您创建 Profile。
 
+### 5. 底层模块全量接管 (Comprehensive Logging)
+所有底层核心引擎（包括 `db_manager`, `maimemo_api`, `mimo_client`, `log_archiver` 等）已彻底剥离控制台硬编码的 `print` 输出。这带来了以下核心优势：
+- **终端免打扰**：主菜单运行过程中不再被零碎的 API Error 或同步细节打断，保持清爽。
+- **排错无死角**：JSON 解析失败、双向同步细节和 API 连接超时等所有边缘 Case，全部会被安全收集到了 `logs/<用户名>.log` JSON 中，便于未来的检索与追溯。
+
 ---
 
 ## 🏗️ 目录结构
 
 ```text
-E:\MOMO_Script/
-├── core/                # 核心处理包
-│   ├── config_wizard.py # 交互式向导
-│   ├── db_manager.py    # 跨库查重与持久化
-│   ├── logger.py        # 日志核心
-│   ├── log_config.py    # 日志配置管理
-│   ├── log_archiver.py  # 日志压缩归档
-│   └── maimemo_api.py   # SDK 封装
-├── config/              # 配置文件
-│   └── logging.yaml     # 日志系统配置
-├── data/                # 用户数据区
-│   ├── profiles/        # 各用户独立配置 (.env)
-│   └── history_*.db     # 各用户学习记录
-├── logs/                # 增量日志 (自动轮转压缩)
-├── tests/               # 测试用例
-└── main.py              # 程序总入口
+MOMO_Script/
+├── main.py              # 程序入口
+├── config.py            # 全局配置与路径
+├── core/                # 核心模块
+│   ├── db_manager.py    # 持久化中心（SQLite + Turso 双轨）
+│   ├── maimemo_api.py   # MaiMemo OpenAPI 封装
+│   ├── iteration_manager.py  # 薄弱词智能迭代引擎
+│   ├── gemini_client.py # Google Gemini 客户端
+│   ├── mimo_client.py   # 小米 Mimo 客户端
+│   ├── logger.py        # 企业级日志（JSON落文件+可读控制台）
+│   ├── log_archiver.py  # 日志自动压缩归档
+│   ├── profile_manager.py   # 多用户 Profile 管理
+│   └── config_wizard.py     # 新用户引导向导
+├── data/                # 运行时数据（gitignore）
+│   ├── profiles/        # 用户配置 .env
+│   └── prompts/         # Prompt 历史版本归档
+├── docs/                # 文档体系
+│   ├── architecture/    # 系统架构设计
+│   ├── api/             # 外部 API 参考文档
+│   ├── prompts/         # Prompt 源文件
+│   ├── guides/          # 操作指南
+│   └── dev/             # 开发者规约（Vibe Coding 入口）
+├── logs/                # 用户日志（gitignore）
+├── tests/               # 测试文件
+└── scripts/             # 工具脚本
 ```
 
 ---
 
-## 💡 工程文档
-- [系统架构与设计全解](docs/TECHNICAL_DETAILS.md): 深入了解每个模块的设计思路、模式与架构。
-- [日志系统优化总结](docs/LOGGING_OPTIMIZATION_SUMMARY.md): 日志系统的完整优化历程和使用指南。
-- [Maimemo API 开发手册](docs/momo_api_summary.md): 整理好的 Maimemo OpenAPI 开发指北。
-- [Maimemo OpenAPI 规范](docs/maimemo_openapi.yaml): 官方 OpenAPI (YAML) 完整声明文件。
-- [Xiaomi Mimo API 手册](docs/xiaomi_mimo_api.md): 小米 Mimo (OpenAI 兼容) 接口调用指南。
+## 📚 工程文档
+
+### 架构
+- [系统架构概览](docs/architecture/OVERVIEW.md) — 数据流图、模块详解、核心设计模式
+- [日志系统设计](docs/architecture/LOG_SYSTEM.md) — 日志配置、格式规范、运维指南
+
+### API 参考
+- [MaiMemo OpenAPI 规范](docs/api/maimemo_openapi.yaml) — 官方 OpenAPI YAML
+- [MaiMemo API 开发手册](docs/api/momo_api_summary.md) — 封装调用指北
+- [Xiaomi Mimo API 手册](docs/api/xiaomi_mimo_api.md) — OpenAI 兼容接口说明
+
+### Vibe Coding（AI 开发入口）
+- [**AI_CONTEXT.md**](docs/dev/AI_CONTEXT.md) — ⭐ **每次新对话先读这个**：模块速查、硬性规则、数据流
+- [DECISIONS.md](docs/dev/DECISIONS.md) — 已否定方案记录，防止重蹈覆辙
+- [CONTRIBUTING.md](docs/dev/CONTRIBUTING.md) — 开发规约：日志、数据库、AI 接口扩展
 
 ---
 *Momo Study Agent - 你的私人雅思考霸备考助手。*

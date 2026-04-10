@@ -7,6 +7,11 @@
 import requests
 import time
 from typing import List, Dict, Optional, Union
+try:
+    from core.logger import get_logger
+except ImportError:
+    import logging
+    def get_logger(): return logging.getLogger(__name__)
 
 class MaiMemoAPI:
     def __init__(self, access_token: str):
@@ -26,7 +31,7 @@ class MaiMemoAPI:
         if 200 <= response.status_code < 300:
             return response.json()
         else:
-            print(f"[API Error] {method} {endpoint} -> {response.status_code}: {response.text}")
+            get_logger().error(f"[API Error] {method} {endpoint} -> {response.status_code}: {response.text}", module="maimemo_api", function="_request")
             return None
 
     # ==========================
@@ -86,12 +91,12 @@ class MaiMemoAPI:
             if intps:
                 # 已存在，执行更新 (取第一个)
                 intp_id = intps[0].get("id")
-                print(f"    [*] 发现已有释义 ({intp_id})，正在执行覆盖更新...")
+                get_logger().info(f"[*] 发现已有释义 ({intp_id})，正在执行覆盖更新...", module="maimemo_api")
                 update_res = self.update_interpretation(intp_id, interpretation, tags)
                 return update_res and update_res.get("success")
         
         # 2. 不存在，执行创建
-        print(f"    [*] 未发现已有释义，正在执行创建...")
+        get_logger().info("[*] 未发现已有释义，正在执行创建...", module="maimemo_api")
         create_res = self.create_interpretation(voc_id, interpretation, tags)
         return create_res and create_res.get("success")
 
@@ -172,7 +177,35 @@ class MaiMemoAPI:
         if ids: params["ids"] = ",".join(ids)
         return self._request("GET", "/notepads", params=params)
 
-    #... 云词本的 create, update, delete 也类似，这里可以按需补全
+    def get_notepad(self, notepad_id: str) -> Optional[Dict]:
+        """获取单个云词本详情"""
+        return self._request("GET", f"/notepads/{notepad_id}")
+
+    def create_notepad(self, title: str, content: str, brief: str = "", tags: List[str] = None, status: str = "UNPUBLISHED") -> Optional[Dict]:
+        """创建云词本"""
+        payload = {
+            "notepad": {
+                "title": title,
+                "content": content,
+                "brief": brief,
+                "tags": tags or [],
+                "status": status
+            }
+        }
+        return self._request("POST", "/notepads", json=payload)
+
+    def update_notepad(self, notepad_id: str, title: str, content: str, brief: str = "", tags: List[str] = None, status: str = "UNPUBLISHED") -> Optional[Dict]:
+        """修改云词本"""
+        payload = {
+            "notepad": {
+                "title": title,
+                "content": content,
+                "brief": brief,
+                "tags": tags or [],
+                "status": status
+            }
+        }
+        return self._request("POST", f"/notepads/{notepad_id}", json=payload)
 
     # ==========================
     # 6. 学习数据(公测) (Study)
