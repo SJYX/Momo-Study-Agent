@@ -1,0 +1,45 @@
+# 日志系统配置文件示例
+# 这个文件展示了如何配置日志系统的各种选项
+
+# 基础配置
+log_dir: "logs"
+max_file_size: 10485760  # 10MB
+backup_count: 5
+encoding: "utf-8"
+
+# 日志级别
+console_level: "INFO"
+file_level: "DEBUG"
+
+# 功能开关
+use_structured: true
+use_async: false
+enable_stats: false
+
+# 异步日志配置
+async_queue_size: 1000
+
+# 性能监控配置
+performance_threshold: 1.0  # 秒
+
+# 统计配置
+stats_reset_interval: 3600  # 秒
+
+# 压缩配置
+enable_compression: false
+compression_format: "gzip"
+compress_after_days: 7
+
+# 环境配置
+environment: "development"
+
+# 高级配置
+buffer_size: 8192
+flush_interval: 1.0
+max_workers: 2
+
+# 自定义配置（可以添加任意配置项）
+custom_settings:
+  app_name: "MoMo Script"
+  version: "1.0.0"
+  log_retention_days: 30

@@ -29,6 +29,8 @@
 - **高阶知识图谱**：精准识别 IELTS 考试逻辑、熟词僻义、搭配陷阱与提分杠杆率。
 
 ### 5. 🛠️ 工业级运行保障
+- **企业级日志系统**：结构化JSON日志、异步处理、性能监控、自动压缩。
+- **多环境配置**：支持开发/测试/生产环境，灵活的配置管理。
 - **详细日志**：在 `logs/` 目录下按用户名生成带时间戳的增量日志文件。
 - **优雅退出**：支持 Windows 环境下 **Esc 键** 快捷退出。
 - **自动纠错**：集成 `json-repair` 应对 AI 格式波动，确保数据 100% 入库。
@@ -48,7 +50,64 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### 3. 用户初始化
+### 3. 日志系统配置 (Logging System)
+Momo Study Agent 配备了企业级的日志系统，支持多环境配置、性能监控和自动压缩。
+
+#### 基本使用
+```bash
+# 默认开发环境
+python main.py
+
+# 生产环境 (异步日志 + 压缩)
+python main.py --env production
+
+# Staging环境 (带统计功能)
+python main.py --env staging --enable-stats
+
+# 自定义配置
+python main.py --env development --config config/custom_logging.yaml --async-log
+```
+
+#### 环境变量配置
+```bash
+# 设置环境
+export MOMO_ENV=production
+export MOMO_CONFIG_FILE=config/prod_logging.yaml
+
+# 运行程序
+python main.py
+```
+
+#### 环境配置说明
+- **development**: 调试级别日志，同步写入，启用统计
+- **staging**: 信息级别日志，异步写入，启用统计和压缩
+- **production**: 警告级别日志，异步写入，启用压缩，禁用统计
+
+#### 高级功能
+```python
+# 在代码中使用日志系统
+from core.logger import setup_logger
+
+# 创建带性能监控的日志器
+logger = setup_logger("username", environment="production", enable_stats=True)
+
+# 性能监控装饰器
+@logger.log_performance
+def my_function():
+    # 你的代码
+    pass
+
+# 查看统计信息
+stats = logger.get_statistics()
+print(f"总日志数: {stats['total_logs']}")
+```
+
+#### 日志文件位置
+- **开发环境**: `logs/username.log`
+- **生产环境**: `logs/username.log` (自动压缩为 `.gz` 文件)
+- **统计报告**: 实时显示在控制台
+
+### 4. 用户初始化
 如果是首次运行，请根据屏幕提示输入：
 1.  **用户名** (如 Asher)
 2.  **墨墨 Access Token**
@@ -66,17 +125,24 @@ E:\MOMO_Script/
 │   ├── config_wizard.py # 交互式向导
 │   ├── db_manager.py    # 跨库查重与持久化
 │   ├── logger.py        # 日志核心
+│   ├── log_config.py    # 日志配置管理
+│   ├── log_archiver.py  # 日志压缩归档
 │   └── maimemo_api.py   # SDK 封装
+├── config/              # 配置文件
+│   └── logging.yaml     # 日志系统配置
 ├── data/                # 用户数据区
 │   ├── profiles/        # 各用户独立配置 (.env)
 │   └── history_*.db     # 各用户学习记录
-├── logs/                # 增量日志
+├── logs/                # 增量日志 (自动轮转压缩)
+├── tests/               # 测试用例
 └── main.py              # 程序总入口
 ```
 
 ---
 
 ## 💡 工程文档
+- [系统架构与设计全解](docs/TECHNICAL_DETAILS.md): 深入了解每个模块的设计思路、模式与架构。
+- [日志系统优化总结](docs/LOGGING_OPTIMIZATION_SUMMARY.md): 日志系统的完整优化历程和使用指南。
 - [Maimemo API 开发手册](docs/momo_api_summary.md): 整理好的 Maimemo OpenAPI 开发指北。
 - [Maimemo OpenAPI 规范](docs/maimemo_openapi.yaml): 官方 OpenAPI (YAML) 完整声明文件。
 - [Xiaomi Mimo API 手册](docs/xiaomi_mimo_api.md): 小米 Mimo (OpenAI 兼容) 接口调用指南。

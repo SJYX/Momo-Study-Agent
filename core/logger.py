@@ -1,41 +1,406 @@
 import logging
 import os
 import sys
+import json
+import time
+import functools
+import queue
+import threading
+from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
+from datetime import datetime
+from typing import Dict, Any, Optional
+from collections import defaultdict, Counter
+import re
 
-def setup_logger(username: str, log_dir: str = "logs"):
+try:
+    from .log_config import get_full_config
+except ImportError:
+    # 如果配置模块不存在，使用默认配置
+    def get_full_config(environment=None, config_file=None):
+        return {
+            "log_dir": "logs",
+            "max_file_size": 10 * 1024 * 1024,
+            "backup_count": 5,
+            "encoding": "utf-8",
+            "console_level": "INFO",
+            "file_level": "DEBUG",
+            "use_structured": True,
+            "use_async": False,
+            "enable_stats": False,
+            "async_queue_size": 1000,
+            "performance_threshold": 1.0,
+            "stats_reset_interval": 3600,
+            "enable_compression": False,
+            "compression_format": "gzip",
+            "compress_after_days": 7,
+            "environment": "development",
+            "buffer_size": 8192,
+            "flush_interval": 1.0,
+            "max_workers": 2,
+        }
+
+class StructuredFormatter(logging.Formatter):
+    """结构化日志格式器，输出JSON格式"""
+
+    def format(self, record):
+        log_entry = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+            "user": getattr(record, 'user', 'unknown'),
+            "session_id": getattr(record, 'session_id', None),
+            "extra": getattr(record, 'extra', {})
+        }
+
+        # 清理None值
+        log_entry = {k: v for k, v in log_entry.items() if v is not None}
+
+        return json.dumps(log_entry, ensure_ascii=False)
+
+class AsyncLogger:
+    """异步日志器，避免阻塞主线程"""
+    
+    def __init__(self, base_logger, config=None):
+        if config is None:
+            config = {"async_queue_size": 1000}
+            
+        self.queue = queue.Queue(maxsize=config.get("async_queue_size", 1000))
+        self.handler = QueueHandler(self.queue)
+        base_logger.addHandler(self.handler)
+        
+        # 只传递非QueueHandler的handler给listener
+        handlers = [h for h in base_logger.handlers if not isinstance(h, QueueHandler)]
+        self.listener = QueueListener(self.queue, *handlers)
+        self.listener.start()
+        
+        # 守护线程，确保程序退出时能清理
+        self._shutdown_event = threading.Event()
+        
+    def shutdown(self):
+        """优雅关闭异步日志器"""
+        self._shutdown_event.set()
+        self.listener.stop()
+
+class LogStatistics:
+    """日志统计收集器"""
+    
+    def __init__(self):
+        self.stats = {
+            'total_logs': 0,
+            'level_counts': defaultdict(int),
+            'module_counts': defaultdict(int),
+            'function_counts': defaultdict(int),
+            'user_counts': defaultdict(int),
+            'error_patterns': Counter(),
+            'performance_stats': {
+                'total_functions': 0,
+                'avg_duration': 0.0,
+                'slowest_function': None,
+                'fastest_function': None
+            }
+        }
+        self._lock = threading.Lock()
+        
+    def record_log(self, record):
+        """记录一条日志"""
+        with self._lock:
+            self.stats['total_logs'] += 1
+            self.stats['level_counts'][record.levelname] += 1
+            
+            if hasattr(record, 'module') and record.module:
+                self.stats['module_counts'][record.module] += 1
+                
+            if hasattr(record, 'funcName') and record.funcName:
+                self.stats['function_counts'][record.funcName] += 1
+                
+            if hasattr(record, 'user'):
+                self.stats['user_counts'][record.user] += 1
+                
+            # 分析错误模式
+            if record.levelno >= logging.ERROR:
+                self._analyze_error_pattern(record.getMessage())
+                
+            # 分析性能数据
+            if hasattr(record, 'extra') and record.extra:
+                self._analyze_performance(record.extra)
+    
+    def _analyze_error_pattern(self, message):
+        """分析错误模式"""
+        # 支持中英文的错误模式识别
+        patterns = [
+            r'Connection.*failed|连接.*失败',
+            r'Timeout.*occurred|超时', 
+            r'Authentication.*failed|认证.*失败',
+            r'Database.*error|数据库.*错误',
+            r'API.*error|API.*错误',
+            r'Network.*error|网络.*错误'
+        ]
+        
+        for pattern in patterns:
+            if re.search(pattern, message, re.IGNORECASE):
+                self.stats['error_patterns'][pattern] += 1
+                break
+    
+    def _analyze_performance(self, extra):
+        """分析性能数据"""
+        if 'duration' in extra:
+            duration = extra['duration']
+            perf = self.stats['performance_stats']
+            
+            perf['total_functions'] += 1
+            # 计算运行平均值
+            perf['avg_duration'] = (
+                (perf['avg_duration'] * (perf['total_functions'] - 1)) + duration
+            ) / perf['total_functions']
+            
+            # 更新最慢/最快函数
+            func_name = extra.get('function', 'unknown')
+            if perf['slowest_function'] is None or duration > perf['slowest_function'][1]:
+                perf['slowest_function'] = (func_name, duration)
+            if perf['fastest_function'] is None or duration < perf['fastest_function'][1]:
+                perf['fastest_function'] = (func_name, duration)
+    
+    def get_summary(self):
+        """获取统计摘要"""
+        with self._lock:
+            return {
+                'total_logs': self.stats['total_logs'],
+                'level_distribution': dict(self.stats['level_counts']),
+                'top_modules': dict(sorted(self.stats['module_counts'].items(), 
+                                         key=lambda x: x[1], reverse=True)[:5]),
+                'top_functions': dict(sorted(self.stats['function_counts'].items(), 
+                                           key=lambda x: x[1], reverse=True)[:5]),
+                'user_activity': dict(self.stats['user_counts']),
+                'error_patterns': dict(self.stats['error_patterns']),
+                'performance': self.stats['performance_stats'].copy()
+            }
+    
+    def reset(self):
+        """重置统计数据"""
+        with self._lock:
+            self.__init__()
+
+class StatisticsHandler(logging.Handler):
+    """收集日志统计的处理器"""
+    
+    def __init__(self, statistics):
+        super().__init__()
+        self.statistics = statistics
+        
+    def emit(self, record):
+        """处理日志记录"""
+        self.statistics.record_log(record)
+
+class ContextLogger:
+    """支持上下文信息的日志器"""
+
+    def __init__(self, base_logger, async_logger=None, statistics=None):
+        self.base_logger = base_logger
+        self.context = {}
+        self.async_logger = async_logger
+        self.statistics = statistics
+
+    def set_context(self, **kwargs):
+        """设置上下文信息"""
+        self.context.update(kwargs)
+
+    def clear_context(self):
+        """清除上下文信息"""
+        self.context.clear()
+
+    def get_statistics(self):
+        """获取日志统计信息"""
+        if self.statistics:
+            return self.statistics.get_summary()
+        return None
+
+    def reset_statistics(self):
+        """重置统计数据"""
+        if self.statistics:
+            self.statistics.reset()
+
+    def _add_context(self, record):
+        """为日志记录添加上下文"""
+        for key, value in self.context.items():
+            setattr(record, key, value)
+        return record
+
+    def log(self, level, message, **kwargs):
+        """通用日志方法"""
+        record = logging.LogRecord(
+            name=self.base_logger.name,
+            level=level,
+            pathname="",
+            lineno=0,
+            msg=message,
+            args=(),
+            exc_info=None
+        )
+        
+        # 设置模块和函数信息
+        if 'module' in kwargs:
+            record.module = kwargs['module']
+        if 'function' in kwargs:
+            record.funcName = kwargs['function']
+            
+        record = self._add_context(record)
+        
+        # 将额外参数存储在extra中
+        if kwargs:
+            if not hasattr(record, 'extra'):
+                record.extra = {}
+            record.extra.update(kwargs)
+        
+        # 如果启用了异步日志，通过队列发送，否则直接处理
+        if self.async_logger:
+            # 异步模式：只通过QueueHandler发送，避免重复
+            self.async_logger.handler.handle(record)
+        else:
+            # 同步模式：直接处理
+            self.base_logger.handle(record)
+
+    def debug(self, message, **kwargs):
+        self.log(logging.DEBUG, message, **kwargs)
+
+    def info(self, message, **kwargs):
+        self.log(logging.INFO, message, **kwargs)
+
+    def warning(self, message, **kwargs):
+        self.log(logging.WARNING, message, **kwargs)
+
+    def error(self, message, **kwargs):
+        self.log(logging.ERROR, message, **kwargs)
+
+    def critical(self, message, **kwargs):
+        self.log(logging.CRITICAL, message, **kwargs)
+
+def log_performance(logger_or_func):
+    """性能监控装饰器"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = func(*args, **kwargs)
+                duration = time.time() - start_time
+
+                # Handle both logger instance and logger factory function
+                if callable(logger_or_func):
+                    logger = logger_or_func()
+                else:
+                    logger = logger_or_func
+
+                logger.info(
+                    f"Function {func.__name__} completed",
+                    duration=duration,
+                    success=True,
+                    module=func.__module__,
+                    function=func.__name__
+                )
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+
+                # Handle both logger instance and logger factory function
+                if callable(logger_or_func):
+                    logger = logger_or_func()
+                else:
+                    logger = logger_or_func
+
+                logger.error(
+                    f"Function {func.__name__} failed: {str(e)}",
+                    duration=duration,
+                    success=False,
+                    error=str(e),
+                    module=func.__module__,
+                    function=func.__name__
+                )
+                raise
+        return wrapper
+    return decorator
+
+def setup_logger(username: str, log_dir: str = None, use_structured: bool = None, use_async: bool = None, enable_stats: bool = None, config_file: str = None, environment: str = None):
     """
     配置全局日志系统。
     - username: 当前运行的用户，用于命名日志文件。
-    - log_dir: 日志存储目录。
+    - log_dir: 日志存储目录（可选，会被配置覆盖）。
+    - use_structured: 是否使用结构化日志（可选，会被配置覆盖）。
+    - use_async: 是否使用异步日志（可选，会被配置覆盖）。
+    - enable_stats: 是否启用日志统计（可选，会被配置覆盖）。
+    - config_file: 配置文件路径。
+    - environment: 环境名称（development, staging, production）。
     """
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    # 获取配置
+    config = get_full_config(environment, config_file)
 
-    log_file = os.path.join(log_dir, f"{username}.log")
-    
+    # 参数覆盖配置
+    if log_dir is not None:
+        config["log_dir"] = log_dir
+    if use_structured is not None:
+        config["use_structured"] = use_structured
+    if use_async is not None:
+        config["use_async"] = use_async
+    if enable_stats is not None:
+        config["enable_stats"] = enable_stats
+
+    log_file = os.path.join(config["log_dir"], f"{username}.log")
+
     # 获取根日志记录器
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)  # 设置为DEBUG以支持所有级别
 
     # 避免重复添加 Handler (防止多次初始化)
     if logger.handlers:
-        return logger
+        return ContextLogger(logger)
 
-    # 定义统一的格式：时间 - 级别 - 内容
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    # 选择格式器
+    if config["use_structured"]:
+        formatter = StructuredFormatter()
+    else:
+        formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
 
-    # Handler 1: 文件输出 (增量追加)
-    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    # Handler 1: 轮转文件输出
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=config["max_file_size"],
+        backupCount=config["backup_count"],
+        encoding=config["encoding"]
+    )
     file_handler.setFormatter(formatter)
+    file_handler.setLevel(getattr(logging, config["file_level"]))
     logger.addHandler(file_handler)
 
     # Handler 2: 控制台输出
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
+    console_handler.setLevel(getattr(logging, config["console_level"]))
     logger.addHandler(console_handler)
 
-    return logger
+    # 设置异步日志
+    async_logger = None
+    if config["use_async"]:
+        async_logger = AsyncLogger(logger, config)
+
+    # 设置统计收集
+    statistics = None
+    if config["enable_stats"]:
+        statistics = LogStatistics()
+        stats_handler = StatisticsHandler(statistics)
+        stats_handler.setLevel(logging.DEBUG)
+        logger.addHandler(stats_handler)
+
+    # 返回上下文日志器
+    context_logger = ContextLogger(logger, async_logger, statistics)
+    context_logger.set_context(user=username)
+
+    return context_logger
 
 # 便捷获取 logger 的函数
 def get_logger():
-    return logging.getLogger()
+    return ContextLogger(logging.getLogger())

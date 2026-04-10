@@ -3,6 +3,7 @@ import json
 import time
 import requests
 import json_repair
+from typing import Tuple, Dict, Any, List
 from config import MIMO_MODEL, MIMO_API_KEY, MIMO_API_BASE, MAX_RETRIES, RETRY_WAIT_S, PROMPT_FILE
 
 
@@ -25,93 +26,82 @@ class MimoClient:
         with open(self.prompt_file, "r", encoding="utf-8") as f:
             return f.read().strip()
 
-    def generate_mnemonics(self, words_batch: list) -> list:
-        """生成助记法，返回 JSON 数组格式"""
-        system_instruction = self._load_instruction()
+    def generate_with_instruction(self, prompt: str, instruction: str = None) -> Tuple[str, dict]:
+        """与 OpenAI 兼容的通用请求逻辑"""
+        system_instr = instruction or self._load_instruction()
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": self.model_name,
+                    "messages": [
+                        {"role": "developer", "content": system_instr},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_completion_tokens": 64000,
+                    "response_format": {"type": "json_object"},
+                    "thinking": {"type": "disabled"}
+                }
+                response = requests.post(f"{self.api_base}/chat/completions", headers=headers, json=payload, timeout=60)
+                if response.status_code != 200:
+                    raise Exception(f"API Error {response.status_code}: {response.text}")
 
+                result = response.json()
+                text = result["choices"][0]["message"]["content"].strip()
+                usage = result.get("usage", {})
+                
+                metadata = {
+                    "request_id": result.get("id"),
+                    "finish_reason": result["choices"][0].get("finish_reason"),
+                    "prompt_tokens": usage.get('prompt_tokens', 0),
+                    "completion_tokens": usage.get('completion_tokens', 0),
+                    "total_tokens": usage.get('total_tokens', 0)
+                }
+                return text, metadata
+            except Exception as e:
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_WAIT_S[attempt-1])
+                    continue
+                return "", {}
+
+    def generate_mnemonics(self, words_batch: list) -> Tuple[list, dict]:
+        """生成助记法，返回 JSON 数组格式"""
         prompt = f"""
         请处理以下 {len(words_batch)} 个英语单词，严格遵循系统设定中的全维度分析，并将结果放入一个名为 "results" 的 JSON 数组中返回。
         必须返回标准的 JSON 对象结构：{{"results": [...]}}。
         【极其重要】：请确保输出是语法完全合法的 JSON！如果中文字段内需要使用标点符号侧重点，请一律使用单引号或中文引号。绝对不要在字符串值中出现未转义的英文双引号。
         待处理单词列表: {", ".join(words_batch)}
         """
+        text, metadata = self.generate_with_instruction(prompt)
+        if not text:
+            return [], {}
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                # 构建 OpenAI 兼容的请求格式
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-
-                payload = {
-                    "model": self.model_name,
-                    "messages": [
-                        {"role": "developer", "content": system_instruction},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.7,
-                    "max_completion_tokens": 64000, # 官方给定的单次暴发 64K 极大限制
-                    "response_format": {"type": "json_object"},
-                    "thinking": {"type": "disabled"}
-                }
-
-                response = requests.post(
-                    f"{self.api_base}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60
-                )
-
-                if response.status_code != 200:
-                    raise Exception(f"API Error {response.status_code}: {response.text}")
-
-                result = response.json()
-                text = result["choices"][0]["message"]["content"].strip()
-
-                # 无论 JSON 是否合法，第一时间截获并记录账单
-                usage = result.get("usage", {})
-                self.last_usage = usage
-                
-                print(f"  🪙 [Token 消耗账单] Prompt: {usage.get('prompt_tokens', 0)} | " 
-                      f"Completion: {usage.get('completion_tokens', 0)} | "
-                      f"Total: {usage.get('total_tokens', 0)}")
-
-                # 利用强大的启发式库解析破损的 JSON 对象并提取 results
-                data = json_repair.loads(text)
-                
-                results = []
-                if isinstance(data, dict):
-                    results = data.get("results", [])
-                elif isinstance(data, list):
-                    # 防御：如果大模型彻底放飞自我，去掉了外层 results 的壳
-                    results = data
-                
-                # 将这批次的整体花销均摊到本批次的每一个单词上供入库
-                n = len(results) if len(results) > 0 else 1
-                for item in results:
-                    item["prompt_tokens"] = usage.get('prompt_tokens', 0) // n
-                    item["completion_tokens"] = usage.get('completion_tokens', 0) // n
-                    item["total_tokens"] = usage.get('total_tokens', 0) // n
-                
-                return results
-
-            except Exception as e:
-                err_msg = str(e)
-                # 打印出来自底层的原始翻车文本方便查漏
-                if "Expecting" in err_msg or "JSON Decode" in err_msg:
-                    print(f"\n  [JSON 原生结构损坏] RAW Mimo Output:\n  {text}\n")
-                # 判断是否为瞬时错误
-                is_transient = any(code in err_msg for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "timeout", "Timeout"))
-
-                if is_transient and attempt < MAX_RETRIES:
-                    wait = RETRY_WAIT_S[attempt - 1]
-                    print(f"  [RETRY {attempt}/{MAX_RETRIES}] {err_msg[:80]} (waiting {wait}s)")
-                    time.sleep(wait)
-                    continue
-
-                print(f"  [Mimo Error]: {err_msg[:120]}")
-                return []
+        try:
+            # 利用强大的启发式库解析破损的 JSON 对象并提取 results
+            data = json_repair.loads(text)
+            results = []
+            if isinstance(data, dict):
+                results = data.get("results", [])
+            elif isinstance(data, list):
+                results = data
+            
+            # 备份单词自身的原始内容（在注入 token 统计前先捕获，保持纯粹的 AI 输出）
+            n = len(results) if len(results) > 0 else 1
+            for item in results:
+                item['raw_full_text'] = json.dumps(item, ensure_ascii=False)
+                # 均摔 tokens （展示用，不影响存档内容）
+                item["prompt_tokens"] = metadata.get('prompt_tokens', 0) // n
+                item["completion_tokens"] = metadata.get('completion_tokens', 0) // n
+                item["total_tokens"] = metadata.get('total_tokens', 0) // n
+            
+            return results, metadata
+        except Exception as e:
+            print(f"  [Mimo Parse Error]: {str(e)[:120]}")
+            return [], {}
 
 
 def _extract_json_array(text: str) -> str:

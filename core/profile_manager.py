@@ -3,9 +3,7 @@ import sys
 import glob
 from typing import Optional, List
 
-# 强制 UTF-8 编码避免 Windows 终端乱码
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
+# 移除可能会导致 stdin 阻塞的强制编码重配置
 
 class ProfileManager:
     def __init__(self, profiles_dir):
@@ -32,29 +30,12 @@ class ProfileManager:
             create_idx = len(profiles) + 1
             print(f"  {create_idx}. [创建新用户]")
             print("-" * 30)
-            print(f"提示: 请输入序号 (1-{create_idx})，或按 [Esc] 键直接退出程序")
-
-            # 监听键盘输入
-            input_str = ""
-            while True:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getch()
-                    if ord(ch) == 27:  # Esc
-                        print("\n[Exit] 用户取消选择，程序退出。")
-                        sys.exit(0)
-                    elif ch == b'\r':  # Enter
-                        print() # 换行
-                        break
-                    elif ch.isdigit():
-                        digit = ch.decode('utf-8')
-                        input_str += digit
-                        print(digit, end='', flush=True)
-                    elif ord(ch) == 8: # Backspace
-                        if input_str:
-                            input_str = input_str[:-1]
-                            print('\b \b', end='', flush=True)
-
-            choice = input_str.strip()
+            # 回退到标准 input 以确保跨终端兼容性 (避免 msvcrt 与 input() 冲突)
+            try:
+                choice = input(f"请输入序号 (1-{create_idx})，或按 Ctrl+C 退出: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\n[Exit] 用户取消选择，程序退出。")
+                sys.exit(0)
             if not choice:
                 continue
 

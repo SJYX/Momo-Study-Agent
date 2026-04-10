@@ -1,0 +1,3 @@
+{"timestamp": "2026-04-10 13:41:52,013", "level": "INFO", "message": "测试 development 环境日志器", "module": "", "line": 0, "user": "test_development", "extra": {"environment": "development", "test_type": "environment"}}
+{"timestamp": "2026-04-10 13:41:52,014", "level": "INFO", "message": "测试 staging 环境日志器", "module": "", "line": 0, "user": "unknown", "extra": {"environment": "staging", "test_type": "environment"}}
+{"timestamp": "2026-04-10 13:41:52,015", "level": "INFO", "message": "测试 production 环境日志器", "module": "", "line": 0, "user": "unknown", "extra": {"environment": "production", "test_type": "environment"}}

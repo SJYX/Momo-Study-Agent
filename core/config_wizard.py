@@ -10,9 +10,7 @@ sys.path.insert(0, ROOT_DIR)
 
 from core.maimemo_api import MaiMemoAPI
 
-# 强制 UTF-8 编码避免 Windows 终端乱码
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
+# 移除可能会导致 stdin 阻塞的强制编码重配置
 
 class ConfigWizard:
     def __init__(self, profiles_dir: str):
@@ -77,14 +75,18 @@ class ConfigWizard:
         print("🌟  Momo Study Agent - 新用户初始化向导")
         print("*"*30)
 
-        username = input("1. 请输入用户名 (唯一标识，如 Ashi): ").strip()
+        print("1. 请输入用户名 (唯一标识，如 Ashi): ", end='', flush=True)
+        username = sys.stdin.readline().strip()
         while not username:
-            username = input("❌ 用户名不能为空，请重新输入: ").strip()
+            print("❌ 用户名不能为空，请重新输入: ", end='', flush=True)
+            username = sys.stdin.readline().strip()
 
         # 墨墨 Token 引导
-        momo_token = input("2. 请输入墨墨 Access Token (获取地址: https://open.maimemo.com): ").strip()
-        while not self.validate_momo(momo_token):
-            momo_token = input("❌ 验证失败，请重新检查并输入正确的墨墨 Token: ").strip()
+        print("2. 请输入墨墨 Access Token (获取地址: https://open.maimemo.com/token): ", end='', flush=True)
+        momo_token = sys.stdin.readline().strip()
+        while not momo_token or not self.validate_momo(momo_token):
+            print("❌ 验证失败，请重新检查并输入正确的墨墨 Token: ", end='', flush=True)
+            momo_token = sys.stdin.readline().strip()
         print("  ✅ 墨墨验证成功！")
 
         # AI 提供商选择

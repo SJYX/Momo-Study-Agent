@@ -199,3 +199,712 @@
 2026-04-09 22:26:51 - INFO - ⏳ 缓冲 0.5 秒...
 2026-04-09 22:26:51 - WARNING -  检测到 Esc 键，正在紧急中断任务并保存进度...
 2026-04-09 22:26:51 - INFO - 用户中止运行
+2026-04-10 10:01:17 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 10:01:18 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 10:01:18 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 10:01:18 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 10:01:18 - INFO - 🚩 正在同步数据...
+2026-04-10 10:01:36 - INFO - 🎉 没有发现需要迭代的薄弱单词。
+2026-04-10 10:06:40 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 10:06:40 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 10:06:40 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 10:06:40 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 10:06:40 - INFO - 🚩 正在同步数据...
+2026-04-10 10:06:48 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 10:06:48 - INFO - 📈 [Track] 已更新 120 个单词的进度流水
+2026-04-10 10:06:48 - INFO - 💎 [AI Phase] 需解析 120 个单词
+2026-04-10 10:06:48 - INFO - 批次 1 (1/120)
+2026-04-10 10:07:20 - INFO - 批次 2 (2/120)
+2026-04-10 10:07:42 - INFO - 用户手动退出
+2026-04-10 11:01:14 - ERROR - 意外崩溃: 505, message='Invalid response status', url='wss://momo-study-ashershi.aws-us-east-1.turso.io'
+Traceback (most recent call last):
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 235, in <module>
+    manager = StudyFlowManager()
+              ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 28, in __init__
+    init_db()
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 274, in init_db
+    _create_tables(cur)
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 152, in _create_tables
+    cur.execute("""
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 33, in execute
+    self.result = self.client.execute(sql, params)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 46, in execute
+    return self._executor.submit_coro(self._client.execute(stmt, args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 181, in submit_coro
+    return fut.result()
+           ^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 141, in _run_on_loop
+    item.future.set_result(await item.coroutine)
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\hrana\client.py", line 75, in execute
+    return _result_set_from_proto(await proto_result_fut)
+                                  ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\hrana\conn.py", line 81, in _do_connect
+    return await session.ws_connect(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\aiohttp\client.py", line 1093, in _ws_connect
+    raise WSServerHandshakeError(
+aiohttp.client_exceptions.WSServerHandshakeError: 505, message='Invalid response status', url='wss://momo-study-ashershi.aws-us-east-1.turso.io'
+2026-04-10 11:03:46 - ERROR - 意外崩溃: 'result'
+Traceback (most recent call last):
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 235, in <module>
+    manager = StudyFlowManager()
+              ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 28, in __init__
+    init_db()
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 274, in init_db
+    _create_tables(cur)
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 236, in _create_tables
+    cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 33, in execute
+    self.result = self.client.execute(sql, params)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 46, in execute
+    return self._executor.submit_coro(self._client.execute(stmt, args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 181, in submit_coro
+    return fut.result()
+           ^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 141, in _run_on_loop
+    item.future.set_result(await item.coroutine)
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\http.py", line 64, in execute
+    proto_res = cast(_ExecuteResp, response)["result"]
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+KeyError: 'result'
+2026-04-10 11:06:23 - ERROR - 意外崩溃: 'result'
+Traceback (most recent call last):
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 235, in <module>
+    manager = StudyFlowManager()
+              ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 28, in __init__
+    init_db()
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 274, in init_db
+    _create_tables(cur)
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 236, in _create_tables
+    cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 33, in execute
+    self.result = self.client.execute(sql, params)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 46, in execute
+    return self._executor.submit_coro(self._client.execute(stmt, args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 181, in submit_coro
+    return fut.result()
+           ^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\sync.py", line 141, in _run_on_loop
+    item.future.set_result(await item.coroutine)
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Programs\Python3124\Lib\site-packages\libsql_client\http.py", line 64, in execute
+    proto_res = cast(_ExecuteResp, response)["result"]
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+KeyError: 'result'
+2026-04-10 11:08:20 - ERROR - 意外崩溃: Hrana: `stream error: `Error { message: "SQLite error: duplicate column name: prompt_tokens", code: "SQLITE_UNKNOWN" }``
+Traceback (most recent call last):
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 235, in <module>
+    manager = StudyFlowManager()
+              ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 28, in __init__
+    init_db()
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 248, in init_db
+    _create_tables(cur)
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 210, in _create_tables
+    cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+ValueError: Hrana: `stream error: `Error { message: "SQLite error: duplicate column name: prompt_tokens", code: "SQLITE_UNKNOWN" }``
+2026-04-10 11:09:23 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 11:09:23 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 11:09:23 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 11:09:23 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 11:09:23 - INFO - 🚩 正在同步数据...
+2026-04-10 11:09:32 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 11:11:50 - INFO - 用户手动退出
+2026-04-10 11:18:44 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 11:18:44 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 11:18:44 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 11:18:44 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 11:18:44 - INFO - 🚩 正在同步数据...
+2026-04-10 11:18:51 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 11:23:25 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 11:23:25 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 11:23:25 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 11:23:25 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 11:23:25 - INFO - 🚩 正在同步数据...
+2026-04-10 11:23:40 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 11:25:40 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 11:25:40 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 11:25:40 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 11:25:40 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 11:25:40 - INFO - 🚩 正在同步数据...
+2026-04-10 11:25:47 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 11:27:56 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 11:27:56 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 11:27:56 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 11:27:56 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 11:27:56 - INFO - 🚩 正在同步数据...
+2026-04-10 11:28:04 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 11:29:34 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 11:29:34 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 11:29:34 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 11:29:34 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 11:29:34 - INFO - 🚩 正在同步数据...
+2026-04-10 11:29:41 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 11:31:35 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 11:31:35 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 11:31:35 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 11:31:35 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 11:31:35 - INFO - 🚩 正在同步数据...
+2026-04-10 11:31:42 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 11:33:06 - INFO - 📈 [Track] 已更新 120 个单词的进度流水
+2026-04-10 11:33:07 - INFO - 💎 [AI Phase] 需解析 120 个单词
+2026-04-10 11:33:07 - INFO - 批次 1 (1/120)
+2026-04-10 11:33:20 - ERROR - 意外崩溃: save_ai_word_note() got an unexpected keyword argument 'metadata'
+Traceback (most recent call last):
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 239, in <module>
+    manager.run()
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 106, in run
+    self._process_word_list(today_task, "今日任务")
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 200, in _process_word_list
+    self._process_results(batch, results, i, len(pending_words), bid)
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 222, in _process_results
+    save_ai_word_note(vid, payload, metadata=meta)
+TypeError: save_ai_word_note() got an unexpected keyword argument 'metadata'
+2026-04-10 12:06:41 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 12:06:41 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 12:06:41 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 12:06:41 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 12:06:41 - INFO - 🚩 正在同步数据...
+2026-04-10 12:06:50 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 12:06:56 - INFO - 💎 [AI Phase] 需解析 120 个单词
+2026-04-10 12:06:56 - INFO - 批次 1 (1/120)
+2026-04-10 12:07:15 - INFO - 批次 2 (2/120)
+2026-04-10 12:07:34 - INFO - [2/120] ✅ present 同步中...
+2026-04-10 12:07:40 - INFO - 批次 3 (3/120)
+2026-04-10 12:07:59 - INFO - [3/120] ✅ surgery 同步中...
+2026-04-10 12:08:06 - INFO - 批次 4 (4/120)
+2026-04-10 12:08:26 - INFO - [4/120] ✅ beat 同步中...
+2026-04-10 12:08:34 - INFO - 批次 5 (5/120)
+2026-04-10 12:08:51 - INFO - [5/120] ✅ presume 同步中...
+2026-04-10 12:08:57 - INFO - 批次 6 (6/120)
+2026-04-10 12:09:13 - INFO - [6/120] ✅ zone 同步中...
+2026-04-10 12:09:20 - INFO - 批次 7 (7/120)
+2026-04-10 12:09:37 - INFO - [7/120] ✅ assemble 同步中...
+2026-04-10 12:09:45 - INFO - 批次 8 (8/120)
+2026-04-10 12:10:03 - INFO - [8/120] ✅ simulate 同步中...
+2026-04-10 12:10:13 - INFO - 批次 9 (9/120)
+2026-04-10 12:10:29 - INFO - [9/120] ✅ dismay 同步中...
+2026-04-10 12:10:38 - INFO - 批次 10 (10/120)
+2026-04-10 12:10:56 - INFO - [10/120] ✅ sequence 同步中...
+2026-04-10 12:11:03 - INFO - 批次 11 (11/120)
+2026-04-10 12:11:21 - INFO - 批次 12 (12/120)
+2026-04-10 12:11:38 - INFO - [12/120] ✅ disguise 同步中...
+2026-04-10 12:11:45 - INFO - 批次 13 (13/120)
+2026-04-10 12:12:16 - INFO - [13/120] ✅ menace 同步中...
+2026-04-10 12:12:24 - INFO - 批次 14 (14/120)
+2026-04-10 12:12:41 - INFO - [14/120] ✅ constitution 同步中...
+2026-04-10 12:12:49 - INFO - 批次 15 (15/120)
+2026-04-10 12:13:05 - INFO - [15/120] ✅ dread 同步中...
+2026-04-10 12:13:13 - INFO - 批次 16 (16/120)
+2026-04-10 12:13:31 - INFO - [16/120] ✅ bleak 同步中...
+2026-04-10 12:13:41 - INFO - 批次 17 (17/120)
+2026-04-10 12:14:03 - INFO - 批次 18 (18/120)
+2026-04-10 12:14:19 - INFO - [18/120] ✅ spill 同步中...
+2026-04-10 12:14:26 - INFO - 批次 19 (19/120)
+2026-04-10 12:14:52 - INFO - 批次 20 (20/120)
+2026-04-10 12:15:17 - INFO - [20/120] ✅ exclude 同步中...
+2026-04-10 12:15:25 - INFO - 批次 21 (21/120)
+2026-04-10 12:15:42 - INFO - [21/120] ✅ gorgeous 同步中...
+2026-04-10 12:15:53 - INFO - 批次 22 (22/120)
+2026-04-10 12:16:14 - INFO - [22/120] ✅ blunder 同步中...
+2026-04-10 12:16:22 - INFO - 批次 23 (23/120)
+2026-04-10 12:16:40 - INFO - [23/120] ✅ toil 同步中...
+2026-04-10 12:16:51 - INFO - 批次 24 (24/120)
+2026-04-10 12:17:14 - INFO - 批次 25 (25/120)
+2026-04-10 12:17:32 - INFO - [25/120] ✅ paddle 同步中...
+2026-04-10 12:17:38 - INFO - 批次 26 (26/120)
+2026-04-10 12:17:57 - INFO - [26/120] ✅ deprive 同步中...
+2026-04-10 12:18:07 - INFO - 批次 27 (27/120)
+2026-04-10 12:18:27 - INFO - [27/120] ✅ peripheral 同步中...
+2026-04-10 12:18:38 - INFO - 批次 28 (28/120)
+2026-04-10 12:18:56 - INFO - [28/120] ✅ ignorance 同步中...
+2026-04-10 12:19:02 - INFO - 批次 29 (29/120)
+2026-04-10 12:19:19 - INFO - [29/120] ✅ lateral 同步中...
+2026-04-10 12:19:28 - INFO - 批次 30 (30/120)
+2026-04-10 12:19:45 - INFO - [30/120] ✅ compromise 同步中...
+2026-04-10 12:19:52 - INFO - 批次 31 (31/120)
+2026-04-10 12:20:08 - INFO - [31/120] ✅ deputy 同步中...
+2026-04-10 12:20:15 - INFO - 批次 32 (32/120)
+2026-04-10 12:20:36 - INFO - 批次 33 (33/120)
+2026-04-10 12:21:20 - ERROR - 意外崩溃: Hrana: `http error: `connection error: An existing connection was forcibly closed by the remote host. (os error 10054)``
+Traceback (most recent call last):
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 239, in <module>
+    manager.run()
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 106, in run
+    self._process_word_list(today_task, "今日任务")
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 200, in _process_word_list
+    self._process_results(batch, results, i, len(pending_words), bid)
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\main.py", line 222, in _process_results
+    save_ai_word_note(vid, payload, metadata=meta)
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 123, in save_ai_word_note
+    _do(_get_conn(path))
+  File "C:\Users\112560\OneDrive - Grundfos\Desktop\Work\Misc\MoMo_Script\core\db_manager.py", line 122, in _do
+    def _do(conn): cur = conn.cursor(); cur.execute(sql, args); conn.commit(); conn.close()
+                                        ^^^^^^^^^^^^^^^^^^^^^^
+ValueError: Hrana: `http error: `connection error: An existing connection was forcibly closed by the remote host. (os error 10054)``
+2026-04-10 12:53:04 - INFO - 📝 [Prompt] Main 版本: a7c934c9
+2026-04-10 12:53:04 - INFO - 📝 [Prompt] Score 版本: 6effdb69
+2026-04-10 12:53:04 - INFO - 📝 [Prompt] Refine 版本: 0098deeb
+2026-04-10 12:53:04 - INFO - 🤖 AI 模型: mimo (小米 Mimo)
+2026-04-10 12:53:04 - INFO - 🚩 正在同步数据...
+2026-04-10 12:53:09 - INFO - 正在启动 今日任务 处理流程...
+2026-04-10 12:53:12 - INFO - 💎 [AI Phase] 需解析 88 个单词
+2026-04-10 12:53:12 - INFO - 批次 1 (1/88)
+2026-04-10 12:53:24 - INFO - [1/88] ✅ glimpse 同步中...
+2026-04-10 12:53:27 - INFO - 批次 2 (2/88)
+2026-04-10 12:53:45 - INFO - [2/88] ✅ probable 同步中...
+2026-04-10 12:53:49 - INFO - 批次 3 (3/88)
+2026-04-10 12:54:02 - INFO - [3/88] ✅ monument 同步中...
+2026-04-10 12:54:04 - INFO - 批次 4 (4/88)
+2026-04-10 12:54:17 - INFO - [4/88] ✅ pathetic 同步中...
+2026-04-10 12:54:20 - INFO - 批次 5 (5/88)
+2026-04-10 12:54:34 - INFO - 批次 6 (6/88)
+2026-04-10 12:54:44 - INFO - [6/88] ✅ ashore 同步中...
+2026-04-10 12:54:47 - INFO - 批次 7 (7/88)
+2026-04-10 12:54:59 - INFO - [7/88] ✅ intermediate 同步中...
+2026-04-10 12:55:02 - INFO - 批次 8 (8/88)
+2026-04-10 12:55:14 - INFO - [8/88] ✅ legislation 同步中...
+2026-04-10 12:55:17 - INFO - 批次 9 (9/88)
+2026-04-10 12:55:31 - INFO - 批次 10 (10/88)
+2026-04-10 12:55:45 - INFO - 批次 11 (11/88)
+2026-04-10 12:55:55 - INFO - [11/88] ✅ fright 同步中...
+2026-04-10 12:55:58 - INFO - 批次 12 (12/88)
+2026-04-10 12:56:09 - INFO - [12/88] ✅ receptionist 同步中...
+2026-04-10 12:56:12 - INFO - 批次 13 (13/88)
+2026-04-10 12:56:36 - INFO - 批次 14 (14/88)
+2026-04-10 12:56:48 - INFO - [14/88] ✅ magnificent 同步中...
+2026-04-10 12:56:51 - INFO - 批次 15 (15/88)
+2026-04-10 12:57:03 - INFO - 批次 16 (16/88)
+2026-04-10 12:57:16 - INFO - [16/88] ✅ sketch 同步中...
+2026-04-10 12:57:19 - INFO - 批次 17 (17/88)
+2026-04-10 12:57:30 - INFO - [17/88] ✅ accommodate 同步中...
+2026-04-10 12:57:33 - INFO - 批次 18 (18/88)
+2026-04-10 12:57:45 - INFO - [18/88] ✅ firm 同步中...
+2026-04-10 12:57:48 - INFO - 批次 19 (19/88)
+2026-04-10 12:58:02 - INFO - 批次 20 (20/88)
+2026-04-10 12:58:13 - INFO - 批次 21 (21/88)
+2026-04-10 12:58:27 - INFO - 批次 22 (22/88)
+2026-04-10 12:58:39 - INFO - 批次 23 (23/88)
+2026-04-10 12:58:51 - INFO - [23/88] ✅ up-to-date 同步中...
+2026-04-10 12:58:53 - INFO - 批次 24 (24/88)
+2026-04-10 12:59:08 - INFO - 批次 25 (25/88)
+2026-04-10 12:59:25 - INFO - 批次 26 (26/88)
+2026-04-10 12:59:41 - INFO - [26/88] ✅ archeology 同步中...
+2026-04-10 12:59:43 - INFO - 批次 27 (27/88)
+2026-04-10 12:59:58 - INFO - [27/88] ✅ mount 同步中...
+2026-04-10 13:00:01 - INFO - 批次 28 (28/88)
+2026-04-10 13:00:12 - INFO - [28/88] ✅ terrific 同步中...
+2026-04-10 13:00:15 - INFO - 批次 29 (29/88)
+2026-04-10 13:00:32 - INFO - 批次 30 (30/88)
+2026-04-10 13:00:47 - INFO - 批次 31 (31/88)
+2026-04-10 13:00:59 - INFO - [31/88] ✅ quota 同步中...
+2026-04-10 13:01:02 - INFO - 批次 32 (32/88)
+2026-04-10 13:01:16 - INFO - [32/88] ✅ pavement 同步中...
+2026-04-10 13:01:19 - INFO - 批次 33 (33/88)
+2026-04-10 13:01:34 - INFO - [33/88] ✅ decimal 同步中...
+2026-04-10 13:01:37 - INFO - 批次 34 (34/88)
+2026-04-10 13:01:49 - INFO - [34/88] ✅ merchandise 同步中...
+2026-04-10 13:01:52 - INFO - 批次 35 (35/88)
+2026-04-10 13:02:07 - INFO - 批次 36 (36/88)
+2026-04-10 13:02:22 - INFO - [36/88] ✅ waggon 同步中...
+2026-04-10 13:02:24 - INFO - 批次 37 (37/88)
+2026-04-10 13:02:38 - INFO - [37/88] ✅ prestige 同步中...
+2026-04-10 13:02:41 - INFO - 批次 38 (38/88)
+2026-04-10 13:02:55 - INFO - 批次 39 (39/88)
+2026-04-10 13:03:09 - INFO - [39/88] ✅ highway 同步中...
+2026-04-10 13:03:12 - INFO - 批次 40 (40/88)
+2026-04-10 13:03:25 - INFO - [40/88] ✅ oar 同步中...
+2026-04-10 13:03:27 - INFO - 批次 41 (41/88)
+2026-04-10 13:03:41 - INFO - 批次 42 (42/88)
+2026-04-10 13:03:54 - INFO - 批次 43 (43/88)
+2026-04-10 13:04:10 - INFO - [43/88] ✅ textbook 同步中...
+2026-04-10 13:04:13 - INFO - 批次 44 (44/88)
+2026-04-10 13:04:27 - INFO - 批次 45 (45/88)
+2026-04-10 13:04:40 - INFO - 批次 46 (46/88)
+2026-04-10 13:04:55 - INFO - 批次 47 (47/88)
+2026-04-10 13:05:07 - INFO - 批次 48 (48/88)
+2026-04-10 13:05:21 - INFO - 批次 49 (49/88)
+2026-04-10 13:05:36 - INFO - 批次 50 (50/88)
+2026-04-10 13:05:49 - INFO - [50/88] ✅ surroundings 同步中...
+2026-04-10 13:05:52 - INFO - 批次 51 (51/88)
+2026-04-10 13:06:05 - INFO - 批次 52 (52/88)
+2026-04-10 13:06:19 - INFO - 批次 53 (53/88)
+2026-04-10 13:06:30 - INFO - [53/88] ✅ copyright 同步中...
+2026-04-10 13:06:32 - INFO - 批次 54 (54/88)
+2026-04-10 13:06:46 - INFO - 批次 55 (55/88)
+2026-04-10 13:07:01 - INFO - 批次 56 (56/88)
+2026-04-10 13:07:15 - INFO - 批次 57 (57/88)
+2026-04-10 13:07:33 - INFO - [57/88] ✅ levy 同步中...
+2026-04-10 13:07:36 - INFO - 批次 58 (58/88)
+2026-04-10 13:07:48 - INFO - 用户手动退出
+{"timestamp": "2026-04-10 13:45:57,389", "level": "ERROR", "message": "意外崩溃: cannot access local variable 'uuid' where it is not associated with a value", "module": "", "line": 0, "user": "unknown", "extra": {"exc_info": true}}
+{"timestamp": "2026-04-10 13:48:12,809", "level": "INFO", "message": "启动墨墨背单词AI助记系统", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "extra": {"environment": "production", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:48:19,427", "level": "INFO", "message": "数据库同步已在后台启动...", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:48:19,437", "level": "INFO", "message": "📝 [Prompt] Main 版本: a7c934c9", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:48:19,439", "level": "INFO", "message": "📝 [Prompt] Score 版本: 6effdb69", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:48:19,441", "level": "INFO", "message": "📝 [Prompt] Refine 版本: 0098deeb", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:48:19,441", "level": "INFO", "message": "🤖 AI 模型: mimo (小米 Mimo)", "module": "", "line": 0, "user": "Asher", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "extra": {}}
+{"timestamp": "2026-04-10 13:48:19,441", "level": "INFO", "message": "🚩 正在同步数据...", "module": "", "line": 0, "user": "Asher", "session_id": "de5c6ff2-11dc-43f9-8a5b-0e8213f8f6e7", "extra": {}}
+{"timestamp": "2026-04-10 13:48:19,946", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:48:21,154", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/get_today_items HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:48:21,660", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:48:22,146", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/query_study_records HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:49:19,513", "level": "INFO", "message": "启动墨墨背单词AI助记系统", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "e6cbc043-d30f-4efc-b4a5-d0651d9d5f0a", "extra": {"environment": "production", "session_id": "e6cbc043-d30f-4efc-b4a5-d0651d9d5f0a", "module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:49:23,619", "level": "INFO", "message": "数据库同步已在后台启动...", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "e6cbc043-d30f-4efc-b4a5-d0651d9d5f0a", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:49:23,629", "level": "INFO", "message": "Function sync_databases completed", "module": "core.db_manager", "function": "sync_databases", "line": 0, "user": "unknown", "extra": {"duration": 0.01005411148071289, "success": true, "module": "core.db_manager", "function": "sync_databases"}}
+{"timestamp": "2026-04-10 13:49:23,630", "level": "INFO", "message": "📝 [Prompt] Main 版本: a7c934c9", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "e6cbc043-d30f-4efc-b4a5-d0651d9d5f0a", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:49:23,631", "level": "INFO", "message": "📝 [Prompt] Score 版本: 6effdb69", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "e6cbc043-d30f-4efc-b4a5-d0651d9d5f0a", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:49:23,633", "level": "INFO", "message": "📝 [Prompt] Refine 版本: 0098deeb", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "e6cbc043-d30f-4efc-b4a5-d0651d9d5f0a", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:49:23,635", "level": "INFO", "message": "🤖 AI 模型: mimo (小米 Mimo)", "module": "", "line": 0, "user": "Asher", "session_id": "e6cbc043-d30f-4efc-b4a5-d0651d9d5f0a", "extra": {}}
+{"timestamp": "2026-04-10 13:50:29,476", "level": "INFO", "message": "启动墨墨背单词AI助记系统", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {"environment": "production", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:50:34,105", "level": "INFO", "message": "数据库同步已在后台启动...", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:50:34,119", "level": "INFO", "message": "Function sync_databases completed", "module": "core.db_manager", "function": "sync_databases", "line": 0, "user": "unknown", "extra": {"duration": 0.014046430587768555, "success": true, "module": "core.db_manager", "function": "sync_databases"}}
+{"timestamp": "2026-04-10 13:50:34,120", "level": "INFO", "message": "📝 [Prompt] Main 版本: a7c934c9", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:50:34,124", "level": "INFO", "message": "📝 [Prompt] Score 版本: 6effdb69", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:50:34,125", "level": "INFO", "message": "📝 [Prompt] Refine 版本: 0098deeb", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 13:50:34,126", "level": "INFO", "message": "🤖 AI 模型: mimo (小米 Mimo)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:50:34,126", "level": "INFO", "message": "🚩 正在同步数据...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:50:34,630", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:34,947", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/get_today_items HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:35,450", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:36,026", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/query_study_records HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:38,970", "level": "INFO", "message": "正在启动 今日任务 处理流程...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:50:43,030", "level": "INFO", "message": "Function get_processed_ids_in_batch completed", "module": "core.db_manager", "function": "get_processed_ids_in_batch", "line": 0, "user": "unknown", "extra": {"duration": 1.4130947589874268, "success": true, "module": "core.db_manager", "function": "get_processed_ids_in_batch"}}
+{"timestamp": "2026-04-10 13:50:43,095", "level": "INFO", "message": "💎 [AI Phase] 需解析 31 个单词", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:50:43,096", "level": "INFO", "message": "批次 1 (1/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:50:43,098", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:50,892", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:55,490", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.5003371238708496, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:50:55,993", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:56,108", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlL687J6h3mgK512x9JnCrlM0KDYS-CtjuoRwaTLJIhaD HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:56,109", "level": "INFO", "message": "[1/31] ✅ remainder 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:50:56,612", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:56,709", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlL687J6h3mgK512x9JnCrlM0KDYS-CtjuoRwaTLJIhaD HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:57,212", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:57,400", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:50:58,692", "level": "INFO", "message": "批次 2 (2/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:50:58,694", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:05,888", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:10,214", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.3774936199188232, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:51:10,719", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:10,807", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ZlQJRTsVy6U4H1ARRB-SSL8D580VOxXzHZI2OaqGcVUeCuXwpUfm2t-fr27XV77B HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:12,569", "level": "INFO", "message": "批次 3 (3/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:51:12,573", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:21,614", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:27,200", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 3.0418739318847656, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:51:27,704", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:27,873", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-6P_uJnIZ2ocUAsdcUdIUkJPNE5CrMgJn0cHHPmATRuz_FUrueXZCSw-v2N7R4Bvp HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:27,874", "level": "INFO", "message": "[3/31] ✅ missing 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:51:28,377", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:28,482", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-6P_uJnIZ2ocUAsdcUdIUkJPNE5CrMgJn0cHHPmATRuz_FUrueXZCSw-v2N7R4Bvp HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:28,984", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:29,186", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:31,587", "level": "INFO", "message": "批次 4 (4/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:51:31,590", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:39,292", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:46,989", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 5.133612155914307, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:51:47,492", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:47,591", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yy83gSLZY3k0reLq-6yrjIY64RQyoBPCWQLJJppU2mKNq1VD01-wZhiAj7lW_Jah HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:47,592", "level": "INFO", "message": "[4/31] ✅ currency 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:51:48,094", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:48,182", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yy83gSLZY3k0reLq-6yrjIY64RQyoBPCWQLJJppU2mKNq1VD01-wZhiAj7lW_Jah HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:48,686", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:48,818", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:51,333", "level": "INFO", "message": "批次 5 (5/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:51:51,335", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:51:57,724", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:01,197", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.5706911087036133, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:52:01,699", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:01,800", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-Ae5YdCRF8Flu9Zzp8wW3etYWM5D7hOEcYodWx7EUp0Ok1T5qZIMgk3mQWLtj1YxH HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:01,802", "level": "INFO", "message": "[5/31] ✅ postage 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:02,304", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:02,404", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-Ae5YdCRF8Flu9Zzp8wW3etYWM5D7hOEcYodWx7EUp0Ok1T5qZIMgk3mQWLtj1YxH HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:02,907", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:03,063", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:04,362", "level": "INFO", "message": "批次 6 (6/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:04,365", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:12,793", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:17,413", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.7370526790618896, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:52:17,916", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:18,015", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-k8DfKk3CYMESS21uHE_tTAaErt7jdhT5ekf1x8qIiyEZPyWcOPKwBSIgRqsrcc5U HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:18,016", "level": "INFO", "message": "[6/31] ✅ cathedral 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:18,519", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:18,623", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-k8DfKk3CYMESS21uHE_tTAaErt7jdhT5ekf1x8qIiyEZPyWcOPKwBSIgRqsrcc5U HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:19,126", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:19,296", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:20,676", "level": "INFO", "message": "批次 7 (7/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:20,678", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:27,326", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:31,202", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.9774582386016846, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:52:31,704", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:31,817", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPKNF_2u8ouYB8bI-hoCAKaNYbVmUDf_rPvsk94hizuIJ HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:31,819", "level": "INFO", "message": "[7/31] ✅ promising 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:32,321", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:32,417", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPKNF_2u8ouYB8bI-hoCAKaNYbVmUDf_rPvsk94hizuIJ HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:32,919", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:33,032", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:34,270", "level": "INFO", "message": "批次 8 (8/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:34,272", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:41,491", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:51,986", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.211568832397461, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:52:52,489", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:52,576", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-cmUrd_5ZuylnhjvIX805G6zbS4dZi-x-VDXOAIun2e223csfIKvMqfawMyWy8Sxt HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:52,576", "level": "INFO", "message": "[8/31] ✅ bible 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:53,080", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:53,177", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-cmUrd_5ZuylnhjvIX805G6zbS4dZi-x-VDXOAIun2e223csfIKvMqfawMyWy8Sxt HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:53,679", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:53,869", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:52:55,582", "level": "INFO", "message": "批次 9 (9/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:52:55,584", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:05,519", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:10,135", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.567530632019043, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:53:10,636", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:10,731", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPL2ZYf4bFoqJkYJP0SLUPklpG1KkhaQ1j6aIi7h_RvGE HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:10,735", "level": "INFO", "message": "[9/31] ✅ comic 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:53:11,237", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:11,515", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPL2ZYf4bFoqJkYJP0SLUPklpG1KkhaQ1j6aIi7h_RvGE HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:12,018", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:12,150", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:13,849", "level": "INFO", "message": "批次 10 (10/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:53:13,851", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:22,010", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:25,372", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.3522660732269287, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:53:25,874", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:25,967", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlLEXKQgiCIBseKOiBMvbcimhOyptsj9gRTnKnYU48Mr8 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:25,967", "level": "INFO", "message": "[10/31] ✅ huddle 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:53:26,480", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:26,582", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlLEXKQgiCIBseKOiBMvbcimhOyptsj9gRTnKnYU48Mr8 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:27,086", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:27,273", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:28,429", "level": "INFO", "message": "批次 11 (11/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:53:28,431", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:36,475", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:41,377", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.8133702278137207, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:53:41,883", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:41,984", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-k8DfKk3CYMESS21uHE_tTAifa8zIcbd3XrJ5amguDRLUN-CWaSjRTB_15_IZpJbU HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:41,985", "level": "INFO", "message": "[11/31] ✅ grin 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:53:42,489", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:42,585", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-k8DfKk3CYMESS21uHE_tTAifa8zIcbd3XrJ5amguDRLUN-CWaSjRTB_15_IZpJbU HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:43,087", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:43,260", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:44,483", "level": "INFO", "message": "批次 12 (12/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:53:44,486", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:53,283", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:56,932", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.6153624057769775, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:53:57,450", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:57,556", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ZlQJRTsVy6U4H1ARRB-SSG6aRfmDINg2X_Q8kES7y30G7TjoLkztPrETixZ3Q_up HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:57,556", "level": "INFO", "message": "[12/31] ✅ trifle 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:53:58,062", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:58,160", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ZlQJRTsVy6U4H1ARRB-SSG6aRfmDINg2X_Q8kES7y30G7TjoLkztPrETixZ3Q_up HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:58,665", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:53:58,842", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:00,096", "level": "INFO", "message": "批次 13 (13/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:54:00,098", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:07,777", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:11,143", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.7262508869171143, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:54:11,651", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:11,734", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlBCrTd0NqXkusHkH6L8N3q9TbHqxu2U8dL8clGNr-ODs HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:11,734", "level": "INFO", "message": "[13/31] ✅ giggle 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:54:12,246", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:12,331", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlBCrTd0NqXkusHkH6L8N3q9TbHqxu2U8dL8clGNr-ODs HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:12,834", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:13,015", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:14,783", "level": "INFO", "message": "批次 14 (14/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:54:14,788", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:21,840", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:25,822", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.331873893737793, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:54:26,331", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:26,422", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-6P_uJnIZ2ocUAsdcUdIUkMKFGxswnNRpR77VFe6pcIPX8uZ6Wb_k4iBzv7O0hguK HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:26,422", "level": "INFO", "message": "[14/31] ✅ idiot 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:54:26,925", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:27,036", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-6P_uJnIZ2ocUAsdcUdIUkMKFGxswnNRpR77VFe6pcIPX8uZ6Wb_k4iBzv7O0hguK HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:27,539", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:27,723", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:28,917", "level": "INFO", "message": "批次 15 (15/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:54:28,917", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:37,352", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:42,700", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.746168375015259, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:54:43,206", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:43,304", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-Ae5YdCRF8Flu9Zzp8wW3egw2VNfAmSwOm3n_bl0Zag4M-WqfRwhauovl11MH2BcP HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:43,306", "level": "INFO", "message": "[15/31] ✅ monetary 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:54:43,809", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:43,890", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-Ae5YdCRF8Flu9Zzp8wW3egw2VNfAmSwOm3n_bl0Zag4M-WqfRwhauovl11MH2BcP HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:44,400", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:44,573", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:45,873", "level": "INFO", "message": "批次 16 (16/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:54:45,876", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:55,459", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:54:59,909", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.275726079940796, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:55:00,411", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:00,509", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPLc1ZFesnuapDO7ZyXM0v_DwHBEAuP0yIPw0jgH7FrJN HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:00,511", "level": "INFO", "message": "[16/31] ✅ conspiracy 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:01,011", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:01,193", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPLc1ZFesnuapDO7ZyXM0v_DwHBEAuP0yIPw0jgH7FrJN HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:01,697", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:01,879", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:04,921", "level": "INFO", "message": "批次 17 (17/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:04,923", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:12,072", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:15,511", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.3671469688415527, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:55:16,012", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:16,101", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-k8DfKk3CYMESS21uHE_tTNxFWZBIxoroby5-ZAVmkDajyR54U56ldO5RsiXOa-T0 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:16,101", "level": "INFO", "message": "[17/31] ✅ allegiance 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:16,611", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:16,705", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-k8DfKk3CYMESS21uHE_tTNxFWZBIxoroby5-ZAVmkDajyR54U56ldO5RsiXOa-T0 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:17,209", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:17,343", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:18,545", "level": "INFO", "message": "批次 18 (18/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:18,545", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:26,568", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:30,952", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.672452688217163, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:55:31,453", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:31,547", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-H0E9ot014dnNoFpMOJCs9GjQIXbhGtQlcS4FxQFgJWB9BzjSnZF9SFj03jUTHvLo HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:31,549", "level": "INFO", "message": "[18/31] ✅ saving 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:32,050", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:32,138", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-H0E9ot014dnNoFpMOJCs9GjQIXbhGtQlcS4FxQFgJWB9BzjSnZF9SFj03jUTHvLo HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:32,644", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:32,814", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:34,058", "level": "INFO", "message": "批次 19 (19/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:34,060", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:41,334", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:45,043", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.3564050197601318, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:55:45,549", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:45,647", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPKAXoqleJnPP5ypBoawusCWx-6BWEcCYGJplwm16Gc02 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:45,649", "level": "INFO", "message": "[19/31] ✅ petty 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:46,151", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:46,249", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPKAXoqleJnPP5ypBoawusCWx-6BWEcCYGJplwm16Gc02 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:46,751", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:46,927", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:48,129", "level": "INFO", "message": "批次 20 (20/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:48,129", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:55,115", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:58,655", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.4860353469848633, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 13:55:59,157", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:59,319", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPIuhCCEadv5esw3b6UQj3mY-7-Vg_iEVCw_-ErexJyG3 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:59,319", "level": "INFO", "message": "[20/31] ✅ laughter 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:55:59,823", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:55:59,939", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPIuhCCEadv5esw3b6UQj3mY-7-Vg_iEVCw_-ErexJyG3 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:56:00,442", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:56:00,571", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 13:56:01,792", "level": "INFO", "message": "批次 21 (21/31)", "module": "", "line": 0, "user": "Asher", "session_id": "50499a5d-e5bf-4185-96ef-226ed675e297", "extra": {}}
+{"timestamp": "2026-04-10 13:56:01,792", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:00:42,052", "level": "INFO", "message": "启动墨墨背单词AI助记系统", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {"environment": "development", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:00:51,658", "level": "INFO", "message": "数据库同步已在后台启动...", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:00:51,669", "level": "INFO", "message": "📝 [Prompt] Main 版本: a7c934c9", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:00:51,677", "level": "INFO", "message": "Function sync_databases completed", "module": "core.db_manager", "function": "sync_databases", "line": 0, "user": "unknown", "extra": {"duration": 0.020486116409301758, "success": true, "module": "core.db_manager", "function": "sync_databases"}}
+{"timestamp": "2026-04-10 16:00:51,696", "level": "INFO", "message": "📝 [Prompt] Score 版本: 6effdb69", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:00:51,718", "level": "INFO", "message": "📝 [Prompt] Refine 版本: 0098deeb", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:00:51,719", "level": "INFO", "message": "🤖 AI 模型: mimo (小米 Mimo)", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:00:51,719", "level": "INFO", "message": "🚩 正在同步数据...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:00:52,223", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:00:54,473", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/get_today_items HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:00:54,979", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:00:56,607", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/query_study_records HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:00,036", "level": "INFO", "message": "正在启动 今日任务 处理流程...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:01:08,761", "level": "INFO", "message": "Function get_processed_ids_in_batch completed", "module": "core.db_manager", "function": "get_processed_ids_in_batch", "line": 0, "user": "unknown", "extra": {"duration": 2.6352789402008057, "success": true, "module": "core.db_manager", "function": "get_processed_ids_in_batch"}}
+{"timestamp": "2026-04-10 16:01:08,811", "level": "INFO", "message": "💎 [AI Phase] 需解析 11 个单词", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:01:08,814", "level": "INFO", "message": "批次 1 (1/11)", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:01:08,817", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:20,826", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:26,527", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.8751537799835205, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 16:01:27,031", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:29,274", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPJzgV-speZQdm5V0xgJZYXPKsTShpELcUiLuqYIjLHj7 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:29,276", "level": "INFO", "message": "[1/11] ✅ comedy 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:01:29,777", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:32,050", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPJzgV-speZQdm5V0xgJZYXPKsTShpELcUiLuqYIjLHj7 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:32,551", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:34,363", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:35,876", "level": "INFO", "message": "批次 2 (2/11)", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:01:35,879", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:44,352", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:50,292", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.845402717590332, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 16:01:50,795", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:52,034", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlHfeVxbxqk-q4hI98iSdcJ7fVDngPcWeBGmUXpq-50k6 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:52,034", "level": "INFO", "message": "[2/11] ✅ pilgrim 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:01:52,537", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:53,777", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ccaIlQ_jB8ybztKa31AQlHfeVxbxqk-q4hI98iSdcJ7fVDngPcWeBGmUXpq-50k6 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:54,280", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:55,625", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:01:57,150", "level": "INFO", "message": "批次 3 (3/11)", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:01:57,152", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:08,694", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:12,841", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.8650572299957275, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 16:02:13,344", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:15,597", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPEhFyHa3EIUTcmd2nEYrcQilwp8H3TJwyQCWsHwqtAen HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:15,598", "level": "INFO", "message": "[3/11] ✅ spiritual 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:02:16,101", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:17,362", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPEhFyHa3EIUTcmd2nEYrcQilwp8H3TJwyQCWsHwqtAen HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:17,867", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:19,197", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:20,668", "level": "INFO", "message": "批次 4 (4/11)", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:02:20,672", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:37,634", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:42,643", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.8468725681304932, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 16:02:43,145", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:44,376", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ZlQJRTsVy6U4H1ARRB-SSDepCUkSUQMGGH9kHc6yArGFnY2bSYBswXxR4kJojh_d HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:44,376", "level": "INFO", "message": "[4/11] ✅ shilling 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:02:44,883", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:46,609", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-ZlQJRTsVy6U4H1ARRB-SSDepCUkSUQMGGH9kHc6yArGFnY2bSYBswXxR4kJojh_d HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:47,113", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:48,467", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:02:49,909", "level": "INFO", "message": "批次 5 (5/11)", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:02:49,911", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:03,986", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:08,149", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 1.90277099609375, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 16:03:08,652", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:09,894", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPMrzmck6VSdOE2fDrMyAVy10913_xKvqGp-7N6ibFtc- HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:09,894", "level": "INFO", "message": "[5/11] ✅ traitor 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:03:10,397", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:11,688", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yn5ie3gtTeqFYk-QslQzPMrzmck6VSdOE2fDrMyAVy10913_xKvqGp-7N6ibFtc- HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:12,192", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:13,454", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:15,034", "level": "INFO", "message": "批次 6 (6/11)", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:03:15,035", "level": "DEBUG", "message": "Starting new HTTPS connection (1): api.xiaomimimo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:24,347", "level": "DEBUG", "message": "https://api.xiaomimimo.com:443 \"POST /v1/chat/completions HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:29,735", "level": "INFO", "message": "Function save_ai_word_note completed", "module": "core.db_manager", "function": "save_ai_word_note", "line": 0, "user": "unknown", "extra": {"duration": 2.1227712631225586, "success": true, "module": "core.db_manager", "function": "save_ai_word_note"}}
+{"timestamp": "2026-04-10 16:03:30,237", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:33,738", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yy83gSLZY3k0reLq-6yrjCscExQK79J7P0HpFaEuRj3cxE2ZX_Ce5eDQLDAduLW6 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:33,738", "level": "INFO", "message": "[6/11] ✅ warmth 同步中...", "module": "", "line": 0, "user": "Asher", "session_id": "97b8f504-7166-4706-863f-260d78cf9164", "extra": {}}
+{"timestamp": "2026-04-10 16:03:34,240", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:36,564", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"GET /open/api/v1/interpretations?voc_id=voc-yy83gSLZY3k0reLq-6yrjCscExQK79J7P0HpFaEuRj3cxE2ZX_Ce5eDQLDAduLW6 HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:37,068", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:39,775", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/interpretations HTTP/1.1\" 201 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:03:40,085", "level": "ERROR", "message": "意外崩溃: Hrana: `api error: `status=404 Not Found, body={\"error\":\"stream not found: 8fce4160:019d766a-e399-79a3-8546-77c5ef8c6eb9\"}``", "module": "", "line": 0, "user": "unknown", "extra": {"exc_info": true}}
+{"timestamp": "2026-04-10 16:09:09,012", "level": "INFO", "message": "启动墨墨背单词AI助记系统", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {"environment": "development", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:09:15,902", "level": "INFO", "message": "数据库同步已在后台启动...", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:09:15,911", "level": "INFO", "message": "📝 [Prompt] Main 版本: a7c934c9", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:09:15,918", "level": "INFO", "message": "📝 [Prompt] Score 版本: 6effdb69", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:09:15,924", "level": "INFO", "message": "📝 [Prompt] Refine 版本: 0098deeb", "module": "main", "function": "__init__", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {"module": "main", "function": "__init__"}}
+{"timestamp": "2026-04-10 16:09:15,926", "level": "INFO", "message": "🤖 AI 模型: mimo (小米 Mimo)", "module": "", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {}}
+{"timestamp": "2026-04-10 16:09:15,926", "level": "INFO", "message": "🚩 正在同步数据...", "module": "", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {}}
+{"timestamp": "2026-04-10 16:09:42,495", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:09:49,374", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/get_today_items HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:09:57,504", "level": "DEBUG", "message": "Starting new HTTPS connection (1): open.maimemo.com:443", "module": "connectionpool", "function": "_new_conn", "line": 1049, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:10:07,146", "level": "DEBUG", "message": "https://open.maimemo.com:443 \"POST /open/api/v1/study/query_study_records HTTP/1.1\" 200 None", "module": "connectionpool", "function": "_make_request", "line": 544, "user": "unknown", "extra": {}}
+{"timestamp": "2026-04-10 16:10:31,656", "level": "INFO", "message": "正在启动 今日任务 处理流程...", "module": "", "line": 0, "user": "Asher", "session_id": "446cc8dc-6fd2-42a1-980c-705f0e59e2f2", "extra": {}}
