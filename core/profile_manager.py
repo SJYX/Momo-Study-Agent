@@ -42,7 +42,11 @@ class ProfileManager:
             if choice.isdigit():
                 idx = int(choice)
                 if 1 <= idx <= len(profiles):
-                    return profiles[idx-1]
+                    username = profiles[idx-1]
+                    from core.config_wizard import ConfigWizard
+                    wizard = ConfigWizard(self.profiles_dir)
+                    wizard.ensure_cloud_database_for_profile(username)
+                    return username
                 elif idx == create_idx:
                     from core.config_wizard import ConfigWizard
                     wizard = ConfigWizard(self.profiles_dir)

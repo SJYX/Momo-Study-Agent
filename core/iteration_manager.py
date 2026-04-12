@@ -1,13 +1,12 @@
 import json
 import time
-import logging
-from typing import List, Dict, Optional
+from typing import List, Dict
 from core.db_manager import (
-    get_latest_progress, log_progress_snapshots, save_ai_word_note, 
+    get_latest_progress,
     _get_conn, DB_PATH
 )
-from config import SCORE_PROMPT_FILE, REFINE_PROMPT_FILE, AI_PROVIDER
-import sqlite3
+from config import SCORE_PROMPT_FILE, REFINE_PROMPT_FILE
+from core.weak_word_filter import WeakWordFilter
 
 class IterationManager:
     def __init__(self, ai_client, momo_api, logger=None):
@@ -20,41 +19,91 @@ class IterationManager:
             from core.logger import get_logger
             self.logger = get_logger()
 
-    def run_iteration(self, familiarity_threshold: float = 3.0):
-        """主循环：筛选薄弱词并执行迭代逻辑。"""
+    def run_iteration(self):
+        """主循环：筛选薄弱词并执行迭代逻辑。
+
+        策略：
+        1. 使用优化的筛选系统获取薄弱词列表
+        2. 分级处理（Level 0: 选优, Level 1+: 重炼）
+        3. 批量同步到云词本
+        4. 完善错误处理和重试机制
+        """
+        import time
         self.notepad_additions = []
-        weak_words = self._get_weak_words_from_db(familiarity_threshold)
+
+        # 使用优化的筛选系统
+        filter = WeakWordFilter(self.logger)
+        user_stats = filter._get_user_stats()
+        dynamic_threshold = filter.get_dynamic_threshold(user_stats)
+
+        self.logger.info(f"用户统计: {user_stats}", module="iteration_manager", function="run_iteration")
+        self.logger.info(f"动态阈值: {dynamic_threshold}", module="iteration_manager", function="run_iteration")
+
+        # 按分数获取薄弱词（推荐分数 >= 50）
+        weak_words = filter.get_weak_words_by_score(min_score=50.0, limit=100)
+
+        # 如果没有按分数获取到单词，使用类别筛选作为备选
+        if not weak_words:
+            categorized = filter.get_weak_words_by_category(dynamic_threshold)
+            weak_words = categorized['urgent'] + categorized['normal']
+
         if not weak_words:
             self.logger.info("🎉 没有发现需要迭代的薄弱单词。", module="iteration_manager", function="run_iteration")
             return
 
         self.logger.info(f"🔍 发现 {len(weak_words)} 个薄弱单词，准备进入智能迭代流程...", module="iteration_manager", function="run_iteration")
-        
+
+        # 统计信息
+        stats = {
+            'processed': 0,
+            'success': 0,
+            'failed': 0,
+            'skipped': 0
+        }
+
         for w in weak_words:
             voc_id = w["voc_id"]
             spell = w["spelling"]
             it_level = w.get("it_level", 0)
-            
+
             self.logger.info(f"处理 [{spell}] (Level {it_level})...", module="iteration_manager", function="run_iteration")
-            
-            if it_level == 0:
-                # Level 1: 选优同步
-                self._handle_level_1_selection(w)
-            else:
-                # Level 2+: 强力重炼
-                # 检查自上次同步以来是否有进步
-                last_fam = self._get_last_recorded_fam(voc_id)
-                current_fam = w["familiarity_short"]
-                
-                if current_fam <= last_fam + 0.1: # 几乎没进步或退步
-                    self.logger.info(f"  [Re-generate] {spell} 熟悉度无明显提升 ({last_fam} -> {current_fam})，触发强力重炼", module="iteration_manager", function="run_iteration")
-                    self._handle_level_2_refinement(w)
+
+            try:
+                if it_level == 0:
+                    # Level 1: 选优同步
+                    self._handle_level_1_selection(w)
+                    stats['success'] += 1
                 else:
-                    self.logger.info(f"  [Wait] {spell} 熟悉度有提升 ({last_fam} -> {current_fam})，保持观察", module="iteration_manager", function="run_iteration")
-                    
+                    # Level 2+: 强力重炼
+                    # 检查自上次同步以来是否有进步
+                    last_fam = self._get_last_recorded_fam(voc_id)
+                    current_fam = w["familiarity_short"]
+
+                    if current_fam <= last_fam + 0.1:  # 几乎没进步或退步
+                        self.logger.info(f"  [Re-generate] {spell} 熟悉度无明显提升 ({last_fam} -> {current_fam})，触发强力重炼", module="iteration_manager", function="run_iteration")
+                        self._handle_level_2_refinement(w)
+                        stats['success'] += 1
+                    else:
+                        self.logger.info(f"  [Wait] {spell} 熟悉度有提升 ({last_fam} -> {current_fam})，保持观察", module="iteration_manager", function="run_iteration")
+                        stats['skipped'] += 1
+
+                stats['processed'] += 1
+
+                # 添加延迟避免 API 频率限制
+                if stats['processed'] % 5 == 0:
+                    time.sleep(1)
+
+            except Exception as e:
+                self.logger.error(f"  ❌ 处理 [{spell}] 失败: {e}", module="iteration_manager", function="run_iteration")
+                stats['failed'] += 1
+                continue
+
         # 批量处理云词本弱词追加
         if getattr(self, 'notepad_additions', None):
             self._sync_weak_words_notepad()
+
+        # 输出统计信息
+        self.logger.info(f"📊 迭代完成: 处理 {stats['processed']} 个单词, 成功 {stats['success']}, 失败 {stats['failed']}, 跳过 {stats['skipped']}", module="iteration_manager", function="run_iteration")
 
     def _sync_weak_words_notepad(self):
         notepad_title = "MomoAgent: 薄弱词攻坚"
@@ -92,27 +141,74 @@ class IterationManager:
             self.logger.error(f"同步云词本发生异常: {e}", error=str(e), module="iteration_manager")
 
     def _get_weak_words_from_db(self, threshold: float) -> List[Dict]:
-        """从数据库中筛选薄弱词（利用 json_extract）。"""
+        """从数据库中筛选薄弱词，包括已有 AI 笔记和需要创建释义的单词。
+
+        策略：
+        1. 优先处理已有 AI 笔记但熟悉度低的单词（迭代优化）
+        2. 处理没有 AI 笔记但熟悉度低的单词（首次助记生成）
+        """
         from core.db_manager import _get_conn, _row_to_dict
         conn = _get_conn(DB_PATH)
         cur = conn.cursor()
-        # 筛选逻辑：在 ai_word_notes 中且熟悉度 < threshold
-        # 我们从最新快照中取熟悉度
-        query = f"""
-            SELECT n.*, h.familiarity_short 
+
+        weak_words = []
+
+        # 1. 获取已有 AI 笔记的薄弱词（迭代优化）
+        query1 = f"""
+            SELECT n.*, h.familiarity_short
             FROM ai_word_notes n
             JOIN (
-                SELECT voc_id, familiarity_short 
-                FROM word_progress_history 
-                GROUP BY voc_id 
+                SELECT voc_id, familiarity_short
+                FROM word_progress_history
+                GROUP BY voc_id
                 HAVING MAX(created_at)
             ) h ON n.voc_id = h.voc_id
             WHERE h.familiarity_short < ?
         """
-        cur.execute(query, (threshold,))
-        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(query1, (threshold,))
+        rows1 = [dict(r) for r in cur.fetchall()]
+        weak_words.extend(rows1)
+
+        # 2. 获取没有 AI 笔记但熟悉度低的单词（首次助记生成）
+        # 排除已有 AI 笔记的单词
+        query2 = f"""
+            SELECT
+                h.voc_id,
+                h.familiarity_short,
+                p.spelling
+            FROM word_progress_history h
+            JOIN (
+                SELECT voc_id, MAX(created_at) as max_created_at
+                FROM word_progress_history
+                GROUP BY voc_id
+            ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
+            LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
+            JOIN processed_words p ON h.voc_id = p.voc_id
+            WHERE h.familiarity_short < ? AND n.voc_id IS NULL
+            GROUP BY h.voc_id
+        """
+        cur.execute(query2, (threshold,))
+        rows2 = [dict(r) for r in cur.fetchall()]
+
+        # 补全缺失的字段
+        for row in rows2:
+            row['it_level'] = 0
+            row['it_history'] = '[]'
+            row['memory_aid'] = ''
+            row['raw_full_text'] = ''
+            row['meanings'] = ''  # 没有释义信息
+            weak_words.append(row)
+
         conn.close()
-        return rows
+
+        # 去重（基于 voc_id）
+        unique_words = {}
+        for word in weak_words:
+            voc_id = word['voc_id']
+            if voc_id not in unique_words:
+                unique_words[voc_id] = word
+
+        return list(unique_words.values())
 
     def _get_last_recorded_fam(self, voc_id: str) -> float:
         """获取该单词在最后一次 it_level 变更时的熟悉度基准。"""
@@ -130,11 +226,11 @@ class IterationManager:
         return 0.0
 
     def _handle_level_1_selection(self, word: Dict):
-        """Level 1: 从现有三种助记中选优。"""
+        """Level 1: 从现有三种助记中选优，并同步到墨墨释义。"""
         voc_id = word["voc_id"]
         spell = word["spelling"]
         memory_aid = word.get("memory_aid", "")
-        
+
         if not memory_aid:
             self.logger.warning(f"  {spell} 没有原始助记内容，跳过。", module="iteration_manager", function="_handle_level_1_selection")
             return
@@ -142,17 +238,21 @@ class IterationManager:
         # 1. 调用 AI 打分
         with open(SCORE_PROMPT_FILE, "r", encoding="utf-8") as f:
             instr = f.read()
-        
+
         prompt = f"Word: {spell}\nCandidates:\n{memory_aid}"
         text, metadata = self.ai_client.generate_with_instruction(prompt, instruction=instr)
-        
+
         try:
-            import json_repair
+            try:
+                import json_repair
+            except ImportError:
+                import json
+                json_repair = json
             res = json_repair.loads(text.strip())
             best_note = res.get("refined_content")
             score = res.get("score")
             self.logger.info(f"  AI 打分结果: {score}/10, 理由: {res.get('justification')}", module="iteration_manager", function="_handle_level_1_selection")
-            
+
             if not best_note:
                 raise ValueError("AI 返回中缺少 refined_content")
 
@@ -160,32 +260,66 @@ class IterationManager:
             sync_res = self.momo.create_note(voc_id, "1", best_note)
             if sync_res and sync_res.get("success"):
                 self.logger.info(f"  ✅ {spell} 选优助记已同步至墨墨 (Score: {score})", module="iteration_manager", function="_handle_level_1_selection")
+
+                # 3. 同步到墨墨释义（如果需要）
+                # 提取简短释义用于同步
+                brief_meaning = word.get("meanings", "")
+                if brief_meaning:
+                    # 截取前50个字符作为简短释义
+                    brief_meaning = brief_meaning[:50] + "..." if len(brief_meaning) > 50 else brief_meaning
+                    sync_interpretation_res = self.momo.sync_interpretation(voc_id, brief_meaning, tags=["雅思", "考研"], spell=spell)
+                    if sync_interpretation_res:
+                        self.logger.info(f"  ✅ {spell} 释义已同步至墨墨", module="iteration_manager", function="_handle_level_1_selection")
+                    else:
+                        self.logger.warning(f"  ⚠️ {spell} 释义同步失败", module="iteration_manager", function="_handle_level_1_selection")
+
                 self._update_it_state(voc_id, 1, f"AI Scored {score}: {res.get('justification')}")
         except Exception as e:
             self.logger.error(f"  [Level 1 Error] {spell}: {e} | Raw: {text[:100]}", module="iteration_manager", function="_handle_level_1_selection")
 
     def _handle_level_2_refinement(self, word: Dict):
-        """Level 2: 强力重炼高强度助记。"""
+        """Level 2: 强力重炼高强度助记，并处理 API 限制。"""
         voc_id = word["voc_id"]
         spell = word["spelling"]
-        
+
+        # 检查 API 限制
+        if hasattr(self.momo, 'creation_limit_reached') and self.momo.creation_limit_reached:
+            self.logger.warning(f"  ⚠️ {spell} - 已达到墨墨 API 创建限制，跳过释义同步", module="iteration_manager", function="_handle_level_2_refinement")
+            # 仍然生成助记，但不同步释义
+
         # 1. 调用强力重炼 Prompt
         with open(REFINE_PROMPT_FILE, "r", encoding="utf-8") as f:
             instr = f.read()
-        
+
         prompt = f"Word: {spell}\nPrevious Result: {word.get('memory_aid', 'None')}"
         text, metadata = self.ai_client.generate_with_instruction(prompt, instruction=instr)
-        
+
         try:
-            import json_repair
+            try:
+                import json_repair
+            except ImportError:
+                import json
+                json_repair = json
             new_data = json_repair.loads(text.strip())
             if isinstance(new_data, list) and len(new_data) > 0:
                 new_note = new_data[0]["memory_aid"]
-                
+
                 # 2. 同步到墨墨助记
                 sync_res = self.momo.create_note(voc_id, "1", new_note)
                 if sync_res and sync_res.get("success"):
                     self.logger.info(f"  🔥 {spell} 强力重炼助记已同步 (Level 2)", module="iteration_manager", function="_handle_level_2_refinement")
+
+                    # 3. 同步到墨墨释义（如果未达到限制）
+                    if not (hasattr(self.momo, 'creation_limit_reached') and self.momo.creation_limit_reached):
+                        brief_meaning = word.get("meanings", "")
+                        if brief_meaning:
+                            brief_meaning = brief_meaning[:50] + "..." if len(brief_meaning) > 50 else brief_meaning
+                            sync_interpretation_res = self.momo.sync_interpretation(voc_id, brief_meaning, tags=["雅思", "考研"], spell=spell)
+                            if sync_interpretation_res:
+                                self.logger.info(f"  ✅ {spell} 释义已同步至墨墨", module="iteration_manager", function="_handle_level_2_refinement")
+                            else:
+                                self.logger.warning(f"  ⚠️ {spell} 释义同步失败", module="iteration_manager", function="_handle_level_2_refinement")
+
                     self._update_it_state(voc_id, word["it_level"] + 1, "Power Refined", new_note, text)
                     if hasattr(self, 'notepad_additions'):
                         self.notepad_additions.append(spell)

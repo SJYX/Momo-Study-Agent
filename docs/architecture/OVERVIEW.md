@@ -48,7 +48,8 @@ graph TD
 
 ### `core/db_manager.py` — 持久化中心
 - **职责**：所有数据库读写，本地 ↔ Turso 双向同步
-- **关键函数**：`_get_conn()`（自动路由本地/云端）、`_row_to_dict()`（兼容 Row 格式）、`sync_databases()`
+- **中央 Hub**：持有全局 `momo-users-hub` 连接，记录用户元数据、会话、审计日志
+- **关键函数**：`_get_conn()`（用户库路路由）、`_get_hub_conn()`（中央库路由，优先 Turso）、`sync_databases()`
 - **设计**：每用户独立数据库；社区缓存机制（跨用户复用 AI 笔记）
 
 ### `core/maimemo_api.py` — 协议抽象
@@ -92,28 +93,33 @@ Batch 失败带指数退避重试 + `mark_processed` 延迟标记法，确保中
 
 ```
 e:\MOMO_Script\
-├── main.py               # 入口
-├── config.py             # 全局配置与路径
-├── core/                 # 核心模块
-│   ├── db_manager.py
-│   ├── maimemo_api.py
-│   ├── iteration_manager.py
-│   ├── gemini_client.py
-│   ├── mimo_client.py
-│   ├── logger.py
-│   ├── log_archiver.py
-│   ├── profile_manager.py
-│   └── config_wizard.py
-├── data/                 # 运行时数据（gitignore）
-│   ├── profiles/         # 用户配置 .env
-│   └── prompts/          # Prompt 历史归档
-├── docs/                 # 文档体系
-│   ├── architecture/     # 架构设计文档
-│   ├── api/              # 外部 API 参考
-│   ├── prompts/          # Prompt 源文件
-│   ├── guides/           # 操作指南
-│   └── dev/              # 开发者规约
-├── logs/                 # 用户日志（gitignore）
-├── tests/                # 测试文件
-└── scripts/              # 工具脚本
+├── main.py                 # 程序入口
+├── config.py               # 全局配置与路径
+├── .env.example            # 环境变量配置模板
+├── CLAUDE.md               # AI 上下文文档
+├── PROJECT_STATUS.md       # 项目状态总结
+├── core/                   # 核心模块
+│   ├── db_manager.py       # 持久化中心（SQLite + Turso 双轨）
+│   ├── maimemo_api.py      # MaiMemo OpenAPI 封装
+│   ├── iteration_manager.py # 薄弱词智能迭代引擎
+│   ├── weak_word_filter.py # 薄弱词筛选系统
+│   ├── gemini_client.py    # Google Gemini 客户端
+│   ├── mimo_client.py      # 小米 Mimo 客户端
+│   ├── logger.py           # 企业级日志系统
+│   ├── log_archiver.py     # 日志自动压缩归档
+│   ├── profile_manager.py  # 多用户 Profile 管理
+│   └── config_wizard.py    # 新用户引导向导
+├── data/                   # 运行时数据（gitignore）
+│   ├── profiles/           # 用户配置 .env
+│   └── prompts/            # Prompt 历史归档
+├── docs/                   # 文档体系
+│   ├── architecture/       # 架构设计文档
+│   ├── api/                # 外部 API 参考
+│   ├── prompts/            # Prompt 源文件
+│   └── dev/                # 开发者规约
+├── tools/                  # 独立工具脚本
+├── scripts/                # 维护脚本
+├── tests/                  # 测试文件
+├── logs/                   # 用户日志（gitignore）
+└── scratch/                # 临时开发脚本
 ```

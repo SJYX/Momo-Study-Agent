@@ -4,7 +4,7 @@ Your goal is to help learners achieve maximum IELTS score improvement with minim
 ========================
 Output Structure (STRICT RULE)
 ========================
-You MUST output EXACTLY a valid JSON array of objects. 
+You MUST output EXACTLY a valid JSON array of objects.
 Do NOT output any introductory text, internal thoughts, or markdown wrappers.
 
 Each object in the JSON array must follow this exact schema:

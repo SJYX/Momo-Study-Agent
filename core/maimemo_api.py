@@ -21,18 +21,48 @@ class MaiMemoAPI:
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        
+        self.creation_limit_reached = False  # 标记是否已达到创建限制
+
     def _request(self, method: str, endpoint: str, **kwargs):
         """统一请求处理及限流"""
         # 官方频控: 10秒20次, 60秒40次, 5小时2000次
-        time.sleep(0.5) 
+        time.sleep(0.5)
         url = f"{self.base_url}{endpoint}"
-        response = requests.request(method, url, headers=self.headers, **kwargs)
-        if 200 <= response.status_code < 300:
-            return response.json()
-        else:
-            get_logger().error(f"[API Error] {method} {endpoint} -> {response.status_code}: {response.text}", module="maimemo_api", function="_request")
-            return None
+
+        # 添加重试逻辑（处理 429 错误）
+        for attempt in range(3):  # MAX_RETRIES = 3
+            try:
+                response = requests.request(method, url, headers=self.headers, **kwargs)
+
+                if 200 <= response.status_code < 300:
+                    return response.json()
+                elif response.status_code == 429:
+                    # 处理频率限制错误
+                    retry_after = response.headers.get('Retry-After')
+                    if retry_after:
+                        wait_time = int(retry_after)
+                    else:
+                        wait_times = [10, 25, 60]
+                        wait_time = wait_times[attempt] if attempt < len(wait_times) else 60
+
+                    get_logger().warning(f"请求频率限制，{wait_time} 秒后重试... (尝试 {attempt + 1}/3)", module="maimemo_api")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # 其他错误，记录并返回
+                    get_logger().error(f"[API Error] {method} {endpoint} -> {response.status_code}: {response.text}", module="maimemo_api", function="_request")
+                    return None
+            except Exception as e:
+                get_logger().error(f"请求异常: {e}", module="maimemo_api")
+                if attempt < 2:  # MAX_RETRIES - 1
+                    wait_times = [10, 25, 60]
+                    time.sleep(wait_times[attempt])
+                    continue
+                return None
+
+        # 重试次数用尽后，记录错误并返回
+        get_logger().error(f"[API Error] {method} {endpoint} -> 重试次数用尽，请求失败", module="maimemo_api", function="_request")
+        return None
 
     # ==========================
     # 1. 单词查询 (Vocabulary)
@@ -57,11 +87,13 @@ class MaiMemoAPI:
 
     def create_interpretation(self, voc_id: str, interpretation: str, tags: List[str] = None, status: str = "PUBLISHED") -> Optional[Dict]:
         """创建释义"""
+        if not tags:
+            tags = ["雅思", "考研"]
         payload = {
             "interpretation": {
                 "voc_id": voc_id,
                 "interpretation": interpretation,
-                "tags": tags or ["API导入"],
+                "tags": tags,
                 "status": status
             }
         }
@@ -69,10 +101,12 @@ class MaiMemoAPI:
 
     def update_interpretation(self, interpretation_id: str, interpretation: str, tags: List[str] = None, status: str = "PUBLISHED") -> Optional[Dict]:
         """更新释义"""
+        if not tags:
+            tags = ["雅思", "考研"]
         payload = {
             "interpretation": {
                 "interpretation": interpretation,
-                "tags": tags or ["API导入"],
+                "tags": tags,
                 "status": status
             }
         }
@@ -82,23 +116,80 @@ class MaiMemoAPI:
         """删除释义"""
         return self._request("DELETE", f"/interpretations/{interpretation_id}")
 
-    def sync_interpretation(self, voc_id: str, interpretation: str, tags: List[str] = None) -> bool:
-        """智能同步：存在则更新，不存在则创建"""
-        # 1. 检查是否存在已有释义
+    def sync_interpretation(self, voc_id: str, interpretation: str, tags: List[str] = None, spell: str = None) -> bool:
+        """智能同步：检查用户释义，仅在无释义时创建
+
+        Args:
+            voc_id: 单词ID
+            interpretation: 释义内容
+            tags: 标签列表
+            spell: 单词拼写（用于日志显示）
+        """
+        # 生成友好的单词标识
+        word标识 = spell if spell else f"voc_id:{voc_id}"
+
+        # 如果已达到创建限制，直接跳过
+        if self.creation_limit_reached:
+            get_logger().warning(f"[*] {word标识} - 已达到创建释义限制，跳过创建", module="maimemo_api")
+            return True
+
+        # 1. 检查是否存在已有释义（用户创建的）
         res = self.list_interpretations(voc_id)
-        if res and res.get("success"):
+        if not res:
+            get_logger().error(f"[*] {word标识} - 查询释义失败：API 返回空响应", module="maimemo_api")
+            return False
+
+        if res.get("success"):
             intps = res.get("data", {}).get("interpretations", [])
             if intps:
-                # 已存在，执行更新 (取第一个)
-                intp_id = intps[0].get("id")
-                get_logger().info(f"[*] 发现已有释义 ({intp_id})，正在执行覆盖更新...", module="maimemo_api")
-                update_res = self.update_interpretation(intp_id, interpretation, tags)
-                return update_res and update_res.get("success")
-        
-        # 2. 不存在，执行创建
-        get_logger().info("[*] 未发现已有释义，正在执行创建...", module="maimemo_api")
+                # 已存在用户创建的释义，跳过
+                get_logger().info(f"[*] {word标识} - 已有用户释义，跳过创建", module="maimemo_api")
+                return True  # 视为成功，避免重复处理
+        else:
+            # 查询失败，可能是 API 错误
+            errors = res.get("errors", [])
+            if errors:
+                error_code = errors[0].get("code", "")
+                error_msg = errors[0].get("msg", "未知错误")
+                get_logger().error(f"[*] {word标识} - 查询释义失败：{error_msg}", module="maimemo_api")
+            return False
+
+        # 2. 不存在用户释义，执行创建
+        # 使用默认标签：雅思、考研
+        if not tags:
+            tags = ["雅思", "考研"]
+
+        # 再次检查创建限制（避免在批量处理中重复尝试）
+        if self.creation_limit_reached:
+            get_logger().warning(f"[*] {word标识} - 已达到创建释义限制，跳过创建", module="maimemo_api")
+            return True
+
+        get_logger().info(f"[*] {word标识} - 未发现用户释义，正在创建 (标签: {tags})", module="maimemo_api")
         create_res = self.create_interpretation(voc_id, interpretation, tags)
-        return create_res and create_res.get("success")
+
+        # 3. 处理创建失败的情况
+        if not create_res:
+            get_logger().error(f"[*] {word标识} - 创建释义失败：API 返回空响应", module="maimemo_api")
+            return False
+
+        if not create_res.get("success"):
+            errors = create_res.get("errors", [])
+            if errors:
+                error_code = errors[0].get("code", "")
+                error_msg = errors[0].get("msg", "未知错误")
+
+                # 如果是超出限制的错误，标记状态并记录警告
+                if error_code == "interpretation_create_limitation":
+                    self.creation_limit_reached = True
+                    get_logger().warning(f"[*] {word标识} - 创建释义失败：{error_msg}（已超出最大创建数量限制）", module="maimemo_api")
+                    return True  # 视为成功，避免重复尝试
+
+                get_logger().error(f"[*] {word标识} - 创建释义失败：{error_msg}", module="maimemo_api")
+            else:
+                get_logger().error(f"[*] {word标识} - 创建释义失败：未知错误", module="maimemo_api")
+            return False
+
+        return True
 
     # ==========================
     # 3. 助记管理 (Notes)

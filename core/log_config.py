@@ -42,6 +42,9 @@ LOG_CONFIG = {
     "buffer_size": 8192,
     "flush_interval": 1.0,  # 秒
     "max_workers": 2,  # 异步处理线程数
+
+    # 控制台编码配置
+    "force_utf8_console": True,  # 强制控制台使用UTF-8编码（Windows）
 }
 
 # 环境特定配置

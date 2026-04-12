@@ -6,11 +6,25 @@ import time
 import functools
 import queue
 import threading
+import io
+import platform
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from datetime import datetime
 from typing import Dict, Any, Optional
 from collections import defaultdict, Counter
 import re
+
+# Global singleton for ContextLogger
+_global_context_logger = None
+
+def force_utf8_console():
+    """Force UTF-8 encoding for console output on Windows."""
+    if platform.system() == "Windows":
+        # Reconfigure stdout/stderr to use UTF-8 encoding
+        if sys.stdout.encoding != 'utf-8':
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        if sys.stderr.encoding != 'utf-8':
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 try:
     from .log_config import get_full_config
@@ -183,16 +197,59 @@ class LogStatistics:
         with self._lock:
             self.__init__()
 
+class AsyncStatisticsProcessor(threading.Thread):
+    """异步统计处理器，从队列中消费日志记录并更新统计信息"""
+
+    def __init__(self, queue, statistics):
+        super().__init__(daemon=True)
+        self.queue = queue
+        self.statistics = statistics
+        self._stop_event = threading.Event()
+
+    def run(self):
+        """从队列中消费日志记录并更新统计信息"""
+        while not self._stop_event.is_set():
+            try:
+                # 使用超时等待，以便能够响应停止事件
+                record = self.queue.get(timeout=0.1)
+                try:
+                    self.statistics.record_log(record)
+                except Exception:
+                    # 忽略统计处理中的错误，避免影响日志系统
+                    pass
+                finally:
+                    self.queue.task_done()
+            except queue.Empty:
+                # 队列为空，继续等待
+                continue
+            except Exception:
+                # 忽略其他错误
+                pass
+
+    def stop(self):
+        """停止处理器"""
+        self._stop_event.set()
+
 class StatisticsHandler(logging.Handler):
     """收集日志统计的处理器"""
-    
-    def __init__(self, statistics):
+
+    def __init__(self, statistics, queue=None):
         super().__init__()
         self.statistics = statistics
-        
+        self.queue = queue
+
     def emit(self, record):
         """处理日志记录"""
-        self.statistics.record_log(record)
+        if self.queue:
+            # 异步模式：将记录放入队列
+            try:
+                self.queue.put(record, block=False)
+            except queue.Full:
+                # 队列满时，直接处理（降级到同步）
+                self.statistics.record_log(record)
+        else:
+            # 同步模式：直接处理
+            self.statistics.record_log(record)
 
 class ContextLogger:
     """支持上下文信息的日志器"""
@@ -336,6 +393,10 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
     # 获取配置
     config = get_full_config(environment, config_file)
 
+    # 强制控制台使用UTF-8编码（Windows）
+    if config.get("force_utf8_console", True):
+        force_utf8_console()
+
     # 参数覆盖配置
     if log_dir is not None:
         config["log_dir"] = log_dir
@@ -394,18 +455,34 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
 
     # 设置统计收集
     statistics = None
+    async_stats_processor = None
     if config["enable_stats"]:
         statistics = LogStatistics()
-        stats_handler = StatisticsHandler(statistics)
+        # 使用异步统计处理
+        stats_queue = queue.Queue(maxsize=1000)
+        stats_handler = StatisticsHandler(statistics, queue=stats_queue)
         stats_handler.setLevel(logging.DEBUG)
         logger.addHandler(stats_handler)
+
+        # 启动异步统计处理器
+        async_stats_processor = AsyncStatisticsProcessor(stats_queue, statistics)
+        async_stats_processor.start()
 
     # 返回上下文日志器
     context_logger = ContextLogger(logger, async_logger, statistics)
     context_logger.set_context(user=username)
 
+    # 设置全局单例
+    global _global_context_logger
+    _global_context_logger = context_logger
+
     return context_logger
 
 # 便捷获取 logger 的函数
 def get_logger():
-    return ContextLogger(logging.getLogger())
+    global _global_context_logger
+    if _global_context_logger is None:
+        # If setup_logger hasn't been called yet, create a basic ContextLogger
+        # This ensures get_logger() works even if called before setup_logger()
+        _global_context_logger = ContextLogger(logging.getLogger())
+    return _global_context_logger

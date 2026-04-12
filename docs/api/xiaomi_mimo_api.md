@@ -95,7 +95,7 @@ Content-Type: application/json
 
 ---
 
-> [!IMPORTANT] 
+> [!IMPORTANT]
 > **研发与多轮记忆注意提示 (Reasoning Memory)**
-> 
+>
 > 在“思考模式 (thinking=enabled)”下的多轮工具调用过程中，模型返回 `tool_calls` 的前提是它在脑内做了深度推演，即同时返回了 `reasoning_content`。**若要在下一次请求时继续这段具有记忆的对话上下文，必须在下次发出的 `messages` 数组里，原封不动地保留所有历史回合的 `reasoning_content` 作为助理消息发过去**，否则上下文表现会降级。

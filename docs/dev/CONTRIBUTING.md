@@ -59,6 +59,60 @@ from core.db_manager import _get_conn, DB_PATH
 conn = _get_conn(DB_PATH)  # 自动路由：有网→Turso，无网→本地 SQLite
 ```
 
+### Turso 云数据库配置
+
+- 当前代码支持从 `TURSO_DB_URL` 读取完整连接地址。
+- 也支持仅配置 `TURSO_DB_HOSTNAME`，会自动补全为 `https://{hostname}`。
+- 必须同时提供 `TURSO_AUTH_TOKEN`，用于 `libsql.connect(url, auth_token=...)`。
+- 新用户向导会尝试调用 Turso API `POST /v1/organizations/{organizationSlug}/databases` 创建数据库，并将结果写入该用户的 `.env` 配置。
+
+### 中央 Hub 初始化
+
+如果是新环境（本地开发或新部署），必须先初始化中央 Hub 数据库以创建表结构和首个管理员帐号：
+
+```bash
+# 设置环境变量以跳过 profile 交互，并指定 UTF-8 编码修复 Windows 乱码
+export MOMO_USER=Asher
+export PYTHONIOENCODING=utf-8
+python scripts/init_hub.py
+```
+这将在 `data/momo_users_hub.db` (或云端) 创建 6 张管理表及默认管理员 Asher (密码见 `.env`)。
+
+### 时区处理
+
+所有数据库时间字段遵循以下规则：
+
+```python
+from core.db_manager import get_timestamp_with_tz
+
+# ✓ 正确：带时区的 ISO 8601 格式
+created_at = get_timestamp_with_tz()  # 输出：2026-04-11T14:30:45+08:00
+
+# ❌ 错误：使用 time.time() 或 datetime.now()
+cur.execute("... VALUES (..., ?, ...)", (..., time.time(), ...))
+```
+
+存储格式必须包含时区信息，便于多时区场景下的数据比对与审计。
+
+### 敏感数据加密
+
+API Key 和认证令牌必须使用 Fernet 加密存储：
+
+```python
+from core.encryption import encrypt_field, decrypt_field
+
+# ✓ 正确：加密后存储
+encrypted_key = encrypt_field(api_key)
+cur.execute("INSERT INTO user_api_keys (gemini_api_key) VALUES (?)", (encrypted_key,))
+
+# ✗ 错误：明文存储
+cur.execute("INSERT INTO user_api_keys (gemini_api_key) VALUES (?)", (api_key,))
+
+# 读取时解密
+encrypted_key = cur.fetchone()[0]
+decrypted_key = decrypt_field(encrypted_key)
+```
+
 ---
 
 ## AI 客户端扩展规范
@@ -94,6 +148,45 @@ class NewAIClient:
 - 日志文件：`logs/{ACTIVE_USER}.log`
 - 用户配置：`data/profiles/{ACTIVE_USER}.env`
 - 禁止在任何模块中硬编码用户名
+
+---
+
+## 薄弱词筛选规范
+
+### 筛选系统使用
+
+使用 `WeakWordFilter` 类进行薄弱词筛选，而非单一阈值：
+
+```python
+from core.weak_word_filter import WeakWordFilter
+
+filter = WeakWordFilter(logger)
+
+# 获取动态阈值
+user_stats = filter._get_user_stats()
+threshold = filter.get_dynamic_threshold(user_stats)
+
+# 按分数获取薄弱词
+weak_words = filter.get_weak_words_by_score(min_score=50.0, limit=100)
+
+# 按类别获取薄弱词
+categorized = filter.get_weak_words_by_category(threshold)
+```
+
+### 评分维度
+
+薄弱词评分基于以下维度（总分 100 分）：
+
+1. **熟悉度** (0-40分)：熟悉度越低，分数越高
+2. **复习次数** (0-20分)：复习次数越少，分数越高
+3. **时间因素** (0-10分)：上次学习越久，分数越高
+4. **迭代级别** (0-10分)：迭代级别越高，分数越高
+
+### 阈值调整
+
+- **动态阈值**：根据用户学习频率和平均熟悉度自动调整
+- **高频用户**：阈值 +0.5（筛选更严格）
+- **低频用户**：阈值 -0.5（筛选更宽松）
 
 ---
 

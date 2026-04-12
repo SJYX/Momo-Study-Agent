@@ -4,6 +4,7 @@ import time
 import uuid
 import msvcrt
 import os
+import json
 import argparse
 from datetime import datetime, timedelta
 from config import (
@@ -15,9 +16,23 @@ from core.gemini_client import GeminiClient
 from core.mimo_client import MimoClient
 from core.iteration_manager import IterationManager
 from core.db_manager import (
-    init_db, is_processed, mark_processed, get_processed_ids_in_batch,
-    save_ai_word_note, save_ai_batch, clean_for_maimemo, find_word_in_community,
-    get_file_hash, archive_prompt_file, log_progress_snapshots, sync_databases
+    # 核心数据库操作
+    init_db, mark_processed,
+    save_ai_word_note, save_ai_batch, clean_for_maimemo,
+    get_file_hash, archive_prompt_file, log_progress_snapshots, sync_databases,
+
+    # 用户会话管理
+    save_user_session, save_user_info_to_hub, update_user_login_time,
+
+    # 用户认证和权限
+    is_admin_username, get_user_by_username,
+
+    # Hub 管理功能（保留供将来使用）
+    update_user_stats, get_user_from_hub, list_hub_users, list_admin_logs,
+    set_user_status,
+
+    # 其他
+    log_admin_action, sync_hub_databases, generate_user_id
 )
 from core.logger import setup_logger
 from core.log_config import get_full_config
@@ -41,8 +56,13 @@ class StudyFlowManager:
             config_file=self.config_file
         )
 
-        # 设置会话ID
+        # 设置会话ID和用户ID
         session_id = str(uuid.uuid4())
+        # 生成一致的用户ID（由 db_manager 统一管理）
+        user_id = generate_user_id(ACTIVE_USER)
+        
+        self.session_id = session_id
+        self.user_id = user_id
         self.logger.set_context(session_id=session_id)
 
         self.logger.info(
@@ -56,6 +76,52 @@ class StudyFlowManager:
         self.momo = MaiMemoAPI(MOMO_TOKEN)
         init_db()
 
+        self.hub_user = get_user_by_username(ACTIVE_USER)
+        self.is_admin = is_admin_username(ACTIVE_USER)
+
+        # 确保 Hub 逻辑有序初始化，防止 FOREIGN KEY 约束失败
+        try:
+            # 复用数据库连接以提高性能
+            from core.db_manager import _get_hub_conn
+            hub_conn = _get_hub_conn()
+
+            # 1. 优先确保用户信息存在（users 表是 parent）
+            save_user_info_to_hub(
+                user_id,
+                ACTIVE_USER,
+                f"{ACTIVE_USER}@local",
+                user_notes="自动登录记录",
+                role="admin" if self.is_admin else "user",
+                conn=hub_conn
+            )
+            update_user_login_time(user_id, conn=hub_conn)
+
+            # 2. 只有用户信息成功记录后，才记录会话（user_sessions 表是 child）
+            client_info = json.dumps({
+                "os": sys.platform,
+                "python_version": sys.version.split()[0],
+                "ai_provider": AI_PROVIDER
+            })
+            ip_address = "127.0.0.1"  # 本地运行，默认 localhost
+            save_user_session(user_id, session_id, client_info, ip_address, conn=hub_conn)
+            self.logger.info(f"用户会话已记录到 Hub: {user_id}", session_id=session_id)
+
+            # 如果是管理员，记录登录日志（在连接关闭前）
+            if self.is_admin:
+                log_admin_action(
+                    "admin_login",
+                    f"管理员 {ACTIVE_USER} 登录",
+                    ACTIVE_USER,
+                    target_user_id=user_id,
+                    conn=hub_conn
+                )
+
+            # 提交并关闭连接
+            hub_conn.commit()
+            hub_conn.close()
+        except Exception as e:
+            self.logger.warning(f"会话记录失败（非关键）：{e}")
+        
         # 如果启用了自动归档，执行一次归档
         if log_config.get("enable_compression", False):
             try:
@@ -135,26 +201,35 @@ class StudyFlowManager:
         stats = sync_databases(dry_run=True)
         un_up = stats.get('upload', 0)
         un_down = stats.get('download', 0)
+
+        # 标记是否已合并数据（默认未合并）
+        self.data_merged = False
+
         if un_up > 0 or un_down > 0:
             print(f"\n[!] 发现同步差异: 云端有 {un_down} 条新数据，本地有 {un_up} 条待上传。")
             ch = input("是否立即进行合并？(Y/N, 默认 Y): ").strip().lower()
             if ch != 'n':
                 self.logger.info("🚩 正在同步数据库，请稍候...")
                 sync_databases(dry_run=False)
+                sync_hub_databases(dry_run=False)
                 self.logger.info("✅ 数据同步完成。")
+                self.data_merged = True  # 标记已合并数据
             else:
                 self.logger.warning("用户选择跳过同步，可能导致本地运行基于旧数据。")
+        else:
+            self.logger.info("✅ 云端与本地数据一致，无需同步。")
+            self.data_merged = True  # 数据一致，视为已合并
 
         while True:
             # 获取今日任务
             res_today = self.momo.get_today_items(limit=500)
             today_task = res_today.get("data", {}).get("today_items", []) if res_today else []
-            
+
             # 获取预习计划
             start_dt = datetime.now()
             end_dt = start_dt + timedelta(days=7)
             res_future = self.momo.query_study_records(
-                start_dt.strftime("%Y-%m-%dT00:00:00.000Z"), 
+                start_dt.strftime("%Y-%m-%dT00:00:00.000Z"),
                 end_dt.strftime("%Y-%m-%dT23:59:59.000Z")
             )
             future_task = res_future.get("data", {}).get("records", []) if res_future else []
@@ -162,7 +237,14 @@ class StudyFlowManager:
             print("\n" + "="*35)
             print(f"👤 用户: {ACTIVE_USER} | 模式选择")
             print("="*35)
-            print(f"  1. [今日任务] 处理今日待复习 ({len(today_task)} 个)")
+
+            # 如果今日任务为空，显示提示信息
+            if len(today_task) == 0:
+                print("  ⚠️  今日待复习: 0 个")
+                print("     提示: 可能需要打开墨墨 App 进行初始化")
+            else:
+                print(f"  1. [今日任务] 处理今日待复习 ({len(today_task)} 个)")
+
             print(f"  2. [未来计划] 处理未来 7 天待学 ({len(future_task)} 个)")
             print(f"  3. [智能迭代] 优化薄弱词助记 (基于数据反馈)")
             print(f"  4. [同步&退出] 保存所有数据并安全退出")
@@ -199,11 +281,12 @@ class StudyFlowManager:
                     print("❌ 输入无效，必须是正整数。回到主菜单。")
             elif choice == "3":
                 im = IterationManager(self.ai_client, self.momo, self.logger)
-                im.run_iteration(familiarity_threshold=3.0)
+                im.run_iteration()
                 self._trigger_post_run_sync()
             elif choice == "4":
                 self.logger.info("正在执行最后的数据同步...")
                 sync_databases(dry_run=False)
+                sync_hub_databases(dry_run=False)
                 self.logger.info("✅ 已安全保存所有数据至云端。再见！")
                 break
 
@@ -226,32 +309,63 @@ class StudyFlowManager:
         if count > 0:
             self.logger.info(f"📈 [Track] 已更新 {count} 个单词的进度流水")
 
-        # 2. 批量过滤已处理单词 (减少云端往返)
-        all_voc_ids = [w.get("voc_id") for w in word_list]
-        processed_ids = get_processed_ids_in_batch(all_voc_ids)
-        
+        # 2. 过滤已有 AI 笔记的单词 (批量检查 ai_word_notes 表)
+        self.logger.info(f"正在批量检查 {len(word_list)} 个单词的 AI 笔记...")
+
+        # 提取所有 voc_id
+        all_voc_ids = [str(w.get("voc_id")) for w in word_list]
+
+        # 批量查询云端/本地数据库
+        from core.db_manager import find_words_in_community_batch, save_ai_word_notes_batch
+
+        # 如果已合并数据，跳过云端查询，直接查本地数据库
+        skip_cloud = getattr(self, 'data_merged', False)
+        if skip_cloud:
+            self.logger.info("已合并数据，直接查询本地数据库...")
+        else:
+            self.logger.info("未合并数据，查询云端数据库...")
+
+        cached_notes = find_words_in_community_batch(all_voc_ids, skip_cloud=skip_cloud)
+
+        # 批量处理缓存命中的单词
+        cached_words = []
         pending_words = []
         for w in word_list:
             self._check_esc_interrupt()
             voc_id = str(w.get("voc_id"))
             spell = w.get("voc_spelling")
-            
-            if voc_id in processed_ids:
-                continue
-            
-            # 社区检查 (此操作由于涉及跨文件，暂维持单查，但因 processed 已过滤，频率已大幅降低)
-            cache_res = find_word_in_community(voc_id)
-            if cache_res:
-                community_note, source_db = cache_res
+
+            # 检查是否有 AI 笔记（从批量查询结果中获取）
+            if voc_id in cached_notes:
+                community_note, source_db = cached_notes[voc_id]
                 self.logger.info(f"  🏆 [Cache Hit] {spell} - {source_db}")
-                save_ai_word_note(voc_id, community_note)
-                if not DRY_RUN:
-                    brief = clean_for_maimemo(community_note.get('basic_meanings', ''))
-                    self.momo.sync_interpretation(voc_id, brief, tags=["社区缓存"])
-                mark_processed(voc_id, spell)
-                continue
-                
-            pending_words.append(w)
+                cached_words.append({
+                    'voc_id': voc_id,
+                    'spell': spell,
+                    'community_note': community_note,
+                    'source_db': source_db
+                })
+            else:
+                pending_words.append(w)
+
+        # 批量保存缓存命中的笔记
+        if cached_words:
+            notes_data = [{
+                'voc_id': item['voc_id'],
+                'payload': item['community_note'],
+                'metadata': {}
+            } for item in cached_words]
+            save_ai_word_notes_batch(notes_data)
+
+            # 批量同步到墨墨（如果需要）
+            if not DRY_RUN:
+                for item in cached_words:
+                    brief = clean_for_maimemo(item['community_note'].get('basic_meanings', ''))
+                    self.momo.sync_interpretation(item['voc_id'], brief, tags=["雅思", "考研"], spell=item['spell'])
+
+            # 批量标记为已处理
+            for item in cached_words:
+                mark_processed(item['voc_id'], item['spell'])
         
         if not pending_words:
             self.logger.info("✨ 无需调用 AI。")
@@ -283,7 +397,8 @@ class StudyFlowManager:
             self._process_results(batch, results, i, len(pending_words), bid)
             
             if i + BATCH_SIZE < len(pending_words):
-                time.sleep(2 if BATCH_SIZE > 1 else 0.5)
+                # 批处理之间添加延迟，避免触发墨墨 API 频率限制
+                time.sleep(3)
 
     def _process_results(self, batch_words, ai_results, current_start, total, batch_id):
         ai_map = {item["spelling"].lower(): item for item in ai_results}
@@ -300,9 +415,17 @@ class StudyFlowManager:
             
             if spell in ai_map:
                 payload = ai_map[spell]
+                original_meanings = (
+                    w.get("voc_meanings")
+                    or w.get("voc_meaning")
+                    or w.get("meanings")
+                    or w.get("meaning")
+                    or w.get("original_meanings")
+                    or payload.get("basic_meanings")
+                )
                 meta = {
                     "batch_id": batch_id,
-                    "original_meanings": w.get("voc_meanings"),
+                    "original_meanings": original_meanings,
                     "maimemo_context": {
                         "review_count": w.get("review_count"),
                         "short_term_familiarity": w.get("short_term_familiarity")
@@ -317,7 +440,7 @@ class StudyFlowManager:
                     if not (res and res.get("success") and res.get("data", {}).get("interpretations", [])):
                         brief = clean_for_maimemo(payload.get('basic_meanings', ''))
                         self.logger.info(f"[{num}/{total}] ✅ {spell} 同步中...")
-                        sync_success = self.momo.sync_interpretation(vid, brief, tags=["雅思"])
+                        sync_success = self.momo.sync_interpretation(vid, brief, tags=["雅思"], spell=spell)
                 
                 # 只有同步成功（或跳过同步）才标记为已处理
                 if sync_success:
@@ -387,4 +510,27 @@ if __name__ == "__main__":
             print(f"程序崩溃: {e}")
             print(f"日志系统也出现错误: {log_error}")
     finally:
+        # 自动同步数据到云端
+        try:
+            from core.logger import get_logger
+            logger = get_logger()
+            logger.info("正在执行退出前自动同步...", module="main")
+
+            # 同步用户数据库
+            sync_stats = sync_databases(dry_run=False)
+            logger.info(f"用户数据库同步完成: 上传 {sync_stats['upload']}, 下载 {sync_stats['download']}", module="main")
+
+            # 同步中央 Hub 数据库
+            hub_stats = sync_hub_databases(dry_run=False)
+            logger.info(f"中央 Hub 数据库同步完成: 上传 {hub_stats['upload']}, 下载 {hub_stats['download']}", module="main")
+
+            print("\n✅ 数据已自动同步到云端。")
+        except Exception as e:
+            try:
+                from core.logger import get_logger
+                logger = get_logger()
+                logger.warning(f"退出时自动同步失败: {e}", module="main")
+            except:
+                print(f"\n⚠️  自动同步失败: {e}")
+
         print("\n程序已安全退出。")

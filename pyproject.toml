@@ -1,0 +1,192 @@
+[project]
+name = "momo-study-agent"
+version = "1.0.0"
+description = "墨墨背单词 AI 助记系统 - 多用户智能学习平台"
+authors = [
+    {name = "SJYX", email = "your-email@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+keywords = ["vocabulary", "ai", "gemini", "education", "maimemo"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+]
+
+dependencies = [
+    "requests>=2.31.0",
+    "google-genai>=0.2.0",
+    "python-dotenv>=1.0.0",
+    "pytest>=7.4.0",
+    "pytest-mock>=3.12.0",
+    "json-repair>=0.25.0",
+    "libsql-client>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "pytest-cov>=4.1.0",
+    "pre-commit>=3.6.0",
+    "types-requests>=2.31.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/SJYX/Momo-Study-Agent"
+Repository = "https://github.com/SJYX/Momo-Study-Agent.git"
+Documentation = "https://github.com/SJYX/Momo-Study-Agent/blob/main/README.md"
+
+[project.scripts]
+momo = "main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+# ============================================================================
+# Ruff Configuration - 超快的 Python Linter & Formatter
+# ============================================================================
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+indent-width = 4
+
+# 排除目录
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "*.pyc",
+    "build",
+    "dist",
+    "*.egg-info",
+    "data",
+    "logs",
+]
+
+[tool.ruff.lint]
+# 启用的规则集
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort (import sorting)
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "RET",    # flake8-return
+    "PT",     # flake8-pytest-style
+]
+
+# 忽略的规则
+ignore = [
+    "E501",   # Line too long (由 formatter 处理)
+    "B008",   # Do not perform function calls in argument defaults
+    "B904",   # Within an except clause, raise exceptions with `raise ... from err`
+    "SIM108", # Use ternary operator (有时更复杂)
+    "RET504", # Unnecessary variable assignment before return
+    "PT009",  # Use a regular assert instead of unittest-style assertEqual
+]
+
+# 每个文件的忽略规则
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # 允许未使用的导入
+"tests/**" = ["F401", "F811"]  # 测试文件更宽松
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "config"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# ============================================================================
+# MyPy Configuration - 静态类型检查
+# ============================================================================
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false  # 逐步启用
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+
+# 第三方库没有类型提示时的处理
+[[tool.mypy.overrides]]
+module = [
+    "google.genai.*",
+    "libsql.*",
+    "json_repair.*",
+]
+ignore_missing_imports = true
+
+# ============================================================================
+# Pytest Configuration - 测试框架
+# ============================================================================
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--cov=core",
+    "--cov=config",
+    "--cov-report=html:htmlcov",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=json:coverage.json",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+# ============================================================================
+# Coverage Configuration - 测试覆盖率
+# ============================================================================
+[tool.coverage.run]
+source = ["core", "config.py", "main.py"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+branch = true
+
+[tool.coverage.report]
+precision = 2
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"

@@ -91,3 +91,7 @@ Authorization: Bearer <您的TOKEN>
 - **状态值**: 释义与例句通常使用 `PUBLISHED`。
 - **ID 混淆**: 注意 `voc_id` (单词ID) 与 `interpretation_id` / `note_id` (内容条目ID) 的区别。
 - **自动同步**: 公测接口（Study 类）通常要求在 App 中开启“自动同步”开关。
+- **API 限制处理**:
+  - **429 错误** (频率限制): 使用指数退避重试机制
+  - **400 错误** (创建限制): 检测 `interpretation_create_limitation` 错误码，标记限制状态
+  - **重试机制**: 最大重试 3 次，等待时间 [10, 25, 60] 秒

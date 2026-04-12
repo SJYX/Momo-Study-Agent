@@ -1,11 +1,19 @@
-# Momo Study Agent 🧠: Multi-User AI Vocabulary Platform
+# Momo Study Agent 🧠
+
+**Momo Study Agent** 是一个将“墨墨背单词”开放数据与 AI 大模型（Gemini/Mimo）深度结合的自动化英语学习系统。
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Gemini 2.0/3](https://img.shields.io/badge/AI-Gemini-orange.svg)](https://ai.google.dev/)
 [![Mimo AI](https://img.shields.io/badge/AI-Mimo_v2-red.svg)](https://api.xiaomimimo.com/)
 [![Maimemo](https://img.shields.io/badge/Sync-Maimemo_API-green.svg)](https://open.maimemo.com/)
 
-**Momo Study Agent** 是一个将“墨墨背单词”开放数据与 AI 大模型（Gemini/Mimo）深度结合的自动化英语学习系统。它现已进化为支持**多用户并行**、**跨用户缓存共享**的企业级备考辅助平台。
+**核心特性**:
+
+- 👥 **多用户支持**：物理隔离配置与数据，一键切换。
+- 🏆 **跨用户缓存共享**：自动复用历史 AI 笔记，零成本提速。
+- 🗓️ **双模式学习流**：今日任务 + 未来预习。
+- 🤖 **专家级 AI 引擎**：支持 Gemini 与 Xiaomi Mimo。
+- 🔐 **企业级安全**：Turso 云端同步 + 数据加密。
 
 ---
 
@@ -28,97 +36,51 @@
 - **多模型支持**：原生支持 **Google Gemini** 与 **小米 Mimo (OpenAI 兼容)**。
 - **高阶知识图谱**：精准识别 IELTS 考试逻辑、熟词僻义、搭配陷阱与提分杠杆率。
 
-### 5. 🛠️ 工业级运行保障
+### 5. 🔐 企业级安全与中央管理 (Security & Central Hub)
+- **中央 Hub 数据库**：全局 `momo_users_hub` 记录所有用户信息、同步历史与统计数据。支持 **Turso 云端 + 本地 SQLite** 双轨回退。
+- **权限安全**：敏感操作（如创建云数据库、管理用户）需验证管理员密码 (`ADMIN_PASSWORD_HASH`)。
+- **数据加密**：用户 API 密钥与令牌均经过 **Fernet 对称加密** 存储，杜绝明文风险。
+
+### 6. 🛠️ 工业级运行保障
 - **企业级日志系统**：结构化JSON日志、异步处理、性能监控、自动压缩。
 - **多环境配置**：支持开发/测试/生产环境，灵活的配置管理。
-- **详细日志**：在 `logs/` 目录下按用户名生成带时间戳的增量日志文件。
 - **优雅退出**：支持 Windows 环境下 **Esc 键** 快捷退出。
 - **自动纠错**：集成 `json-repair` 应对 AI 格式波动，确保数据 100% 入库。
 
 ---
 
-## 🛠️ 快速上手 (Quick Start)
+## 🛠️ 快速上手
 
-### 1. 安装环境
+### 1. 安装与启动
 ```bash
+# 安装依赖
 pip install -r requirements.txt
-```
 
-### 2. 启动平台
-直接运行主程序，即可进入用户管理与学习模式选择：
-```bash
+# 启动平台
 python main.py
 ```
 
-### 3. 日志系统配置 (Logging System)
-Momo Study Agent 配备了企业级的日志系统，支持多环境配置、性能监控和自动压缩。
+### 2. 用户初始化
 
-#### 基本使用
+首次运行时，向导会提示输入：
+
+1. **用户名**
+2. **墨墨 Access Token**
+3. **AI 提供商** (Mimo / Gemini)
+4. **API Key**
+
+### 3. 日志系统
+支持多环境配置（开发/测试/生产）：
+
 ```bash
-# 默认开发环境
-python main.py
-
-# 生产环境 (异步日志 + 压缩)
+# 生产环境 (异步 + 压缩)
 python main.py --env production
 
-# Staging环境 (带统计功能)
-python main.py --env staging --enable-stats
-
-# 自定义配置
-python main.py --env development --config config/custom_logging.yaml --async-log
+# 开发环境 (调试 + 统计)
+python main.py --env development --enable-stats
 ```
 
-#### 环境变量配置
-```bash
-# 设置环境
-export MOMO_ENV=production
-export MOMO_CONFIG_FILE=config/prod_logging.yaml
-
-# 运行程序
-python main.py
-```
-
-#### 环境配置说明
-- **development**: 调试级别日志，同步写入，启用统计
-- **staging**: 信息级别日志，异步写入，启用统计和压缩
-- **production**: 警告级别日志，异步写入，启用压缩，禁用统计
-
-#### 高级功能
-```python
-# 在代码中使用日志系统
-from core.logger import setup_logger
-
-# 创建带性能监控的日志器
-logger = setup_logger("username", environment="production", enable_stats=True)
-
-# 性能监控装饰器
-@logger.log_performance
-def my_function():
-    # 你的代码
-    pass
-
-# 查看统计信息
-stats = logger.get_statistics()
-print(f"总日志数: {stats['total_logs']}")
-```
-
-#### 日志文件位置
-- **开发环境**: `logs/username.log`
-- **生产环境**: `logs/username.log` (自动压缩为 `.gz` 文件)
-- **统计报告**: 实时显示在控制台
-
-### 4. 用户初始化
-如果是首次运行，请根据屏幕提示输入：
-1.  **用户名** (如 Asher)
-2.  **墨墨 Access Token**
-3.  **AI 提供商选择** (Mimo 或 Gemini)
-4.  **API Key**
-向导会自动完成连通性测试并为您创建 Profile。
-
-### 5. 底层模块全量接管 (Comprehensive Logging)
-所有底层核心引擎（包括 `db_manager`, `maimemo_api`, `mimo_client`, `log_archiver` 等）已彻底剥离控制台硬编码的 `print` 输出。这带来了以下核心优势：
-- **终端免打扰**：主菜单运行过程中不再被零碎的 API Error 或同步细节打断，保持清爽。
-- **排错无死角**：JSON 解析失败、双向同步细节和 API 连接超时等所有边缘 Case，全部会被安全收集到了 `logs/<用户名>.log` JSON 中，便于未来的检索与追溯。
+**日志位置**: `logs/<username>.log`
 
 ---
 
@@ -126,49 +88,51 @@ print(f"总日志数: {stats['total_logs']}")
 
 ```text
 MOMO_Script/
-├── main.py              # 程序入口
-├── config.py            # 全局配置与路径
-├── core/                # 核心模块
-│   ├── db_manager.py    # 持久化中心（SQLite + Turso 双轨）
-│   ├── maimemo_api.py   # MaiMemo OpenAPI 封装
-│   ├── iteration_manager.py  # 薄弱词智能迭代引擎
-│   ├── gemini_client.py # Google Gemini 客户端
-│   ├── mimo_client.py   # 小米 Mimo 客户端
-│   ├── logger.py        # 企业级日志（JSON落文件+可读控制台）
-│   ├── log_archiver.py  # 日志自动压缩归档
-│   ├── profile_manager.py   # 多用户 Profile 管理
-│   └── config_wizard.py     # 新用户引导向导
-├── data/                # 运行时数据（gitignore）
-│   ├── profiles/        # 用户配置 .env
-│   └── prompts/         # Prompt 历史版本归档
-├── docs/                # 文档体系
-│   ├── architecture/    # 系统架构设计
-│   ├── api/             # 外部 API 参考文档
-│   ├── prompts/         # Prompt 源文件
-│   ├── guides/          # 操作指南
-│   └── dev/             # 开发者规约（Vibe Coding 入口）
-├── logs/                # 用户日志（gitignore）
-├── tests/               # 测试文件
-└── scripts/             # 工具脚本
+├── main.py                 # 程序入口
+├── config.py               # 全局配置与路径
+├── core/                   # 核心模块
+│   ├── db_manager.py       # 持久化中心（SQLite + Turso 双轨）
+│   ├── maimemo_api.py      # MaiMemo OpenAPI 封装
+│   ├── iteration_manager.py # 薄弱词智能迭代引擎
+│   ├── weak_word_filter.py # 薄弱词筛选系统
+│   ├── gemini_client.py    # Google Gemini 客户端
+│   ├── mimo_client.py      # 小米 Mimo 客户端
+│   ├── logger.py           # 企业级日志
+│   ├── profile_manager.py  # 多用户 Profile 管理
+│   └── config_wizard.py    # 新用户引导向导
+├── data/                   # 运行时数据（gitignore）
+│   └── profiles/           # 用户配置 .env
+├── docs/                   # 文档体系
+│   ├── architecture/       # 系统架构设计
+│   ├── api/                # 外部 API 参考文档
+│   └── dev/                # 开发者规约
+├── tools/                  # 独立工具脚本
+├── scripts/                # 维护脚本
+├── tests/                  # 测试文件
+├── logs/                   # 用户日志（gitignore）
+└── CLAUDE.md               # AI 上下文文档
 ```
 
 ---
 
 ## 📚 工程文档
 
-### 架构
-- [系统架构概览](docs/architecture/OVERVIEW.md) — 数据流图、模块详解、核心设计模式
-- [日志系统设计](docs/architecture/LOG_SYSTEM.md) — 日志配置、格式规范、运维指南
+### 快速导航
+
+- **[文档索引](docs/DOCUMENT_INDEX.md)** — ⭐ **所有文档的快速导航**
+- **[CLAUDE.md](CLAUDE.md)** — ⭐ **AI 开发入口**：项目概览、架构、关键逻辑
+- [系统架构概览](docs/architecture/OVERVIEW.md) — 数据流图、模块详解
+- [AI 上下文](docs/dev/AI_CONTEXT.md) — 模块速查、硬性规则
 
 ### API 参考
-- [MaiMemo OpenAPI 规范](docs/api/maimemo_openapi.yaml) — 官方 OpenAPI YAML
-- [MaiMemo API 开发手册](docs/api/momo_api_summary.md) — 封装调用指北
-- [Xiaomi Mimo API 手册](docs/api/xiaomi_mimo_api.md) — OpenAI 兼容接口说明
 
-### Vibe Coding（AI 开发入口）
-- [**AI_CONTEXT.md**](docs/dev/AI_CONTEXT.md) — ⭐ **每次新对话先读这个**：模块速查、硬性规则、数据流
-- [DECISIONS.md](docs/dev/DECISIONS.md) — 已否定方案记录，防止重蹈覆辙
-- [CONTRIBUTING.md](docs/dev/CONTRIBUTING.md) — 开发规约：日志、数据库、AI 接口扩展
+- [MaiMemo OpenAPI 规范](docs/api/maimemo_openapi.yaml) — 官方 OpenAPI
+- [MaiMemo API 摘要](docs/api/momo_api_summary.md) — 封装调用指北
+
+### 开发指南
+
+- [决策记录](docs/dev/DECISIONS.md) — 已否定方案记录
+- [贡献指南](docs/dev/CONTRIBUTING.md) — 开发规约
 
 ---
 *Momo Study Agent - 你的私人雅思考霸备考助手。*
