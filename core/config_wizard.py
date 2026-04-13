@@ -2,11 +2,7 @@ import os
 import sys
 import sqlite3
 import requests
-import json
-import hashlib
-import uuid
-import getpass
-from typing import Optional, Tuple
+from typing import Optional
 
 # 注入根目录以便导入
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -68,21 +64,6 @@ class ConfigWizard:
             return hostname
         return f'https://{hostname}'
 
-    def _verify_admin_password(self) -> bool:
-        """验证管理员密码"""
-        admin_password_hash = os.getenv('ADMIN_PASSWORD_HASH', '')
-        if not admin_password_hash:
-            return True
-        print("\n  🔐 此操作需要管理员密码验证")
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            password = getpass.getpass(f"  请输入管理员密码 (剩余{max_attempts - attempt}次): ").strip()
-            if hashlib.sha256(password.encode()).hexdigest() == admin_password_hash:
-                print("  ✅ 验证成功！")
-                return True
-            print("  ❌ 密码错误")
-        return False
-
     def _read_profile_env(self, username: str) -> dict:
         path = os.path.join(self.profiles_dir, f"{username}.env")
         result = {}
@@ -111,7 +92,7 @@ class ConfigWizard:
                             k, _ = parts
                             existing[k.strip()] = len(lines)
                     lines.append(line)
-        
+
         for k, v in updates.items():
             if k in existing:
                 lines[existing[k]] = f'{k}="{v}"'
@@ -134,7 +115,6 @@ class ConfigWizard:
             print("  ⚠️  警告: 无法生成数据库专用令牌，使用管理令牌回退。")
 
         env_data = {
-            'TURSO_ORG_SLUG': org_slug,
             'TURSO_DB_NAME': db_name,
             'TURSO_DB_HOSTNAME': hostname,
             'TURSO_DB_URL': db_url,
@@ -161,15 +141,15 @@ class ConfigWizard:
         if not self._confirm(f'\n用户 {username} 当前未启用云数据库，是否现在自动开启？(Y/N): ', default=False):
             return
 
-        if not self._verify_admin_password(): return
-
-        # 完全自动化获取凭据
-        mgmt_token = os.getenv('TURSO_MGMT_TOKEN') or os.getenv('TURSO_AUTH_TOKEN')
+        # 开源模式：仅从管理令牌读取（禁止回退到 TURSO_AUTH_TOKEN）
+        mgmt_token = os.getenv('TURSO_MGMT_TOKEN')
         org_slug = os.getenv('TURSO_ORG_SLUG')
         group = os.getenv('TURSO_GROUP') or 'default'
         
         if not mgmt_token or not org_slug:
             print("  ❌ 缺少关键配置 (TURSO_MGMT_TOKEN 或 TURSO_ORG_SLUG)，无法自动创建。")
+            if os.getenv('TURSO_AUTH_TOKEN') and not mgmt_token:
+                print("  ℹ️ 检测到 TURSO_AUTH_TOKEN，但它是数据库连接令牌，不具备组织级建库权限。")
             return
 
         print(f'  🚀 正在利用管理权限自动配置云端资源 (Org: {org_slug})...')
@@ -178,13 +158,24 @@ class ConfigWizard:
         print(f'  ✅ {username} 的云资源已就绪。')
 
     def _create_turso_database(self, organization_slug: str, database_name: str, auth_token: str, group: str = 'default') -> dict:
-        url = f'https://api.turso.tech/v1/organizations/{organization_slug}/databases'
+        if not auth_token:
+            raise ValueError('缺少 TURSO_MGMT_TOKEN，无法调用组织级数据库创建接口。')
+
+        list_url = f'https://api.turso.tech/v1/organizations/{organization_slug}/databases'
         headers = {'Authorization': f'Bearer {auth_token}', 'Content-Type': 'application/json'}
+
+        # 先检查目标数据库是否已存在，避免重复创建
+        list_resp = requests.get(list_url, headers=headers, timeout=20)
+        if list_resp.status_code == 200:
+            for db in list_resp.json().get('databases', []):
+                if (db.get('Name') or db.get('name')) == database_name:
+                    return db
+
+        url = list_url
         payload = {'name': database_name, 'group': group}
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
         
         if resp.status_code == 409: # Already exists
-            list_url = f'https://api.turso.tech/v1/organizations/{organization_slug}/databases'
             list_resp = requests.get(list_url, headers=headers, timeout=20)
             if list_resp.status_code == 200:
                 for db in list_resp.json().get('databases', []):
@@ -192,6 +183,12 @@ class ConfigWizard:
                         return db
         
         if resp.status_code not in (200, 201):
+            if resp.status_code == 401:
+                raise ValueError(
+                    f'创建 Turso 数据库失败: 401 {resp.text}。'
+                    ' 这通常表示你传入的是数据库 JWT，而不是 Turso 管理员令牌，'
+                    '或者该 token 没有组织级创建权限。'
+                )
             raise ValueError(f'创建 Turso 数据库失败: {resp.status_code} {resp.text}')
         
         data = resp.json()
@@ -276,7 +273,7 @@ class ConfigWizard:
         return answer in ('y', 'yes')
 
     def run_setup(self) -> str:
-        """运行新用户向导 (全自动化 Turso)"""
+        """运行新用户向导 - 所有用户共享全局 Turso 数据库"""
         print("\n" + "*"*35)
         print("🌟  Momo Study Agent - 新用户初始化")
         print("*"*35)
@@ -303,54 +300,83 @@ class ConfigWizard:
         while not (self.validate_mimo(ai_key) if provider == "mimo" else self.validate_gemini(ai_key)):
             ai_key = input("❌ 验证失败: ").strip()
 
+        # 步骤 5: 使用全局管理令牌为用户创建 Turso 数据库
         env_lines = [
             f'MOMO_TOKEN="{momo_token}"',
             f'AI_PROVIDER="{provider}"',
             f'{"MIMO_API_KEY" if provider == "mimo" else "GEMINI_API_KEY"}="{ai_key}"',
         ]
 
-        if self._confirm('\n是否一键创建云端数据库同步？(Y/N): ', default=True):
-            if self._verify_admin_password():
-                mgmt_token = os.getenv('TURSO_MGMT_TOKEN') or os.getenv('TURSO_AUTH_TOKEN')
-                org_slug = os.getenv('TURSO_ORG_SLUG')
-                group = os.getenv('TURSO_GROUP') or 'default'
+        # 先复用该用户现有 profile 中的数据库凭证；如果没有，再决定是创建还是手动填写
+        existing_profile = self._read_profile_env(username)
+        existing_db_url = existing_profile.get('TURSO_DB_URL')
+        existing_db_token = existing_profile.get('TURSO_AUTH_TOKEN')
+        mgmt_token = os.getenv('TURSO_MGMT_TOKEN')
+        org_slug = os.getenv('TURSO_ORG_SLUG')
+        group = os.getenv('TURSO_GROUP') or 'default'
 
-                if not mgmt_token or not org_slug:
-                    print("  ❌ 缺少管理凭据，自动创建失败。")
-                else:
-                    db_name = f'history-{username.lower()}'
-                    print(f'  🚀 正在利用管理权限自动创建云数据库: {db_name}...')
-                    try:
-                        database = self._create_turso_database(org_slug, db_name, mgmt_token, group)
-                        hostname = database.get('Hostname') or database.get('hostname') or ''
-                        db_url = self._normalize_turso_db_url(hostname)
+        if existing_db_url and existing_db_token:
+            print(f"\n  ✅ 检测到现有 Turso 数据库配置，直接复用，不再创建。")
+            env_lines.extend([
+                f'TURSO_DB_URL="{existing_db_url}"',
+                f'TURSO_AUTH_TOKEN="{existing_db_token}"',
+            ])
+        elif mgmt_token and org_slug:
+            print(f"\n  🚀 使用管理凭证为用户创建专属数据库...")
+            try:
+                db_name = f'history-{username.lower()}'
+                try:
+                    database = self._create_turso_database(org_slug, db_name, mgmt_token, group)
+                except ValueError as create_error:
+                    if 'already exists' in str(create_error).lower() or '409' in str(create_error):
+                        print(f"  ℹ️ 数据库 {db_name} 已存在，尝试直接复用现有配置。")
+                        database = {'Name': db_name}
+                    else:
+                        raise
 
-                        # 生成数据库专用的连接令牌 (而不是使用管理令牌)
-                        db_auth_token = self._generate_db_auth_token(org_slug, mgmt_token, db_name)
-                        if not db_auth_token:
-                            # 如果生成失败，回退到管理令牌（虽然不推荐，但能保证流程继续）
-                            db_auth_token = mgmt_token
-                            print("  ⚠️  警告: 无法生成数据库专用令牌，使用管理令牌回退。")
+                hostname = database.get('Hostname') or database.get('hostname') or ''
+                db_url = self._normalize_turso_db_url(hostname)
 
-                        env_lines.extend([
-                            f'TURSO_ORG_SLUG="{org_slug}"',
-                            f'TURSO_DB_NAME="{db_name}"',
-                            f'TURSO_DB_HOSTNAME="{hostname}"',
-                            f'TURSO_DB_URL="{db_url}"',
-                            f'TURSO_AUTH_TOKEN="{db_auth_token}"',
-                        ])
-                        print(f'  ✅ Turso 云端已就绪。')
-                        self._ensure_hub_initialized(org_slug, mgmt_token, env_lines)
-                        
-                        try:
-                            from core import db_manager
-                            user_id = db_manager.generate_user_id(username)
-                            user_email = input("5. 请输入用户邮箱: ").strip() or f"{username}@momo-local"
-                            db_manager.save_user_info_to_hub(user_id, username, user_email, "向导自动创建")
-                        except: pass
-                    except Exception as e:
-                        print(f'  ⚠️ 创建失败: {e}')
+                # 生成数据库专用令牌
+                db_auth_token = self._generate_db_auth_token(org_slug, mgmt_token, db_name)
+                if not db_auth_token:
+                    db_auth_token = mgmt_token
+                    print("  ⚠️  警告: 无法生成数据库专用令牌，使用管理令牌回退。")
 
+                env_lines.extend([
+                    f'TURSO_DB_NAME="{db_name}"',
+                    f'TURSO_DB_HOSTNAME="{hostname}"',
+                    f'TURSO_DB_URL="{db_url}"',
+                    f'TURSO_AUTH_TOKEN="{db_auth_token}"',
+                ])
+                print(f'  ✅ Turso 云端数据库已为 {username} 就绪。')
+
+                # 初始化 Hub
+                self._ensure_hub_initialized(org_slug, mgmt_token, env_lines)
+
+            except Exception as e:
+                print(f'  ⚠️ 云端配置失败: {e}')
+                print(f'  ⚠️ 用户将使用本地数据库模式')
+        else:
+            print(f"\n  ⚠️ 未检测到可用的 Turso 管理凭证或现有数据库配置。")
+            if os.getenv('TURSO_AUTH_TOKEN') and not mgmt_token:
+                print("  ℹ️ 当前只有 TURSO_AUTH_TOKEN（数据库令牌），不能用于创建数据库。")
+                print("  ℹ️ 如需自动创建，请在全局 .env 中配置 TURSO_MGMT_TOKEN 和 TURSO_ORG_SLUG。")
+            print(f"  ✅ 如果你已经有 history-{username.lower()}.db，请手动输入现有 Turso 数据库 URL 和 Token。")
+            manual_db_url = input("  请输入现有 TURSO_DB_URL (留空则跳过): ").strip()
+            if manual_db_url:
+                manual_db_token = input("  请输入现有 TURSO_AUTH_TOKEN: ").strip()
+                if manual_db_token:
+                    env_lines.extend([
+                        f'TURSO_DB_URL="{manual_db_url}"',
+                        f'TURSO_AUTH_TOKEN="{manual_db_token}"',
+                    ])
+
+        # 记录用户邮箱到 profile，Hub 信息在主流程启动后再同步，避免初始化期循环导入
+        user_email = input("6. 请输入用户邮箱 (可选): ").strip() or f"{username}@momo-local"
+        env_lines.append(f'USER_EMAIL="{user_email}"')
+
+        # 写入用户的 .env 文件
         with open(os.path.join(self.profiles_dir, f"{username}.env"), "w", encoding="utf-8") as f:
             f.write('\n'.join(env_lines) + '\n')
 

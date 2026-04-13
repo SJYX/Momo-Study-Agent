@@ -6,13 +6,9 @@ import msvcrt
 import os
 import json
 import argparse
+import threading
 from datetime import datetime, timedelta
-from config import (
-    MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY, BATCH_SIZE, DRY_RUN,
-    AI_PROVIDER, ACTIVE_USER, PROMPT_FILE, SCORE_PROMPT_FILE, REFINE_PROMPT_FILE
-)
 from core.maimemo_api import MaiMemoAPI
-from core.gemini_client import GeminiClient
 from core.mimo_client import MimoClient
 from core.iteration_manager import IterationManager
 from core.db_manager import (
@@ -20,6 +16,7 @@ from core.db_manager import (
     init_db, mark_processed,
     save_ai_word_note, save_ai_batch, clean_for_maimemo,
     get_file_hash, archive_prompt_file, log_progress_snapshots, sync_databases,
+    get_processed_ids_in_batch,
 
     # 用户会话管理
     save_user_session, save_user_info_to_hub, update_user_login_time,
@@ -32,7 +29,13 @@ from core.db_manager import (
     set_user_status,
 
     # 其他
-    log_admin_action, sync_hub_databases, generate_user_id
+    log_admin_action, sync_hub_databases, generate_user_id,
+    is_hub_configured
+)
+from config import (
+    MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY, BATCH_SIZE, DRY_RUN,
+    AI_PROVIDER, ACTIVE_USER, PROMPT_FILE, SCORE_PROMPT_FILE, REFINE_PROMPT_FILE,
+    FORCE_CLOUD_MODE, PROFILES_DIR
 )
 from core.logger import setup_logger
 from core.log_config import get_full_config
@@ -81,6 +84,55 @@ class StudyFlowManager:
 
         # 确保 Hub 逻辑有序初始化，防止 FOREIGN KEY 约束失败
         try:
+            # 交互式处理 Hub 配置缺失
+            current_force_cloud = FORCE_CLOUD_MODE
+            if current_force_cloud and not is_hub_configured():
+                print("\n" + "!"*60)
+                print("⚠️  [配置缺失] 强制云端模式已开启，但未发现中央 Hub 数据库凭据。")
+                print("这通常是因为 .env 中缺少 TURSO_HUB_DB_URL 和 TURSO_HUB_AUTH_TOKEN。")
+                print("!"*60)
+                print("  1. 手动输入配置 (保存到本会话)")
+                print("  2. 暂时关闭强制模式 (允许本地记录会话)")
+                print("  3. 忽略并继续 (将导致会话记录失败)")
+                
+                h_choice = input("\n请选择处理方式 (1-3): ").strip()
+                if h_choice == "1":
+                    hub_url = input("请输入 TURSO_HUB_DB_URL: ").strip()
+                    hub_token = input("请输入 TURSO_HUB_AUTH_TOKEN: ").strip()
+                    if hub_url and hub_token:
+                        os.environ['TURSO_HUB_DB_URL'] = hub_url
+                        os.environ['TURSO_HUB_AUTH_TOKEN'] = hub_token
+                        print("✅ 已应用临时配置。")
+                        
+                        save_ch = input("是否将此配置永久保存到 .env？(Y/N, 默认 N): ").strip().lower()
+                        if save_ch == 'y':
+                            from core.config_wizard import ConfigWizard
+                            wiz = ConfigWizard(PROFILES_DIR)
+                            wiz._save_hub_config_to_global_env(hub_url, hub_token)
+                            print("✅ 配置已写入 .env 文件。")
+                elif h_choice == "2":
+                    os.environ['FORCE_CLOUD_MODE'] = 'False'
+                    print("✅ 已临时关闭强制模式。")
+                    
+                    save_ch = input("是否永久关闭强制模式（即：默认本地运行）？(Y/N, 默认 N): ").strip().lower()
+                    if save_ch == 'y':
+                        try:
+                            # 导入基本路径以寻找 .env
+                            from config import BASE_DIR
+                            env_path = os.path.join(BASE_DIR, ".env")
+                            lines = []
+                            if os.path.exists(env_path):
+                                with open(env_path, 'r', encoding='utf-8') as f:
+                                    for line in f:
+                                        if not line.strip().startswith('FORCE_CLOUD_MODE'):
+                                            lines.append(line.rstrip())
+                            lines.append('FORCE_CLOUD_MODE="False"')
+                            with open(env_path, 'w', encoding='utf-8') as f:
+                                f.write('\n'.join(lines) + '\n')
+                            print("✅ 已将 FORCE_CLOUD_MODE=False 写入 .env 文件。")
+                        except Exception as ex:
+                            print(f"❌ 保存失败: {ex}")
+
             # 复用数据库连接以提高性能
             from core.db_manager import _get_hub_conn
             hub_conn = _get_hub_conn()
@@ -161,6 +213,7 @@ class StudyFlowManager:
             self.logger.info(f"📝 [Prompt] {p_type.capitalize()} 版本: {h}", module="main", function="__init__")
         
         self.prompt_version = self.prompt_hashes["main"]
+        self._post_sync_thread = None
 
         # B. 初始化 AI 客户端
         if AI_PROVIDER == "mimo":
@@ -168,6 +221,7 @@ class StudyFlowManager:
             self.ai_client = MimoClient(MIMO_API_KEY)
             self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (小米 Mimo)")
         else:
+            from core.gemini_client import GeminiClient
             if not GEMINI_API_KEY: raise ValueError("GEMINI_API_KEY required")
             self.ai_client = GeminiClient(GEMINI_API_KEY)
             self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (Google Gemini)")
@@ -238,12 +292,10 @@ class StudyFlowManager:
             print(f"👤 用户: {ACTIVE_USER} | 模式选择")
             print("="*35)
 
-            # 如果今日任务为空，显示提示信息
+            # 今日任务入口始终显示，避免菜单序号在不同状态下跳变
+            print(f"  1. [今日任务] 处理今日待复习 ({len(today_task)} 个)")
             if len(today_task) == 0:
-                print("  ⚠️  今日待复习: 0 个")
-                print("     提示: 可能需要打开墨墨 App 进行初始化")
-            else:
-                print(f"  1. [今日任务] 处理今日待复习 ({len(today_task)} 个)")
+                print("     提示: 当前无今日待复习，可能需要先在墨墨 App 初始化计划")
 
             print(f"  2. [未来计划] 处理未来 7 天待学 ({len(future_task)} 个)")
             print(f"  3. [智能迭代] 优化薄弱词助记 (基于数据反馈)")
@@ -253,6 +305,9 @@ class StudyFlowManager:
             choice = self._wait_for_choice(["1", "2", "3", "4"])
             
             if choice == "1":
+                if not today_task:
+                    self.logger.info("今日任务为空，返回主菜单。")
+                    continue
                 self._process_word_list(today_task, "今日任务")
                 self._trigger_post_run_sync()
             elif choice == "2":
@@ -292,10 +347,13 @@ class StudyFlowManager:
 
     def _trigger_post_run_sync(self):
         """主流程结束后触发一次非阻塞或快捷的同步。"""
+        if self._post_sync_thread and self._post_sync_thread.is_alive():
+            self.logger.info("🔁 检测到已有后台同步任务正在运行，跳过重复触发。", module="main")
+            return
+
         self.logger.info("🔁 正在后台将最新进度推送到云端...", module="main")
-        import threading
-        t = threading.Thread(target=sync_databases, kwargs={'dry_run': False}, daemon=True)
-        t.start()
+        self._post_sync_thread = threading.Thread(target=sync_databases, kwargs={'dry_run': False}, daemon=True)
+        self._post_sync_thread.start()
 
     def _process_word_list(self, word_list, name):
         if not word_list:
@@ -315,6 +373,11 @@ class StudyFlowManager:
         # 提取所有 voc_id
         all_voc_ids = [str(w.get("voc_id")) for w in word_list]
 
+        # 先批量过滤已处理词，避免重复同步和重复日志
+        processed_ids = get_processed_ids_in_batch(all_voc_ids)
+        if processed_ids:
+            self.logger.info(f"已过滤 {len(processed_ids)} 个已处理单词")
+
         # 批量查询云端/本地数据库
         from core.db_manager import find_words_in_community_batch, save_ai_word_notes_batch
 
@@ -330,10 +393,15 @@ class StudyFlowManager:
         # 批量处理缓存命中的单词
         cached_words = []
         pending_words = []
+        skipped_processed = 0
         for w in word_list:
             self._check_esc_interrupt()
             voc_id = str(w.get("voc_id"))
             spell = w.get("voc_spelling")
+
+            if voc_id in processed_ids:
+                skipped_processed += 1
+                continue
 
             # 检查是否有 AI 笔记（从批量查询结果中获取）
             if voc_id in cached_notes:
@@ -347,6 +415,9 @@ class StudyFlowManager:
                 })
             else:
                 pending_words.append(w)
+
+        if skipped_processed:
+            self.logger.info(f"跳过 {skipped_processed} 个已完成处理的单词")
 
         # 批量保存缓存命中的笔记
         if cached_words:

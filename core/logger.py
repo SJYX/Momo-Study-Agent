@@ -252,13 +252,25 @@ class StatisticsHandler(logging.Handler):
             self.statistics.record_log(record)
 
 class ContextLogger:
-    """支持上下文信息的日志器"""
+    """支持上下文信息和模块级别日志控制的日志器"""
 
-    def __init__(self, base_logger, async_logger=None, statistics=None):
+    def __init__(self, base_logger, async_logger=None, statistics=None, module_levels=None):
         self.base_logger = base_logger
         self.context = {}
         self.async_logger = async_logger
         self.statistics = statistics
+        
+        # 模块级别映射 {"module_name": level_number}
+        self.module_levels = module_levels or {}
+        
+        # 日志级别映射
+        self.level_map = {
+            "DEBUG": logging.DEBUG,      # 10
+            "INFO": logging.INFO,        # 20
+            "WARNING": logging.WARNING,  # 30
+            "ERROR": logging.ERROR,      # 40
+            "CRITICAL": logging.CRITICAL # 50
+        }
 
     def set_context(self, **kwargs):
         """设置上下文信息"""
@@ -267,6 +279,27 @@ class ContextLogger:
     def clear_context(self):
         """清除上下文信息"""
         self.context.clear()
+    
+    def set_module_levels(self, module_levels):
+        """设置模块级别映射
+        
+        Args:
+            module_levels: dict, 格式 {"module_name": logging.DEBUG/INFO/WARNING/ERROR/CRITICAL}
+        """
+        self.module_levels = module_levels or {}
+    
+    def get_module_level(self, module):
+        """获取指定模块的日志级别
+        
+        Args:
+            module: str, 模块名称
+            
+        Returns:
+            int, 日志级别数值
+        """
+        if module in self.module_levels:
+            return self.module_levels[module]
+        return None
 
     def get_statistics(self):
         """获取日志统计信息"""
@@ -285,8 +318,33 @@ class ContextLogger:
             setattr(record, key, value)
         return record
 
+    def _should_log(self, level, module):
+        """判断是否应该输出此条日志
+        
+        Args:
+            level: int, 日志级别数值
+            module: str 或 None, 模块名称
+            
+        Returns:
+            bool, 是否应该输出
+        """
+        # 如果指定了模块，检查模块级别
+        if module and module in self.module_levels:
+            module_level = self.module_levels[module]
+            return level >= module_level
+        
+        # 否则，检查全局级别（通过 base_logger 的 effective_level）
+        return level >= self.base_logger.getEffectiveLevel()
+
     def log(self, level, message, **kwargs):
         """通用日志方法"""
+        module = kwargs.get('module')
+        func_name = kwargs.get('function')
+        
+        # 检查是否应该输出此条日志
+        if not self._should_log(level, module):
+            return
+        
         record = logging.LogRecord(
             name=self.base_logger.name,
             level=level,
@@ -298,10 +356,10 @@ class ContextLogger:
         )
         
         # 设置模块和函数信息
-        if 'module' in kwargs:
-            record.module = kwargs['module']
-        if 'function' in kwargs:
-            record.funcName = kwargs['function']
+        if module:
+            record.module = module
+        if func_name:
+            record.funcName = func_name
             
         record = self._add_context(record)
         
@@ -389,9 +447,26 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
     - enable_stats: 是否启用日志统计（可选，会被配置覆盖）。
     - config_file: 配置文件路径。
     - environment: 环境名称（development, staging, production）。
+    
+    支持的环境变量：
+    - LOG_LEVEL: 全局日志级别（DEBUG/INFO/WARNING/ERROR/CRITICAL）
+    - LOG_MODULE_LEVELS: 模块级别覆盖，格式 "module1:DEBUG,module2:WARNING"
     """
+    global _global_context_logger
+
     # 获取配置
     config = get_full_config(environment, config_file)
+
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    env_level_name = os.getenv("LOG_LEVEL")
+    configured_level_name = env_level_name or config.get("log_level", "INFO")
+    global_level = level_map.get(str(configured_level_name).upper(), logging.INFO)
 
     # 强制控制台使用UTF-8编码（Windows）
     if config.get("force_utf8_console", True):
@@ -411,11 +486,16 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
 
     # 获取根日志记录器
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)  # 设置为DEBUG以支持所有级别
+    logger.setLevel(global_level)
 
     # 避免重复添加 Handler (防止多次初始化)
     if logger.handlers:
-        return ContextLogger(logger)
+        context_logger = ContextLogger(logger)
+        context_logger.set_context(user=username)
+        _setup_module_levels(context_logger, config)
+
+        _global_context_logger = context_logger
+        return context_logger
 
     # 文件格式器：按配置决定是否 JSON
     if config["use_structured"]:
@@ -439,13 +519,13 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
         encoding=config["encoding"]
     )
     file_handler.setFormatter(file_formatter)
-    file_handler.setLevel(getattr(logging, config["file_level"]))
+    file_handler.setLevel(logging.NOTSET)
     logger.addHandler(file_handler)
 
     # Handler 2: 控制台输出
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(getattr(logging, config["console_level"]))
+    console_handler.setLevel(logging.NOTSET)
     logger.addHandler(console_handler)
 
     # 设置异步日志
@@ -471,12 +551,60 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
     # 返回上下文日志器
     context_logger = ContextLogger(logger, async_logger, statistics)
     context_logger.set_context(user=username)
+    
+    # 从环境变量和配置加载模块级别
+    _setup_module_levels(context_logger, config)
 
     # 设置全局单例
-    global _global_context_logger
     _global_context_logger = context_logger
 
     return context_logger
+
+def _setup_module_levels(context_logger, config=None):
+    """从配置和环境变量设置模块级别
+    
+    优先级：
+    1. 环境变量 LOG_MODULE_LEVELS (最高)
+    2. 代码中设置的 module_levels 配置
+    3. 全局日志级别 (最低)
+    """
+    level_map = {
+        "DEBUG": logging.DEBUG,      # 10
+        "INFO": logging.INFO,        # 20
+        "WARNING": logging.WARNING,  # 30
+        "ERROR": logging.ERROR,      # 40
+        "CRITICAL": logging.CRITICAL # 50
+    }
+    
+    module_levels = {}
+
+    # 1. 先加载配置文件中的默认模块级别
+    config_module_levels = (config or {}).get("module_levels", {})
+    if isinstance(config_module_levels, dict):
+        for module_name, level_name in config_module_levels.items():
+            if isinstance(level_name, str):
+                level_num = level_map.get(level_name.strip().upper())
+                if level_num is not None:
+                    module_levels[module_name.strip()] = level_num
+            elif isinstance(level_name, int):
+                module_levels[module_name.strip()] = level_name
+
+    # 2. 再用环境变量覆盖：格式 "module1:DEBUG,module2:WARNING"
+    env_module_levels = os.getenv("LOG_MODULE_LEVELS", "")
+    if env_module_levels:
+        try:
+            for pair in env_module_levels.split(","):
+                if not pair.strip():
+                    continue
+                module_name, level_name = pair.strip().split(":", 1)
+                level_num = level_map.get(level_name.strip().upper())
+                if level_num is not None:
+                    module_levels[module_name.strip()] = level_num
+        except (ValueError, KeyError):
+            pass  # 忽略格式错误
+    
+    if module_levels:
+        context_logger.set_module_levels(module_levels)
 
 # 便捷获取 logger 的函数
 def get_logger():

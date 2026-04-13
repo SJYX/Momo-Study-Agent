@@ -2,8 +2,6 @@ from typing import Tuple, Dict, Any, List
 import os
 import json
 import time
-from google import genai
-from google.genai import types
 from config import GEMINI_MODEL, MAX_RETRIES, RETRY_WAIT_S, PROMPT_FILE
 import sys
 
@@ -11,6 +9,7 @@ import sys
 
 class GeminiClient:
     def __init__(self, api_key: str, model_name: str = None, prompt_file: str = None):
+        from google import genai
         self.client = genai.Client(api_key=api_key)
         self.prompt_file = prompt_file or PROMPT_FILE
         self.model_name = model_name or GEMINI_MODEL
@@ -23,6 +22,7 @@ class GeminiClient:
 
     def generate_with_instruction(self, prompt: str, instruction: str = None) -> Tuple[str, dict]:
         """通用生成方法，支持自定义指令。"""
+        from google.genai import types
         instr = instruction or self._load_instruction()
         for attempt in range(1, MAX_RETRIES + 1):
             try:

@@ -94,24 +94,13 @@ cur.execute("... VALUES (..., ?, ...)", (..., time.time(), ...))
 
 存储格式必须包含时区信息，便于多时区场景下的数据比对与审计。
 
-### 敏感数据加密
+### 凭证与安全
 
-API Key 和认证令牌必须使用 Fernet 加密存储：
+开源版本采用“用户自配凭证”模式，要求如下：
 
-```python
-from core.encryption import encrypt_field, decrypt_field
-
-# ✓ 正确：加密后存储
-encrypted_key = encrypt_field(api_key)
-cur.execute("INSERT INTO user_api_keys (gemini_api_key) VALUES (?)", (encrypted_key,))
-
-# ✗ 错误：明文存储
-cur.execute("INSERT INTO user_api_keys (gemini_api_key) VALUES (?)", (api_key,))
-
-# 读取时解密
-encrypted_key = cur.fetchone()[0]
-decrypted_key = decrypt_field(encrypted_key)
-```
+- 不要在仓库中提交真实 `MOMO_TOKEN`、`MIMO_API_KEY`、`GEMINI_API_KEY`、`TURSO_AUTH_TOKEN`
+- 凭证仅放在本地 `.env` 或 `data/profiles/<user>.env`
+- 提交前确认 `.gitignore` 生效，避免 `data/` 与 `.env` 被误提交
 
 ---
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import sqlite3, os, json, re, hashlib, shutil, time
+import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64
 from datetime import datetime, timezone
 from typing import Optional, Dict, Tuple, List, Any
 from config import DB_PATH, TEST_DB_PATH, DATA_DIR, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, HUB_DB_PATH, FORCE_CLOUD_MODE
@@ -12,7 +12,7 @@ TURSO_TEST_AUTH_TOKEN = os.getenv('TURSO_TEST_AUTH_TOKEN')
 TURSO_TEST_DB_HOSTNAME = os.getenv('TURSO_TEST_DB_HOSTNAME')
 
 try:
-    import libsql
+    import libsql_client
     HAS_LIBSQL = True
 except ImportError:
     HAS_LIBSQL = False
@@ -39,24 +39,50 @@ except ImportError:
 # 表存在状态缓存（避免重复检查）
 _table_exists_cache = {}
 
-def _get_db_init_marker_path(db_type: str) -> str:
+def _hash_fingerprint(raw: str) -> str:
+    """将连接标识压缩成短哈希，避免 marker 文件名过长。"""
+    return hashlib.sha256((raw or "unknown").encode("utf-8")).hexdigest()[:12]
+
+def _main_db_fingerprint(db_path: str = None) -> str:
+    """主数据库实例指纹：优先云端 URL，其次本地绝对路径。"""
+    is_test = db_path and 'test_' in os.path.basename(db_path)
+    url = TURSO_TEST_DB_URL if is_test else TURSO_DB_URL
+    if not url:
+        hostname = TURSO_TEST_DB_HOSTNAME if is_test else TURSO_DB_HOSTNAME
+        if hostname:
+            url = _normalize_turso_url(hostname)
+    if url:
+        return f"cloud:{url.strip()}"
+    path = os.path.abspath(db_path or DB_PATH)
+    return f"local:{path}"
+
+def _hub_db_fingerprint() -> str:
+    """Hub 数据库实例指纹。"""
+    if TURSO_HUB_DB_URL:
+        return f"cloud:{TURSO_HUB_DB_URL.strip()}"
+    return f"local:{os.path.abspath(HUB_DB_PATH)}"
+
+def _get_db_init_marker_path(db_type: str, db_fingerprint: str = None) -> str:
     """获取数据库初始化标记文件路径"""
     marker_dir = os.path.join(DATA_DIR, "db_init_markers")
     os.makedirs(marker_dir, exist_ok=True)
+    if db_fingerprint:
+        digest = _hash_fingerprint(db_fingerprint)
+        return os.path.join(marker_dir, f"{db_type}_{digest}_initialized.flag")
     return os.path.join(marker_dir, f"{db_type}_initialized.flag")
 
-def _is_db_initialized(db_type: str) -> bool:
+def _is_db_initialized(db_type: str, db_fingerprint: str = None) -> bool:
     """检查数据库是否已经初始化（通过本地标记文件）"""
-    marker_path = _get_db_init_marker_path(db_type)
+    marker_path = _get_db_init_marker_path(db_type, db_fingerprint)
     return os.path.exists(marker_path)
 
-def _mark_db_initialized(db_type: str):
+def _mark_db_initialized(db_type: str, db_fingerprint: str = None):
     """标记数据库已初始化"""
-    marker_path = _get_db_init_marker_path(db_type)
+    marker_path = _get_db_init_marker_path(db_type, db_fingerprint)
     with open(marker_path, 'w') as f:
         f.write(f"initialized at {time.time()}")
 
-def _check_table_exists(cursor, table_name: str, db_type: str = "main") -> bool:
+def _check_table_exists(cursor, table_name: str, db_type: str = "main", cache_scope: str = None) -> bool:
     """检查表是否存在，使用缓存避免重复查询
 
     Args:
@@ -64,8 +90,9 @@ def _check_table_exists(cursor, table_name: str, db_type: str = "main") -> bool:
         table_name: 表名
         db_type: 数据库类型 ("main" 或 "hub")
     """
-    # 使用数据库类型和表名作为缓存键
-    cache_key = f"{db_type}_{table_name}"
+    # 使用数据库类型 + 连接作用域 + 表名作为缓存键，避免跨库误复用
+    scope = cache_scope or "default"
+    cache_key = f"{db_type}_{scope}_{table_name}"
 
     # 检查缓存
     if cache_key in _table_exists_cache:
@@ -79,10 +106,32 @@ def _check_table_exists(cursor, table_name: str, db_type: str = "main") -> bool:
     _table_exists_cache[cache_key] = exists
     return exists
 
-def _debug_log(msg, start_time=None):
+def _debug_log(msg, start_time=None, level="DEBUG", module="db_manager"):
+    """利用现有日志系统的可分级调试函数
+    
+    Args:
+        msg: 日志消息
+        start_time: 操作开始时间（用于计算耗时）
+        level: 日志级别 ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+        module: 模块名称（用于模块级别过滤）
+    """
+    
+    # 计算耗时
     elapsed = f' | Time: {int((time.time() - start_time)*1000)}ms' if start_time else ''
+    log_msg = f"{msg}{elapsed}"
+    
     try:
-        get_logger().debug(f"[DB] {msg}{elapsed}", module="db_manager")
+        logger = get_logger()
+        level_map = {
+            "CRITICAL": logger.critical,
+            "ERROR": logger.error,
+            "WARNING": logger.warning,
+            "INFO": logger.info,
+            "DEBUG": logger.debug,
+        }
+        
+        log_func = level_map.get(level, logger.debug)
+        log_func(log_msg, module=module)
     except Exception:
         # 如果日志失败，忽略错误，避免影响主流程
         pass
@@ -112,6 +161,76 @@ def _get_local_conn(db_path: str = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+class _LibsqlCompatCursor:
+    """将 libsql_client 的同步结果包装成 sqlite3 风格接口。"""
+
+    def __init__(self, client):
+        self._client = client
+        self._result = None
+        self.description = None
+
+    def execute(self, sql, params=()):
+        self._result = self._client.execute(sql, params)
+        self.description = [(col, None, None, None, None, None, None) for col in (self._result.columns or [])]
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        last_result = None
+        for params in seq_of_params:
+            last_result = self._client.execute(sql, params)
+        self._result = last_result
+        self.description = [(col, None, None, None, None, None, None) for col in (self._result.columns or [])] if self._result else None
+        return self
+
+    def fetchone(self):
+        rows = self.fetchall()
+        return rows[0] if rows else None
+
+    def fetchall(self):
+        if not self._result:
+            return []
+        return list(self._result.rows or [])
+
+    @property
+    def lastrowid(self):
+        if not self._result:
+            return None
+        return self._result.last_insert_rowid
+
+    def close(self):
+        return None
+
+
+class _LibsqlCompatConnection:
+    """提供 sqlite3 兼容的连接对象。"""
+
+    def __init__(self, client):
+        self._client = client
+        self.row_factory = None
+
+    def cursor(self):
+        return _LibsqlCompatCursor(self._client)
+
+    def commit(self):
+        return None
+
+    def close(self):
+        if hasattr(self._client, 'close'):
+            self._client.close()
+
+
+def _get_cloud_conn(url: str, token: str):
+    client = libsql_client.create_client_sync(url, auth_token=token)
+    return _LibsqlCompatConnection(client)
+
+def _is_cloud_connection(conn: Any) -> bool:
+    """判断连接是否为 libsql 云端连接（避免依赖 __str__ 输出格式）。"""
+    try:
+        return conn.__class__.__name__ == '_LibsqlCompatConnection'
+    except Exception:
+        return False
 
 def _normalize_turso_url(hostname: str) -> str:
     if not hostname:
@@ -145,7 +264,8 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> A
             url = _normalize_turso_url(hostname)
 
     # 强制云端模式检查
-    if FORCE_CLOUD_MODE and not url:
+    from config import get_force_cloud_mode
+    if get_force_cloud_mode() and not url:
         raise RuntimeError("强制云端模式已启用，但未配置 TURSO_DB_URL 或 TURSO_DB_HOSTNAME")
 
     # 判断是否为主数据库（需要连接云端）
@@ -156,7 +276,7 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> A
         for attempt in range(max_retries):
             try:
                 _debug_log(f"尝试连接云端数据库 (第 {attempt + 1}/{max_retries} 次)")
-                return libsql.connect(url, auth_token=token)
+                return _get_cloud_conn(url, token)
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:  # 不是最后一次尝试
@@ -165,12 +285,12 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> A
                 else:
                     _debug_log(f"云端连接失败 (已尝试 {max_retries} 次)，回退本地: {e}")
 
-        if FORCE_CLOUD_MODE:
+        if get_force_cloud_mode():
             # 强制模式下，连接失败直接抛出异常
             raise RuntimeError(f"强制云端模式连接失败 (已尝试 {max_retries} 次): {last_error}")
 
     # 非强制模式或测试模式下允许回退本地
-    if not FORCE_CLOUD_MODE or is_test:
+    if not get_force_cloud_mode() or is_test:
         _debug_log(f"回退到本地数据库: {db_path}")
         return _get_local_conn(db_path)
 
@@ -249,19 +369,20 @@ def init_db(db_path: str = None):
     # 2. 如果配置了云端，尝试初始化云端（跳过耗时的迁移操作）
     if HAS_LIBSQL and TURSO_DB_URL and TURSO_AUTH_TOKEN:
         try:
+            main_fp = _main_db_fingerprint(path)
             # 检查是否已经初始化过（通过本地标记文件）
-            if _is_db_initialized("main"):
+            if _is_db_initialized("main", main_fp):
                 _debug_log("云端数据库已初始化（通过标记文件），跳过检查")
             else:
                 cloud_start = time.time()
-                cc = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
+                cc = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
                 _debug_log("云端数据库连接完成", cloud_start)
 
                 ccur = cc.cursor()
 
                 # 检查表是否已存在（避免重复执行耗时的 CREATE TABLE 操作）
                 check_start = time.time()
-                table_exists = _check_table_exists(ccur, "processed_words", "main")
+                table_exists = _check_table_exists(ccur, "processed_words", "main", cache_scope=main_fp)
                 _debug_log(f"表存在检查完成 (存在: {table_exists})", check_start)
 
                 if table_exists:
@@ -272,7 +393,7 @@ def init_db(db_path: str = None):
                     _debug_log("云端数据库存储初始化完成（跳过迁移）", create_start)
 
                 # 标记数据库已初始化
-                _mark_db_initialized("main")
+                _mark_db_initialized("main", main_fp)
                 cc.commit()
                 cc.close()
         except Exception as e:
@@ -312,17 +433,18 @@ def mark_processed(voc_id: str, spelling: str, db_path: str = None, conn: Any = 
         # 优先写入云端
         try:
             cloud_conn = _get_conn(path)
-            if str(cloud_conn).startswith('<libsql.'):  # 云端连接
+            if _is_cloud_connection(cloud_conn):
                 _do_sql(cloud_conn)
                 # 同步到本地缓存
                 try:
                     _do_sql(_get_local_conn(path))
-                except:
-                    pass
+                except Exception as local_sync_error:
+                    _debug_log(f"mark_processed 本地缓存同步失败: {local_sync_error}")
             else:
                 # 本地连接，写入本地
                 _do_sql(cloud_conn)
-        except:
+        except Exception as cloud_write_error:
+            _debug_log(f"mark_processed 云端写入失败，回退本地: {cloud_write_error}")
             # 云端失败，写入本地
             _do_sql(_get_local_conn(path))
 
@@ -373,17 +495,18 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata:
         # 优先写入云端
         try:
             cloud_conn = _get_conn(path)
-            if str(cloud_conn).startswith('<libsql.'):  # 云端连接
+            if _is_cloud_connection(cloud_conn):
                 _do_sql(cloud_conn)
                 # 同步到本地缓存
                 try:
                     _do_sql(_get_local_conn(path))
-                except:
-                    pass
+                except Exception as local_sync_error:
+                    _debug_log(f"save_ai_word_note 本地缓存同步失败: {local_sync_error}")
             else:
                 # 本地连接，写入本地
                 _do_sql(cloud_conn)
-        except:
+        except Exception as cloud_write_error:
+            _debug_log(f"save_ai_word_note 云端写入失败，回退本地: {cloud_write_error}")
             # 云端失败，写入本地
             _do_sql(_get_local_conn(path))
 
@@ -451,7 +574,7 @@ def find_word_in_community(voc_id: str) -> Optional[Tuple[dict, str]]:
     # 1. 优先查询云端数据库
     if TURSO_DB_URL and TURSO_AUTH_TOKEN and HAS_LIBSQL:
         try:
-            cloud_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
+            cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
             cloud_cur = cloud_conn.cursor()
             cloud_cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
             r = cloud_cur.fetchone()
@@ -514,7 +637,7 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
     # 1. 优先查询云端数据库（批量查询）
     if not skip_cloud and TURSO_DB_URL and TURSO_AUTH_TOKEN and HAS_LIBSQL:
         try:
-            cloud_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
+            cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
             cloud_cur = cloud_conn.cursor()
 
             # 构建批量查询的 IN 子句
@@ -627,7 +750,7 @@ def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]
     
     try:
         # 获取连接
-        cloud_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
+        cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
         local_conn = _get_local_conn(path)
         
         # 注意：libsql 不支持 sqlite3.Row row_factory，选择器内部会用 cursor.description 手动转 dict
@@ -677,10 +800,18 @@ def _row_to_dict(cursor, row) -> dict:
     """将任意 row 对象（sqlite3.Row 或 libsql tuple）安全转换为 dict。"""
     if isinstance(row, dict):
         return row
+    if hasattr(row, 'asdict'):
+        try:
+            return row.asdict()
+        except Exception:
+            pass
     try:
         # sqlite3.Row: keys() 方法
         return dict(zip(row.keys(), tuple(row)))
     except AttributeError:
+        if hasattr(row, 'astuple') and hasattr(cursor, 'description') and cursor.description:
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row.astuple()))
         # libsql 返回 tuple，用 cursor.description 获取列名
         cols = [d[0] for d in cursor.description]
         return dict(zip(cols, row))
@@ -852,6 +983,10 @@ def _sync_progress_history(cloud_conn, local_conn, dry_run=False):
 # 中央用户数据库（Users Hub）相关函数
 # ============================================================================
 
+def is_hub_configured() -> bool:
+    """检查中央 Hub 数据库是否配置了云端凭据"""
+    return bool(TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN)
+
 def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
     """获取中央用户 Hub 数据库连接（优先云端 Turso，无配置则回退本地 SQLite）
 
@@ -860,8 +995,9 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         retry_delay: 每次重试的延迟秒数（默认 1.0 秒）
     """
     # 强制云端模式检查
-    if FORCE_CLOUD_MODE and not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN):
-        raise RuntimeError("强制云端模式已启用，但未配置 TURSO_HUB_DB_URL 或 TURSO_HUB_AUTH_TOKEN")
+    from config import get_force_cloud_mode
+    if get_force_cloud_mode() and not is_hub_configured():
+        raise RuntimeError("强制云端模式已启用，但未配置 TURSO_HUB_DB_URL 或 TURSO_HUB_AUTH_TOKEN。请在 .env 文件中配置，或将 FORCE_CLOUD_MODE 设置为 False 以允许本地运行。")
 
     # 优先尝试云端（带重试机制）
     if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL:
@@ -869,7 +1005,7 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         for attempt in range(max_retries):
             try:
                 _debug_log(f"尝试连接云端 Hub (第 {attempt + 1}/{max_retries} 次)")
-                return libsql.connect(TURSO_HUB_DB_URL, auth_token=TURSO_HUB_AUTH_TOKEN)
+                return _get_cloud_conn(TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN)
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:  # 不是最后一次尝试
@@ -878,12 +1014,12 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
                 else:
                     _debug_log(f"云端连接失败 (已尝试 {max_retries} 次)，回退本地: {e}")
 
-        if FORCE_CLOUD_MODE:
+        if get_force_cloud_mode():
             # 强制模式下，连接失败直接抛出异常
             raise RuntimeError(f"强制云端模式连接 Hub 失败 (已尝试 {max_retries} 次): {last_error}")
 
     # 非强制模式下，无配置或失败时回退到本地
-    if not FORCE_CLOUD_MODE:
+    if not get_force_cloud_mode():
         _debug_log("回退到本地 Hub 数据库")
         os.makedirs(os.path.dirname(os.path.abspath(HUB_DB_PATH)), exist_ok=True)
         conn = sqlite3.connect(HUB_DB_PATH)
@@ -896,8 +1032,9 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
 def init_users_hub_tables() -> bool:
     """初始化中央用户 Hub 数据库的6个表"""
     try:
+        hub_fp = _hub_db_fingerprint()
         # 检查是否已经初始化过（通过本地标记文件）
-        if _is_db_initialized("hub"):
+        if _is_db_initialized("hub", hub_fp):
             _debug_log("Hub 数据库已初始化（通过标记文件），跳过检查")
             return True
 
@@ -909,7 +1046,7 @@ def init_users_hub_tables() -> bool:
 
         # 检查表是否已存在（避免重复执行耗时的 CREATE TABLE 操作）
         check_start = time.time()
-        table_exists = _check_table_exists(cur, "users", "hub")
+        table_exists = _check_table_exists(cur, "users", "hub", cache_scope=hub_fp)
         _debug_log(f"Hub 表存在检查完成 (存在: {table_exists})", check_start)
 
         if table_exists:
@@ -917,7 +1054,7 @@ def init_users_hub_tables() -> bool:
             _debug_log("中央 Hub 数据库表已存在，跳过初始化")
             hub_conn.close()
             # 标记数据库已初始化
-            _mark_db_initialized("hub")
+            _mark_db_initialized("hub", hub_fp)
             return True
 
         # 1. users 表：基本用户信息及角色/状态
@@ -1013,12 +1150,12 @@ def init_users_hub_tables() -> bool:
                 result TEXT DEFAULT 'success'
             )
         ''')
-        
+
         hub_conn.commit()
         hub_conn.close()
         _debug_log("中央 Hub 数据库表初始化完成")
         # 标记数据库已初始化
-        _mark_db_initialized("hub")
+        _mark_db_initialized("hub", hub_fp)
         return True
         
     except Exception as e:
@@ -1357,7 +1494,7 @@ def sync_hub_databases(dry_run: bool = False) -> Dict[str, int]:
     if not dry_run: _curr_logger.info("正在同步中央 Hub 数据库...", module="db_manager")
     
     try:
-        cloud_conn = libsql.connect(TURSO_HUB_DB_URL, auth_token=TURSO_HUB_AUTH_TOKEN)
+        cloud_conn = _get_cloud_conn(TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN)
         local_conn = sqlite3.connect(HUB_DB_PATH)
         local_conn.row_factory = sqlite3.Row
         
