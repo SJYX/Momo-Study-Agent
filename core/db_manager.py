@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Tuple, List, Any
-from config import DB_PATH, TEST_DB_PATH, DATA_DIR, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, HUB_DB_PATH, FORCE_CLOUD_MODE
+import requests
+from urllib.parse import urlparse
+from config import ACTIVE_USER, DB_PATH, TEST_DB_PATH, DATA_DIR, PROFILES_DIR, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, HUB_DB_PATH, FORCE_CLOUD_MODE, ENCRYPTION_KEY
 
 TURSO_DB_URL = os.getenv('TURSO_DB_URL')
 TURSO_AUTH_TOKEN = os.getenv('TURSO_AUTH_TOKEN')
@@ -38,6 +40,10 @@ except ImportError:
 
 # 表存在状态缓存（避免重复检查）
 _table_exists_cache = {}
+_cloud_targets_cache = {"expire_at": 0.0, "targets": []}
+_CLOUD_TARGET_CACHE_TTL_SECONDS = int(os.getenv("CLOUD_TARGET_CACHE_TTL_SECONDS", "600"))
+_CLOUD_LOOKUP_MAX_TARGETS = int(os.getenv("CLOUD_LOOKUP_MAX_TARGETS", "40"))
+UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 def _hash_fingerprint(raw: str) -> str:
     """将连接标识压缩成短哈希，避免 marker 文件名过长。"""
@@ -136,9 +142,193 @@ def _debug_log(msg, start_time=None, level="DEBUG", module="db_manager"):
         # 如果日志失败，忽略错误，避免影响主流程
         pass
 
+def _read_profile_cloud_config(profile_env_path: str) -> Optional[Dict[str, str]]:
+    """Read TURSO DB URL/token from a profile env file without mutating process env."""
+    if not os.path.exists(profile_env_path):
+        return None
+
+    url = ""
+    token = ""
+    try:
+        with open(profile_env_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key == "TURSO_DB_URL":
+                    url = value
+                elif key == "TURSO_AUTH_TOKEN":
+                    token = value
+        if url and token:
+            return {"url": url, "token": token}
+    except Exception as e:
+        _debug_log(f"读取 profile 云配置失败: {profile_env_path} -> {e}")
+    return None
+
+def _fetch_turso_cloud_targets_via_api() -> List[Tuple[str, str, str]]:
+    """Use Turso management API to discover history databases and generate DB auth tokens."""
+    mgmt_token = (os.getenv("TURSO_MGMT_TOKEN") or "").strip()
+    org_slug = (os.getenv("TURSO_ORG_SLUG") or "").strip()
+    if not mgmt_token or not org_slug:
+        return []
+
+    headers = {"Authorization": f"Bearer {mgmt_token}", "Content-Type": "application/json"}
+    list_url = f"https://api.turso.tech/v1/organizations/{org_slug}/databases"
+    try:
+        resp = requests.get(list_url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            _debug_log(f"Turso API 获取数据库列表失败: {resp.status_code}")
+            return []
+
+        dbs = resp.json().get("databases", [])
+        targets: List[Tuple[str, str, str]] = []
+        for db in dbs:
+            db_name = (db.get("Name") or db.get("name") or "").strip()
+            if not db_name.startswith("history-") and not db_name.startswith("history_"):
+                continue
+
+            hostname = (db.get("Hostname") or db.get("hostname") or "").strip()
+            db_url = _normalize_turso_url(hostname)
+            if not db_url:
+                continue
+
+            token_url = f"https://api.turso.tech/v1/organizations/{org_slug}/databases/{db_name}/auth/tokens"
+            token_resp = requests.post(token_url, headers=headers, json={}, timeout=12)
+            if token_resp.status_code not in (200, 201):
+                _debug_log(f"Turso API 生成数据库令牌失败: {db_name} ({token_resp.status_code})")
+                continue
+
+            token_json = token_resp.json() if token_resp.text else {}
+            db_token = (token_json.get("jwt") or token_json.get("token") or "").strip()
+            if not db_token:
+                continue
+
+            targets.append((db_url, db_token, f"云端数据库({db_name})"))
+
+        return targets
+    except Exception as e:
+        _debug_log(f"Turso API 云库发现失败: {e}")
+        return []
+
+def _get_cached_turso_cloud_targets() -> List[Tuple[str, str, str]]:
+    """Cache Turso API discovery result to reduce management API overhead."""
+    now = time.time()
+    cached_targets = _cloud_targets_cache.get("targets", [])
+    if cached_targets and now < _cloud_targets_cache.get("expire_at", 0.0):
+        return list(cached_targets)
+
+    fresh_targets = _fetch_turso_cloud_targets_via_api()
+    _cloud_targets_cache["targets"] = list(fresh_targets)
+    _cloud_targets_cache["expire_at"] = now + _CLOUD_TARGET_CACHE_TTL_SECONDS
+    return fresh_targets
+
+def _get_secret_key_bytes() -> bytes:
+    """Derive symmetric key from ENCRYPTION_KEY. Empty result means secret storage disabled."""
+    raw = (ENCRYPTION_KEY or "").strip()
+    if not raw:
+        return b""
+    return hashlib.sha256(raw.encode("utf-8")).digest()
+
+def _encrypt_secret_value(secret: str) -> str:
+    key = _get_secret_key_bytes()
+    if not key:
+        raise ValueError("ENCRYPTION_KEY 未配置，无法加密敏感信息")
+
+    plain = (secret or "").encode("utf-8")
+    nonce = os.urandom(16)
+    stream = bytearray()
+    counter = 0
+    while len(stream) < len(plain):
+        stream.extend(hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest())
+        counter += 1
+
+    cipher = bytes(p ^ s for p, s in zip(plain, stream[:len(plain)]))
+    sig = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
+    blob = base64.urlsafe_b64encode(nonce + sig + cipher).decode("ascii")
+    return f"v1:{blob}"
+
+def _decrypt_secret_value(secret_blob: str) -> str:
+    key = _get_secret_key_bytes()
+    if not key:
+        raise ValueError("ENCRYPTION_KEY 未配置，无法解密敏感信息")
+
+    if not secret_blob:
+        return ""
+    if not str(secret_blob).startswith("v1:"):
+        raise ValueError("不支持的密文版本")
+
+    raw = base64.urlsafe_b64decode(secret_blob[3:].encode("ascii"))
+    if len(raw) < 48:
+        raise ValueError("密文长度非法")
+
+    nonce = raw[:16]
+    sig = raw[16:48]
+    cipher = raw[48:]
+    expect = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
+    if not hmac.compare_digest(sig, expect):
+        raise ValueError("密文签名校验失败")
+
+    stream = bytearray()
+    counter = 0
+    while len(stream) < len(cipher):
+        stream.extend(hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest())
+        counter += 1
+
+    plain = bytes(c ^ s for c, s in zip(cipher, stream[:len(cipher)]))
+    return plain.decode("utf-8")
+
+def _collect_cloud_lookup_targets() -> List[Tuple[str, str, str]]:
+    """Collect unique cloud targets with API-first discovery.
+
+    Returns:
+        list[(url, token, source_label)]
+    """
+    targets: List[Tuple[str, str, str]] = []
+    seen_urls = set()
+
+    def _append_target(url: str, token: str, source: str):
+        nurl = (url or "").strip()
+        ntoken = (token or "").strip()
+        if not nurl or not ntoken or nurl in seen_urls:
+            return
+        seen_urls.add(nurl)
+        targets.append((nurl, ntoken, source))
+
+    # 0. 当前用户云库始终优先
+    _append_target(TURSO_DB_URL, TURSO_AUTH_TOKEN, "云端数据库(当前用户)")
+
+    # 1. 优先通过 Turso 管理 API 发现数据库（避免完全依赖本地 env）
+    for db_url, db_token, source_label in _get_cached_turso_cloud_targets():
+        _append_target(db_url, db_token, source_label)
+
+    # 2. 回退到本地 profiles 配置
+    try:
+        profile_files = sorted([f for f in os.listdir(PROFILES_DIR) if f.endswith(".env")])
+    except Exception as e:
+        _debug_log(f"扫描 profiles 目录失败: {e}")
+        profile_files = []
+
+    for env_file in profile_files:
+        profile_name = os.path.splitext(env_file)[0]
+        env_path = os.path.join(PROFILES_DIR, env_file)
+        cfg = _read_profile_cloud_config(env_path)
+        if not cfg:
+            continue
+
+        _append_target(cfg["url"], cfg["token"], f"云端数据库({profile_name})")
+
+    if len(targets) > _CLOUD_LOOKUP_MAX_TARGETS:
+        _debug_log(f"云库目标数量过多，已限制为前 {_CLOUD_LOOKUP_MAX_TARGETS} 个")
+        targets = targets[:_CLOUD_LOOKUP_MAX_TARGETS]
+
+    return targets
+
 def get_timestamp_with_tz() -> str:
     """获取当前时间戳，格式为 ISO 8601 含时区。"""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC_PLUS_8).isoformat()
 
 def generate_user_id(username: str) -> str:
     """统一用户 ID 生成算法：SHA256(username) 的前 16 位"""
@@ -222,8 +412,51 @@ class _LibsqlCompatConnection:
 
 
 def _get_cloud_conn(url: str, token: str):
-    client = libsql_client.create_client_sync(url, auth_token=token)
-    return _LibsqlCompatConnection(client)
+    raw = (url or '').strip()
+    if not raw:
+        raise ValueError('cloud url is empty')
+
+    # Some environments/proxies break websocket handshake (505).
+    # Try multiple endpoint schemes to maximize compatibility.
+    host = raw
+    if '://' in raw:
+        host = raw.split('://', 1)[1].split('/', 1)[0]
+
+    candidates: List[str] = []
+    if raw.startswith('libsql://'):
+        candidates = [f'libsql://{host}', f'https://{host}', f'wss://{host}/']
+    elif raw.startswith('https://') or raw.startswith('http://'):
+        scheme_host = f'https://{host}' if raw.startswith('http') else raw
+        candidates = [scheme_host, f'libsql://{host}', f'wss://{host}/']
+    elif raw.startswith('wss://') or raw.startswith('ws://'):
+        candidates = [f'wss://{host}/', f'libsql://{host}', f'https://{host}']
+    else:
+        candidates = [f'libsql://{host}', f'https://{host}', f'wss://{host}/']
+
+    seen = set()
+    ordered_candidates = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            ordered_candidates.append(c)
+
+    errors = []
+    for candidate in ordered_candidates:
+        client = None
+        try:
+            client = libsql_client.create_client_sync(candidate, auth_token=token)
+            # Probe once so bad handshakes fail here, not in later business logic.
+            client.execute('SELECT 1')
+            return _LibsqlCompatConnection(client)
+        except Exception as e:
+            errors.append(f'{candidate} -> {e}')
+            if client and hasattr(client, 'close'):
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+    raise RuntimeError('all cloud connection attempts failed: ' + ' | '.join(errors))
 
 def _is_cloud_connection(conn: Any) -> bool:
     """判断连接是否为 libsql 云端连接（避免依赖 __str__ 输出格式）。"""
@@ -233,12 +466,17 @@ def _is_cloud_connection(conn: Any) -> bool:
         return False
 
 def _normalize_turso_url(hostname: str) -> str:
+    """Normalize Turso endpoint to libsql://host form expected by libsql client."""
     if not hostname:
         return ''
-    hostname = hostname.strip()
-    if hostname.startswith('http://') or hostname.startswith('https://'):
-        return hostname
-    return f'https://{hostname}'
+    raw = hostname.strip()
+    if raw.startswith('libsql://'):
+        return raw
+    if raw.startswith('wss://') or raw.startswith('ws://') or raw.startswith('https://') or raw.startswith('http://'):
+        parsed = urlparse(raw)
+        host = parsed.netloc or parsed.path
+        return f'libsql://{host}'
+    return f'libsql://{raw}'
 
 def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> Any:
     """获取数据库连接（优先云端 Turso，无配置则回退本地 SQLite）
@@ -285,6 +523,18 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> A
                 else:
                     _debug_log(f"云端连接失败 (已尝试 {max_retries} 次)，回退本地: {e}")
 
+        # 若主配置连接失败，尝试通过 Turso 管理 API 发现当前用户目标库并重连
+        if not is_test:
+            try:
+                preferred_db_name = f"history-{(ACTIVE_USER or '').lower()}"
+                for candidate_url, candidate_token, source_label in _get_cached_turso_cloud_targets():
+                    if preferred_db_name not in source_label:
+                        continue
+                    _debug_log(f"尝试 API 发现的用户库连接: {source_label}")
+                    return _get_cloud_conn(candidate_url, candidate_token)
+            except Exception as fallback_error:
+                _debug_log(f"API 发现用户库重连失败: {fallback_error}")
+
         if get_force_cloud_mode():
             # 强制模式下，连接失败直接抛出异常
             raise RuntimeError(f"强制云端模式连接失败 (已尝试 {max_retries} 次): {last_error}")
@@ -309,6 +559,7 @@ def _create_tables(cur, skip_migrations=False):
     # 创建表（如果不存在）
     cur.execute('CREATE TABLE IF NOT EXISTS processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cur.execute('CREATE TABLE IF NOT EXISTS ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, ielts_focus TEXT, collocations TEXT, traps TEXT, synonyms TEXT, discrimination TEXT, example_sentences TEXT, memory_aid TEXT, word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cur.execute('CREATE TABLE IF NOT EXISTS ai_word_iterations (id INTEGER PRIMARY KEY AUTOINCREMENT, voc_id TEXT NOT NULL, spelling TEXT, stage TEXT, it_level INTEGER, score REAL, justification TEXT, tags TEXT, refined_content TEXT, candidate_notes TEXT, raw_response TEXT, maimemo_context TEXT, batch_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(voc_id) REFERENCES ai_word_notes(voc_id))')
     cur.execute('CREATE TABLE IF NOT EXISTS word_progress_history (id INTEGER PRIMARY KEY AUTOINCREMENT, voc_id TEXT, familiarity_short REAL, familiarity_long REAL, review_count INTEGER, it_level INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     # 添加联合唯一约束，避免历史记录冗余同步
     try: cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_unique ON word_progress_history (voc_id, created_at, review_count)')
@@ -317,11 +568,7 @@ def _create_tables(cur, skip_migrations=False):
     cur.execute('CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cur.execute('CREATE TABLE IF NOT EXISTS test_run_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, total_count INTEGER, sample_count INTEGER, sample_words TEXT, ai_calls INTEGER, success_parsed INTEGER, is_dry_run BOOLEAN, error_msg TEXT, ai_results_json TEXT)')
 
-    # 跳过迁移操作（用于云端数据库初始化）
-    if skip_migrations:
-        return
-
-    # 添加缺失的列（仅本地数据库需要）
+    # 添加缺失的列（云端也需要，避免旧库缺少新字段）
     for t, c, d in [
         ('ai_word_notes', 'it_level',          'INTEGER DEFAULT 0'),
         ('ai_word_notes', 'it_history',         'TEXT'),
@@ -342,6 +589,33 @@ def _create_tables(cur, skip_migrations=False):
         except Exception as e:
             if "duplicate column name" not in str(e).lower():
                 _debug_log(f"  列添加失败: {t}.{c} -> {e}")
+
+    try:
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS ai_word_iterations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                voc_id TEXT NOT NULL,
+                spelling TEXT,
+                stage TEXT,
+                it_level INTEGER,
+                score REAL,
+                justification TEXT,
+                tags TEXT,
+                refined_content TEXT,
+                candidate_notes TEXT,
+                raw_response TEXT,
+                maimemo_context TEXT,
+                batch_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(voc_id) REFERENCES ai_word_notes(voc_id)
+            )
+        ''')
+    except Exception as e:
+        _debug_log(f"  ai_word_iterations 创建/校验失败: {e}")
+
+    # 跳过旧数据回填操作（用于云端数据库初始化）
+    if skip_migrations:
+        return
 
     # 手动为旧数据补齐时间戳，确保同步逻辑能正常运行
     try:
@@ -423,7 +697,7 @@ def mark_processed(voc_id: str, spelling: str, db_path: str = None, conn: Any = 
     """支持连接复用的标记处理函数"""
     def _do_sql(cn):
         cur = cn.cursor()
-        cur.execute('INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)', (str(voc_id), spelling))
+        cur.execute('INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, ?)', (str(voc_id), spelling, get_timestamp_with_tz()))
         if not conn: cn.commit(); cn.close()
 
     if conn:
@@ -481,7 +755,10 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata:
     t = payload.get('raw_full_text') or json.dumps(_raw_candidate, ensure_ascii=False)
     m_ctx = json.dumps(metadata.get('maimemo_context', {}), ensure_ascii=False) if metadata and metadata.get('maimemo_context') else None
     def _c(f): return clean_for_maimemo(payload.get(f, ''))
-    args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, metadata.get('original_meanings') if metadata else None, m_ctx, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    original_meanings = metadata.get('original_meanings') if metadata else None
+    if not original_meanings:
+        original_meanings = payload.get('original_meanings')
+    args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, get_timestamp_with_tz())
     sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
     def _do_sql(cn):
@@ -550,7 +827,10 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
             m_ctx = json.dumps(metadata.get('maimemo_context', {}), ensure_ascii=False) if metadata and metadata.get('maimemo_context') else None
             def _c(f): return clean_for_maimemo(payload.get(f, ''))
 
-            args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, metadata.get('original_meanings') if metadata else None, m_ctx, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            original_meanings = metadata.get('original_meanings') if metadata else None
+            if not original_meanings:
+                original_meanings = payload.get('original_meanings')
+            args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, get_timestamp_with_tz())
             batch_args.append(args)
 
         cur.executemany(sql, batch_args)
@@ -564,6 +844,72 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
 
     except Exception as e:
         _debug_log(f"批量保存 AI 笔记失败: {e}")
+        return False
+
+def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, metadata: dict = None, conn: Any = None) -> bool:
+    """保存单次迭代结果到独立历史表。"""
+    if not voc_id:
+        return False
+
+    try:
+        data = payload or {}
+        meta = metadata or {}
+        batch_id = meta.get('batch_id')
+        m_ctx = json.dumps(meta.get('maimemo_context', {}), ensure_ascii=False) if meta.get('maimemo_context') else None
+        tags = data.get('tags')
+        tags_json = json.dumps(tags, ensure_ascii=False) if tags is not None else None
+        raw_response = data.get('raw_response') or data.get('raw_full_text') or json.dumps(data, ensure_ascii=False)
+
+        args = (
+            str(voc_id),
+            data.get('spelling'),
+            data.get('stage'),
+            data.get('it_level'),
+            data.get('score'),
+            data.get('justification'),
+            tags_json,
+            data.get('refined_content'),
+            data.get('candidate_notes'),
+            raw_response,
+            m_ctx,
+            batch_id,
+        )
+
+        sql = '''
+            INSERT INTO ai_word_iterations (
+                voc_id, spelling, stage, it_level, score, justification, tags,
+                refined_content, candidate_notes, raw_response, maimemo_context, batch_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+
+        def _do_sql(cn):
+            cur = cn.cursor()
+            cur.execute(sql, args)
+            if not conn:
+                cn.commit()
+                cn.close()
+
+        if conn:
+            _do_sql(conn)
+        else:
+            path = db_path or DB_PATH
+            try:
+                cloud_conn = _get_conn(path)
+                if _is_cloud_connection(cloud_conn):
+                    _do_sql(cloud_conn)
+                    try:
+                        _do_sql(_get_local_conn(path))
+                    except Exception as local_sync_error:
+                        _debug_log(f"save_ai_word_iteration 本地缓存同步失败: {local_sync_error}")
+                else:
+                    _do_sql(cloud_conn)
+            except Exception as cloud_write_error:
+                _debug_log(f"save_ai_word_iteration 云端写入失败，回退本地: {cloud_write_error}")
+                _do_sql(_get_local_conn(path))
+
+        return True
+    except Exception as e:
+        _debug_log(f"保存迭代历史失败: {e}")
         return False
 
 def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
@@ -580,9 +926,7 @@ def find_word_in_community(voc_id: str) -> Optional[Tuple[dict, str]]:
             r = cloud_cur.fetchone()
             cloud_conn.close()
             if r:
-                # 将 sqlite3.Row 转换为 dict
-                columns = [col[0] for col in cloud_cur.description]
-                note_dict = dict(zip(columns, r))
+                note_dict = _row_to_dict(cloud_cur, r)
                 return note_dict, "云端数据库"
         except Exception as e:
             _debug_log(f"云端社区查询失败: {e}")
@@ -602,7 +946,7 @@ def find_word_in_community(voc_id: str) -> Optional[Tuple[dict, str]]:
             r = cur.fetchone()
             c.close()
             if r:
-                return dict(r), df
+                return _row_to_dict(cur, r), df
         except: continue
 
     # 3. 最后查询当前数据库
@@ -613,7 +957,7 @@ def find_word_in_community(voc_id: str) -> Optional[Tuple[dict, str]]:
         r = cur.fetchone()
         c.close()
         if r:
-            return dict(r), "当前数据库"
+            return _row_to_dict(cur, r), "当前数据库"
     except: pass
 
     return None
@@ -634,29 +978,45 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
 
     result = {}
 
-    # 1. 优先查询云端数据库（批量查询）
-    if not skip_cloud and TURSO_DB_URL and TURSO_AUTH_TOKEN and HAS_LIBSQL:
-        try:
-            cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
-            cloud_cur = cloud_conn.cursor()
+    # 1. 优先查询云端数据库（当前用户 + 其他 profile）
+    if not skip_cloud and HAS_LIBSQL:
+        cloud_targets = _collect_cloud_lookup_targets()
+        remaining_ids = [str(vid) for vid in voc_ids]
 
-            # 构建批量查询的 IN 子句
-            placeholders = ','.join(['?'] * len(voc_ids))
-            cloud_cur.execute(f'SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})', voc_ids)
-            rows = cloud_cur.fetchall()
-            cloud_conn.close()
+        for cloud_url, cloud_token, source_label in cloud_targets:
+            if not remaining_ids:
+                break
+            cloud_conn = None
+            try:
+                cloud_conn = _get_cloud_conn(cloud_url, cloud_token)
+                cloud_cur = cloud_conn.cursor()
 
-            if rows:
-                columns = [col[0] for col in cloud_cur.description]
-                for row in rows:
-                    note_dict = dict(zip(columns, row))
-                    voc_id = note_dict.get('voc_id')
-                    if voc_id:
-                        result[voc_id] = (note_dict, "云端数据库")
+                placeholders = ','.join(['?'] * len(remaining_ids))
+                cloud_cur.execute(f'SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})', remaining_ids)
+                rows = cloud_cur.fetchall()
 
-            _debug_log(f"云端批量查询完成：找到 {len(result)} 个单词的笔记")
-        except Exception as e:
-            _debug_log(f"云端批量查询失败: {e}")
+                if rows:
+                    columns = [col[0] for col in cloud_cur.description]
+                    found_count = 0
+                    for row in rows:
+                        note_dict = dict(zip(columns, row))
+                        voc_id = note_dict.get('voc_id')
+                        if voc_id and voc_id not in result:
+                            result[voc_id] = (note_dict, source_label)
+                            found_count += 1
+
+                    if found_count:
+                        remaining_ids = [vid for vid in remaining_ids if vid not in result]
+
+                _debug_log(f"{source_label} 批量查询完成：累计找到 {len(result)} 个单词的笔记")
+            except Exception as e:
+                _debug_log(f"{source_label} 批量查询失败: {e}")
+            finally:
+                if cloud_conn:
+                    try:
+                        cloud_conn.close()
+                    except Exception:
+                        pass
 
     # 2. 回退查询本地历史数据库文件（只查未找到的单词）
     remaining_ids = [vid for vid in voc_ids if vid not in result]
@@ -679,7 +1039,7 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
 
                 if rows:
                     for row in rows:
-                        note_dict = dict(row)
+                        note_dict = _row_to_dict(cur, row)
                         voc_id = note_dict.get('voc_id')
                         if voc_id and voc_id not in result:
                             result[voc_id] = (note_dict, df)
@@ -702,7 +1062,7 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
 
             if rows:
                 for row in rows:
-                    note_dict = dict(row)
+                    note_dict = _row_to_dict(cur, row)
                     voc_id = note_dict.get('voc_id')
                     if voc_id and voc_id not in result:
                         result[voc_id] = (note_dict, "当前数据库")
@@ -712,7 +1072,27 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
     return result
 
 def save_ai_batch(batch_data: dict, db_path: str = None):
-    c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('INSERT OR REPLACE INTO ai_batches (batch_id, request_id, ai_provider, model_name, prompt_version, batch_size, total_latency_ms, prompt_tokens, completion_tokens, total_tokens, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (batch_data.get('batch_id'), batch_data.get('request_id'), batch_data.get('ai_provider'), batch_data.get('model_name'), batch_data.get('prompt_version'), batch_data.get('batch_size', 1), batch_data.get('total_latency_ms', 0), batch_data.get('prompt_tokens', 0), batch_data.get('completion_tokens', 0), batch_data.get('total_tokens', 0), batch_data.get('finish_reason'))); c.commit(); c.close()
+    c = _get_conn(db_path or DB_PATH)
+    cur = c.cursor()
+    cur.execute(
+        'INSERT OR REPLACE INTO ai_batches (batch_id, request_id, ai_provider, model_name, prompt_version, batch_size, total_latency_ms, prompt_tokens, completion_tokens, total_tokens, finish_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (
+            batch_data.get('batch_id'),
+            batch_data.get('request_id'),
+            batch_data.get('ai_provider'),
+            batch_data.get('model_name'),
+            batch_data.get('prompt_version'),
+            batch_data.get('batch_size', 1),
+            batch_data.get('total_latency_ms', 0),
+            batch_data.get('prompt_tokens', 0),
+            batch_data.get('completion_tokens', 0),
+            batch_data.get('total_tokens', 0),
+            batch_data.get('finish_reason'),
+            get_timestamp_with_tz(),
+        ),
+    )
+    c.commit()
+    c.close()
 
 def get_file_hash(file_path):
     if not os.path.exists(file_path): return '00000000'
@@ -725,7 +1105,7 @@ def archive_prompt_file(source_path, prompt_hash, prompt_type='main'):
 def get_latest_progress(voc_id, db_path=None):
     c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('SELECT familiarity_short, review_count FROM word_progress_history WHERE voc_id = ? ORDER BY created_at DESC LIMIT 1', (str(voc_id),)); r = cur.fetchone(); c.close(); return _row_to_dict(cur, r) if r else None
 
-def set_config(k,v,db=None): c = _get_conn(db or DB_PATH); cur = c.cursor(); cur.execute('INSERT OR REPLACE INTO system_config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)', (k, v)); c.commit(); c.close()
+def set_config(k,v,db=None): c = _get_conn(db or DB_PATH); cur = c.cursor(); cur.execute('INSERT OR REPLACE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)', (k, v, get_timestamp_with_tz())); c.commit(); c.close()
 def get_config(k,db=None): c = _get_conn(db or DB_PATH); cur = c.cursor(); cur.execute('SELECT value FROM system_config WHERE key = ?', (k,)); r = cur.fetchone(); c.close(); return r[0] if r else None
 def log_progress_snapshots_bulk(w): return log_progress_snapshots(w)
 def save_test_word_note(v, p): save_ai_word_note(v, p, db_path=TEST_DB_PATH)
@@ -737,16 +1117,23 @@ def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]
     """
     双向同步云端和本地数据库，确保数据一致性。
     支持 dry_run 模式，仅返回需要上传和下载的记录数。
-    返回格式: {'upload': X, 'download': Y}
+    返回格式: {'upload': X, 'download': Y, 'status': 'ok|skipped|error', 'reason': str}
     """
     path = db_path or DB_PATH
-    stats = {'upload': 0, 'download': 0}
+    stats = {'upload': 0, 'download': 0, 'status': 'ok', 'reason': ''}
     if not TURSO_DB_URL or not TURSO_AUTH_TOKEN or not HAS_LIBSQL:
-        if not dry_run: _debug_log("云端未配置，跳过同步")
+        stats['status'] = 'skipped'
+        if not TURSO_DB_URL or not TURSO_AUTH_TOKEN:
+            stats['reason'] = 'missing-cloud-credentials'
+        else:
+            stats['reason'] = 'libsql-unavailable'
+        _debug_log(f"云端未配置或不可用，跳过同步: {stats['reason']}")
         return stats
     
     sync_start = time.time()
     if not dry_run: _debug_log("开始数据库同步...")
+    cloud_conn = None
+    local_conn = None
     
     try:
         # 获取连接
@@ -785,16 +1172,26 @@ def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]
             cloud_conn.commit()
             local_conn.commit()
         
-        cloud_conn.close()
-        local_conn.close()
-        
         total_time = int((time.time() - sync_start) * 1000)
         if not dry_run: _debug_log(f"数据库同步完成 | 总耗时: {total_time}ms")
         return stats
         
     except Exception as e:
         _debug_log(f"数据库同步失败: {e}")
+        stats['status'] = 'error'
+        stats['reason'] = str(e)
         return stats
+    finally:
+        if cloud_conn:
+            try:
+                cloud_conn.close()
+            except Exception:
+                pass
+        if local_conn:
+            try:
+                local_conn.close()
+            except Exception:
+                pass
 
 def _row_to_dict(cursor, row) -> dict:
     """将任意 row 对象（sqlite3.Row 或 libsql tuple）安全转换为 dict。"""
@@ -805,6 +1202,7 @@ def _row_to_dict(cursor, row) -> dict:
             return row.asdict()
         except Exception:
             pass
+
     try:
         # sqlite3.Row: keys() 方法
         return dict(zip(row.keys(), tuple(row)))
@@ -1033,10 +1431,9 @@ def init_users_hub_tables() -> bool:
     """初始化中央用户 Hub 数据库的6个表"""
     try:
         hub_fp = _hub_db_fingerprint()
-        # 检查是否已经初始化过（通过本地标记文件）
+        # 即使存在初始化标记，也继续执行 CREATE IF NOT EXISTS，确保新增表/列能自动补齐
         if _is_db_initialized("hub", hub_fp):
-            _debug_log("Hub 数据库已初始化（通过标记文件），跳过检查")
-            return True
+            _debug_log("Hub 数据库已初始化（通过标记文件），执行轻量 schema 校验")
 
         hub_start = time.time()
         hub_conn = _get_hub_conn()
@@ -1050,12 +1447,7 @@ def init_users_hub_tables() -> bool:
         _debug_log(f"Hub 表存在检查完成 (存在: {table_exists})", check_start)
 
         if table_exists:
-            # 表已存在，跳过创建
-            _debug_log("中央 Hub 数据库表已存在，跳过初始化")
-            hub_conn.close()
-            # 标记数据库已初始化
-            _mark_db_initialized("hub", hub_fp)
-            return True
+            _debug_log("中央 Hub users 表已存在，将执行增量 schema 校验")
 
         # 1. users 表：基本用户信息及角色/状态
         cur.execute('''
@@ -1151,6 +1543,21 @@ def init_users_hub_tables() -> bool:
             )
         ''')
 
+        # 7. user_credentials 表：用户敏感配置（加密存储）
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS user_credentials (
+                user_id TEXT PRIMARY KEY,
+                turso_db_url_enc TEXT,
+                turso_auth_token_enc TEXT,
+                momo_token_enc TEXT,
+                mimo_api_key_enc TEXT,
+                gemini_api_key_enc TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+
         hub_conn.commit()
         hub_conn.close()
         _debug_log("中央 Hub 数据库表初始化完成")
@@ -1233,6 +1640,117 @@ def save_user_info_to_hub(user_id: str, username: str, email: str, user_notes: s
     except Exception as e:
         _debug_log(f"保存用户信息到 Hub 失败: {e}")
         return False
+
+def save_user_credentials_to_hub(user_id: str, credentials: Dict[str, str], conn: Any = None) -> bool:
+    """保存用户敏感凭据到 Hub（字段加密后落库）。"""
+    if not user_id:
+        return False
+    if not credentials:
+        return True
+
+    key_bytes = _get_secret_key_bytes()
+    if not key_bytes:
+        _debug_log("跳过保存 Hub 凭据：ENCRYPTION_KEY 未配置", level="WARNING")
+        return False
+
+    field_map = {
+        "turso_db_url": "turso_db_url_enc",
+        "turso_auth_token": "turso_auth_token_enc",
+        "momo_token": "momo_token_enc",
+        "mimo_api_key": "mimo_api_key_enc",
+        "gemini_api_key": "gemini_api_key_enc",
+    }
+
+    need_close = False
+    try:
+        if conn:
+            hub_conn = conn
+        else:
+            hub_conn = _get_hub_conn()
+            need_close = True
+
+        cur = hub_conn.cursor()
+        cur.execute('SELECT * FROM user_credentials WHERE user_id = ?', (user_id,))
+        existing = cur.fetchone()
+        existing_data = _row_to_dict(cur, existing) if existing else {}
+
+        now = get_timestamp_with_tz()
+        created_at = existing_data.get('created_at', now)
+
+        row_values = {
+            "user_id": user_id,
+            "created_at": created_at,
+            "updated_at": now,
+        }
+
+        for src_key, db_col in field_map.items():
+            candidate = credentials.get(src_key)
+            if candidate:
+                row_values[db_col] = _encrypt_secret_value(str(candidate))
+            else:
+                row_values[db_col] = existing_data.get(db_col)
+
+        cur.execute('''
+            INSERT OR REPLACE INTO user_credentials (
+                user_id, turso_db_url_enc, turso_auth_token_enc, momo_token_enc,
+                mimo_api_key_enc, gemini_api_key_enc, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            row_values["user_id"],
+            row_values.get("turso_db_url_enc"),
+            row_values.get("turso_auth_token_enc"),
+            row_values.get("momo_token_enc"),
+            row_values.get("mimo_api_key_enc"),
+            row_values.get("gemini_api_key_enc"),
+            row_values["created_at"],
+            row_values["updated_at"],
+        ))
+
+        if need_close:
+            hub_conn.commit()
+            hub_conn.close()
+
+        _debug_log(f"用户凭据已更新到 Hub: {user_id}")
+        return True
+    except Exception as e:
+        _debug_log(f"保存用户凭据到 Hub 失败: {e}")
+        return False
+
+def get_user_credentials_from_hub(user_id: str, decrypt_values: bool = False) -> Optional[dict]:
+    """读取 Hub 中的用户凭据；可选解密返回明文。"""
+    if not user_id:
+        return None
+    try:
+        hub_conn = _get_hub_conn()
+        cur = hub_conn.cursor()
+        cur.execute('SELECT * FROM user_credentials WHERE user_id = ?', (user_id,))
+        row = cur.fetchone()
+        hub_conn.close()
+        if not row:
+            return None
+
+        data = _row_to_dict(cur, row)
+        if not decrypt_values:
+            return data
+
+        out = {
+            "user_id": data.get("user_id"),
+            "created_at": data.get("created_at"),
+            "updated_at": data.get("updated_at"),
+        }
+        decrypt_map = {
+            "turso_db_url": data.get("turso_db_url_enc"),
+            "turso_auth_token": data.get("turso_auth_token_enc"),
+            "momo_token": data.get("momo_token_enc"),
+            "mimo_api_key": data.get("mimo_api_key_enc"),
+            "gemini_api_key": data.get("gemini_api_key_enc"),
+        }
+        for k, v in decrypt_map.items():
+            out[k] = _decrypt_secret_value(v) if v else ""
+        return out
+    except Exception as e:
+        _debug_log(f"读取用户凭据失败: {e}")
+        return None
 
 def get_user_by_username(username: str) -> Optional[dict]:
     """从 Hub 按 username 查询用户记录。"""
@@ -1491,39 +2009,159 @@ def sync_hub_databases(dry_run: bool = False) -> Dict[str, int]:
         return stats
     
     _curr_logger = get_logger()
-    if not dry_run: _curr_logger.info("正在同步中央 Hub 数据库...", module="db_manager")
+    if not dry_run: _curr_logger.debug("正在同步中央 Hub 数据库...", module="db_manager")
+    cloud_conn = None
+    local_conn = None
     
     try:
         cloud_conn = _get_cloud_conn(TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN)
         local_conn = sqlite3.connect(HUB_DB_PATH)
         local_conn.row_factory = sqlite3.Row
+
+        # 先确保本地 Hub schema 完整，避免同步时出现 no such table
+        local_cur = local_conn.cursor()
+        local_cur.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL,
+                first_login_at TEXT,
+                last_login_at TEXT,
+                status TEXT DEFAULT 'active',
+                role TEXT DEFAULT 'user',
+                notes TEXT,
+                updated_at TEXT
+            )
+        ''')
+        local_cur.execute('''
+            CREATE TABLE IF NOT EXISTS user_auth (
+                user_id TEXT PRIMARY KEY,
+                password_hash TEXT,
+                auth_type TEXT DEFAULT 'local',
+                failed_attempts INTEGER DEFAULT 0,
+                last_failed_at TEXT,
+                last_password_change TEXT,
+                must_change_password INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+        local_cur.execute('''
+            CREATE TABLE IF NOT EXISTS user_sync_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_type TEXT NOT NULL,
+                source TEXT,
+                target TEXT,
+                record_count INTEGER,
+                sync_status TEXT,
+                error_msg TEXT,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+        local_cur.execute('''
+            CREATE TABLE IF NOT EXISTS user_stats (
+                user_id TEXT PRIMARY KEY,
+                total_words_processed INTEGER DEFAULT 0,
+                total_ai_calls INTEGER DEFAULT 0,
+                total_prompt_tokens INTEGER DEFAULT 0,
+                total_completion_tokens INTEGER DEFAULT 0,
+                total_sync_count INTEGER DEFAULT 0,
+                last_activity_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+        local_cur.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                session_id TEXT UNIQUE NOT NULL,
+                client_info TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                login_at TEXT NOT NULL,
+                logout_at TEXT,
+                last_activity_at TEXT,
+                session_status TEXT DEFAULT 'active',
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+        local_cur.execute('''
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_type TEXT NOT NULL,
+                action_detail TEXT,
+                admin_username TEXT,
+                target_user_id TEXT,
+                timestamp TEXT NOT NULL,
+                result TEXT DEFAULT 'success'
+            )
+        ''')
+        local_cur.execute('''
+            CREATE TABLE IF NOT EXISTS user_credentials (
+                user_id TEXT PRIMARY KEY,
+                turso_db_url_enc TEXT,
+                turso_auth_token_enc TEXT,
+                momo_token_enc TEXT,
+                mimo_api_key_enc TEXT,
+                gemini_api_key_enc TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+        local_conn.commit()
         
-        # 1. 同步 users 表
-        u, d = _sync_hub_table(cloud_conn, local_conn, 'users', 'user_id', dry_run)
-        stats['upload'] += u; stats['download'] += d
+        sync_targets = [
+            ('users', 'user_id'),
+            ('user_stats', 'user_id'),
+            ('user_auth', 'user_id'),
+            ('user_sessions', 'session_id'),
+            ('user_sync_history', 'id'),
+            ('admin_logs', 'id'),
+            ('user_credentials', 'user_id'),
+        ]
+
+        for table_name, primary_key in sync_targets:
+            try:
+                u, d = _sync_hub_table(cloud_conn, local_conn, table_name, primary_key, dry_run)
+                stats['upload'] += u
+                stats['download'] += d
+            except Exception as table_error:
+                _debug_log(f"Hub 表同步跳过: {table_name} -> {table_error}")
         
-        # 2. 同步 user_stats 表
-        u, d = _sync_hub_table(cloud_conn, local_conn, 'user_stats', 'user_id', dry_run)
-        stats['upload'] += u; stats['download'] += d
-        
-        # 3. 同步 admin_logs 表 (追加同步)
-        u, d = _sync_hub_table(cloud_conn, local_conn, 'admin_logs', 'id', dry_run)
-        stats['upload'] += u; stats['download'] += d
-        
-        cloud_conn.close()
-        local_conn.close()
-        if not dry_run: _curr_logger.info(f"Hub 同步完成: 上传 {stats['upload']}, 下载 {stats['download']}", module="db_manager")
+        if not dry_run: _curr_logger.debug(f"Hub 同步完成: 上传 {stats['upload']}, 下载 {stats['download']}", module="db_manager")
         return stats
     except Exception as e:
         _debug_log(f"Hub 同步失败: {e}")
         return stats
+    finally:
+        if cloud_conn:
+            try:
+                cloud_conn.close()
+            except Exception:
+                pass
+        if local_conn:
+            try:
+                local_conn.close()
+            except Exception:
+                pass
 
 def _sync_hub_table(cloud_conn, local_conn, table_name: str, primary_key: str, dry_run: bool = False):
     """优化后的 Hub 同步：处理空时间戳并采用轻量化模式"""
     cloud_cur = cloud_conn.cursor()
     local_cur = local_conn.cursor()
-    
-    ts_col = 'updated_at' if table_name != 'admin_logs' else 'timestamp'
+
+    ts_col_map = {
+        'admin_logs': 'timestamp',
+        'user_sync_history': 'timestamp',
+        'user_sessions': 'last_activity_at',
+        'users': 'last_login_at',
+    }
+    ts_col = ts_col_map.get(table_name, 'updated_at')
 
     # 1. 快速路径检测
     try:
@@ -1560,6 +2198,10 @@ def _sync_hub_table(cloud_conn, local_conn, table_name: str, primary_key: str, d
         l_ts = local_meta.get(k)
         if k not in local_meta or _clean_ts(c_ts) > _clean_ts(l_ts):
             keys_to_download.append(k)
+
+    # Hub 中 users 以云端为权威，避免本地脏记录反向覆盖并导致同步失败
+    if table_name == 'users':
+        keys_to_upload = []
 
     if dry_run: return len(keys_to_upload), len(keys_to_download)
 

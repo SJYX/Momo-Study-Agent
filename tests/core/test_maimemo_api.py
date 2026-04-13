@@ -70,3 +70,16 @@ def test_sync_interpretation_update(mock_api, mocker):
     
     success = mock_api.sync_interpretation("voc_123", "Updated Meaning")
     assert success is True
+
+def test_create_note_includes_tags(mock_api, mocker):
+    """测试助记创建时是否携带 tags。"""
+    mock_res = mocker.Mock()
+    mock_res.status_code = 200
+    mock_res.json.return_value = {"success": True}
+
+    request_mock = mocker.patch("requests.request", return_value=mock_res)
+
+    mock_api.create_note("voc_123", "1", "Note Content", tags=["AI", "帮助"])
+
+    _, kwargs = request_mock.call_args
+    assert kwargs["json"]["note"]["tags"] == ["帮助"]

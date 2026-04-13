@@ -6,7 +6,9 @@
 
 import requests
 import time
+from collections import deque
 from typing import List, Dict, Optional, Union
+from core.constants import MAIMEMO_NOTE_TAG_OPTIONS, MAIMEMO_NOTE_TAG_FALLBACK
 try:
     from core.logger import get_logger
 except ImportError:
@@ -22,16 +24,77 @@ class MaiMemoAPI:
             "Accept": "application/json"
         }
         self.creation_limit_reached = False  # 标记是否已达到创建限制
+        # 释义查询短缓存：避免同一 voc_id 在短时间内重复 GET
+        self._interpretations_cache: Dict[str, Dict] = {}
+        self._interpretations_cache_ts: Dict[str, float] = {}
+        self._interpretations_cache_ttl = 180  # 秒
+        # 自适应限速：按官方窗口进行请求节流（10s/20次, 60s/40次）
+        self._req_ts_10s = deque()
+        self._req_ts_60s = deque()
+        # 最小间隔用于平滑突发，避免短时尖峰导致 429
+        self._min_interval_sec = 0.12
+        self._last_request_ts = 0.0
+
+    def _apply_rate_limit(self):
+        """根据墨墨频控窗口进行自适应节流，尽量减少 429 重试等待。"""
+        now = time.time()
+
+        # 清理窗口外时间戳
+        while self._req_ts_10s and now - self._req_ts_10s[0] >= 10:
+            self._req_ts_10s.popleft()
+        while self._req_ts_60s and now - self._req_ts_60s[0] >= 60:
+            self._req_ts_60s.popleft()
+
+        wait_candidates = []
+        if self._req_ts_10s and len(self._req_ts_10s) >= 20:
+            wait_candidates.append(10 - (now - self._req_ts_10s[0]))
+        if self._req_ts_60s and len(self._req_ts_60s) >= 40:
+            wait_candidates.append(60 - (now - self._req_ts_60s[0]))
+
+        # 平滑间隔，减少突发请求导致的额外限流
+        gap = now - self._last_request_ts
+        if gap < self._min_interval_sec:
+            wait_candidates.append(self._min_interval_sec - gap)
+
+        wait_time = max(wait_candidates) if wait_candidates else 0
+        if wait_time > 0:
+            time.sleep(wait_time)
+
+        req_ts = time.time()
+        self._req_ts_10s.append(req_ts)
+        self._req_ts_60s.append(req_ts)
+        self._last_request_ts = req_ts
+
+    @staticmethod
+    def _is_transient_status(status_code: int) -> bool:
+        """判断是否属于可短暂重试的服务端错误。"""
+        return status_code in {500, 502, 503, 504}
+
+    @staticmethod
+    def _normalize_note_tags(tags: Optional[List[str]]) -> List[str]:
+        allowed = set(MAIMEMO_NOTE_TAG_OPTIONS)
+        if not tags:
+            return list(MAIMEMO_NOTE_TAG_FALLBACK)
+
+        if isinstance(tags, str):
+            tags = [tags]
+
+        normalized: List[str] = []
+        for tag in tags:
+            text = str(tag).strip()
+            if text in allowed and text not in normalized:
+                normalized.append(text)
+
+        return normalized or list(MAIMEMO_NOTE_TAG_FALLBACK)
 
     def _request(self, method: str, endpoint: str, **kwargs):
         """统一请求处理及限流"""
-        # 官方频控: 10秒20次, 60秒40次, 5小时2000次
-        time.sleep(0.5)
         url = f"{self.base_url}{endpoint}"
 
         # 添加重试逻辑（处理 429 错误）
         for attempt in range(3):  # MAX_RETRIES = 3
             try:
+                self._apply_rate_limit()
                 response = requests.request(method, url, headers=self.headers, **kwargs)
 
                 if 200 <= response.status_code < 300:
@@ -46,6 +109,15 @@ class MaiMemoAPI:
                         wait_time = wait_times[attempt] if attempt < len(wait_times) else 60
 
                     get_logger().warning(f"请求频率限制，{wait_time} 秒后重试... (尝试 {attempt + 1}/3)", module="maimemo_api")
+                    time.sleep(wait_time)
+                    continue
+                elif self._is_transient_status(response.status_code):
+                    wait_times = [2, 5, 10]
+                    wait_time = wait_times[attempt] if attempt < len(wait_times) else 10
+                    get_logger().warning(
+                        f"服务端临时错误 {response.status_code}，{wait_time} 秒后重试... (尝试 {attempt + 1}/3)",
+                        module="maimemo_api",
+                    )
                     time.sleep(wait_time)
                     continue
                 else:
@@ -83,7 +155,16 @@ class MaiMemoAPI:
     # ==========================
     def list_interpretations(self, voc_id: str) -> Optional[Dict]:
         """获取自己在此单词下创建的释义列表"""
-        return self._request("GET", "/interpretations", params={"voc_id": voc_id})
+        now = time.time()
+        ts = self._interpretations_cache_ts.get(voc_id)
+        if ts and (now - ts) <= self._interpretations_cache_ttl:
+            return self._interpretations_cache.get(voc_id)
+
+        res = self._request("GET", "/interpretations", params={"voc_id": voc_id})
+        if res is not None:
+            self._interpretations_cache[voc_id] = res
+            self._interpretations_cache_ts[voc_id] = now
+        return res
 
     def create_interpretation(self, voc_id: str, interpretation: str, tags: List[str] = None, status: str = "PUBLISHED") -> Optional[Dict]:
         """创建释义"""
@@ -97,7 +178,11 @@ class MaiMemoAPI:
                 "status": status
             }
         }
-        return self._request("POST", "/interpretations", json=payload)
+        res = self._request("POST", "/interpretations", json=payload)
+        # 创建后清理缓存，避免读到过期“空列表”
+        self._interpretations_cache.pop(voc_id, None)
+        self._interpretations_cache_ts.pop(voc_id, None)
+        return res
 
     def update_interpretation(self, interpretation_id: str, interpretation: str, tags: List[str] = None, status: str = "PUBLISHED") -> Optional[Dict]:
         """更新释义"""
@@ -198,23 +283,25 @@ class MaiMemoAPI:
         """获取助记"""
         return self._request("GET", "/notes", params={"voc_id": voc_id})
 
-    def create_note(self, voc_id: str, note_type: str, note: str) -> Optional[Dict]:
+    def create_note(self, voc_id: str, note_type: str, note: str, tags: List[str] = None) -> Optional[Dict]:
         """创建助记"""
         payload = {
             "note": {
                 "voc_id": voc_id,
                 "note_type": note_type,
-                "note": note
+                "note": note,
+                "tags": self._normalize_note_tags(tags)
             }
         }
         return self._request("POST", "/notes", json=payload)
 
-    def update_note(self, note_id: str, note_type: str, note: str) -> Optional[Dict]:
+    def update_note(self, note_id: str, note_type: str, note: str, tags: List[str] = None) -> Optional[Dict]:
         """更新助记"""
         payload = {
             "note": {
                 "note_type": note_type,
-                "note": note
+                "note": note,
+                "tags": self._normalize_note_tags(tags)
             }
         }
         return self._request("POST", f"/notes/{note_id}", json=payload)

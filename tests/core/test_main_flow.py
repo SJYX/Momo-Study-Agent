@@ -81,8 +81,8 @@ def test_flow_partial_ai_failure(mock_flow, mocker):
     assert mark_processed.call_count == 1
 
 
-def test_process_results_fills_original_meanings_from_payload(mock_flow, mocker):
-    """测试当 voc_meanings 缺失时 original_meanings 会回退到 AI basic_meanings。"""
+def test_process_results_preserves_original_meanings_source(mock_flow, mocker):
+    """测试当 voc_meanings 缺失时，不回退到 AI basic_meanings。"""
     mock_flow.momo.list_interpretations.return_value = {"success": True, "data": {"interpretations": []}}
     mock_flow.momo.sync_interpretation.return_value = True
 
@@ -94,4 +94,4 @@ def test_process_results_fills_original_meanings_from_payload(mock_flow, mocker)
 
     assert save_patch.called
     _, kwargs = save_patch.call_args
-    assert kwargs["metadata"]["original_meanings"] == "m1"
+    assert kwargs["metadata"]["original_meanings"] is None

@@ -3,8 +3,9 @@ import time
 from typing import List, Dict
 from core.db_manager import (
     get_latest_progress,
-    _get_conn, DB_PATH
+    _get_conn, DB_PATH, save_ai_word_iteration, get_timestamp_with_tz
 )
+from core.constants import MAIMEMO_BRIEF_MEANING_MAX_LENGTH
 from config import SCORE_PROMPT_FILE, REFINE_PROMPT_FILE
 from core.weak_word_filter import WeakWordFilter
 
@@ -153,53 +154,54 @@ class IterationManager:
 
         weak_words = []
 
-        # 1. 获取已有 AI 笔记的薄弱词（迭代优化）
-        query1 = f"""
-            SELECT n.*, h.familiarity_short
-            FROM ai_word_notes n
-            JOIN (
-                SELECT voc_id, familiarity_short
-                FROM word_progress_history
-                GROUP BY voc_id
-                HAVING MAX(created_at)
-            ) h ON n.voc_id = h.voc_id
-            WHERE h.familiarity_short < ?
-        """
-        cur.execute(query1, (threshold,))
-        rows1 = [dict(r) for r in cur.fetchall()]
-        weak_words.extend(rows1)
+        try:
+            # 1. 获取已有 AI 笔记的薄弱词（迭代优化）
+            query1 = f"""
+                SELECT n.*, h.familiarity_short
+                FROM ai_word_notes n
+                JOIN (
+                    SELECT voc_id, familiarity_short
+                    FROM word_progress_history
+                    GROUP BY voc_id
+                    HAVING MAX(created_at)
+                ) h ON n.voc_id = h.voc_id
+                WHERE h.familiarity_short < ?
+            """
+            cur.execute(query1, (threshold,))
+            rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+            weak_words.extend(rows1)
 
-        # 2. 获取没有 AI 笔记但熟悉度低的单词（首次助记生成）
-        # 排除已有 AI 笔记的单词
-        query2 = f"""
-            SELECT
-                h.voc_id,
-                h.familiarity_short,
-                p.spelling
-            FROM word_progress_history h
-            JOIN (
-                SELECT voc_id, MAX(created_at) as max_created_at
-                FROM word_progress_history
-                GROUP BY voc_id
-            ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
-            LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
-            JOIN processed_words p ON h.voc_id = p.voc_id
-            WHERE h.familiarity_short < ? AND n.voc_id IS NULL
-            GROUP BY h.voc_id
-        """
-        cur.execute(query2, (threshold,))
-        rows2 = [dict(r) for r in cur.fetchall()]
+            # 2. 获取没有 AI 笔记但熟悉度低的单词（首次助记生成）
+            # 排除已有 AI 笔记的单词
+            query2 = f"""
+                SELECT
+                    h.voc_id,
+                    h.familiarity_short,
+                    p.spelling
+                FROM word_progress_history h
+                JOIN (
+                    SELECT voc_id, MAX(created_at) as max_created_at
+                    FROM word_progress_history
+                    GROUP BY voc_id
+                ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
+                LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
+                JOIN processed_words p ON h.voc_id = p.voc_id
+                WHERE h.familiarity_short < ? AND n.voc_id IS NULL
+                GROUP BY h.voc_id
+            """
+            cur.execute(query2, (threshold,))
+            rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
 
-        # 补全缺失的字段
-        for row in rows2:
-            row['it_level'] = 0
-            row['it_history'] = '[]'
-            row['memory_aid'] = ''
-            row['raw_full_text'] = ''
-            row['meanings'] = ''  # 没有释义信息
-            weak_words.append(row)
-
-        conn.close()
+            # 补全缺失的字段
+            for row in rows2:
+                row['it_level'] = 0
+                row['it_history'] = '[]'
+                row['memory_aid'] = ''
+                row['raw_full_text'] = ''
+                row['meanings'] = ''  # 没有释义信息
+                weak_words.append(row)
+        finally:
+            conn.close()
 
         # 去重（基于 voc_id）
         unique_words = {}
@@ -244,20 +246,33 @@ class IterationManager:
 
         try:
             try:
-                import json_repair
+                import importlib
+                json_repair = importlib.import_module("json_repair")
             except ImportError:
                 import json
                 json_repair = json
             res = json_repair.loads(text.strip())
             best_note = res.get("refined_content")
             score = res.get("score")
+            iteration_context = {
+                "stage": "level_1_selection",
+                "score": score,
+                "justification": res.get("justification"),
+                "tags": res.get("tags"),
+                "refined_content": best_note,
+                "raw_response": text,
+                "candidate_notes": memory_aid,
+                "spelling": spell,
+                "voc_id": voc_id,
+                "it_level": 1,
+            }
             self.logger.info(f"  AI 打分结果: {score}/10, 理由: {res.get('justification')}", module="iteration_manager", function="_handle_level_1_selection")
 
             if not best_note:
                 raise ValueError("AI 返回中缺少 refined_content")
 
             # 2. 同步到墨墨助记
-            sync_res = self.momo.create_note(voc_id, "1", best_note)
+            sync_res = self.momo.create_note(voc_id, "1", best_note, tags=res.get("tags"))
             if sync_res and sync_res.get("success"):
                 self.logger.info(f"  ✅ {spell} 选优助记已同步至墨墨 (Score: {score})", module="iteration_manager", function="_handle_level_1_selection")
 
@@ -265,15 +280,15 @@ class IterationManager:
                 # 提取简短释义用于同步
                 brief_meaning = word.get("meanings", "")
                 if brief_meaning:
-                    # 截取前50个字符作为简短释义
-                    brief_meaning = brief_meaning[:50] + "..." if len(brief_meaning) > 50 else brief_meaning
+                    if len(brief_meaning) > MAIMEMO_BRIEF_MEANING_MAX_LENGTH:
+                        brief_meaning = brief_meaning[:MAIMEMO_BRIEF_MEANING_MAX_LENGTH] + "..."
                     sync_interpretation_res = self.momo.sync_interpretation(voc_id, brief_meaning, tags=["雅思", "考研"], spell=spell)
                     if sync_interpretation_res:
                         self.logger.info(f"  ✅ {spell} 释义已同步至墨墨", module="iteration_manager", function="_handle_level_1_selection")
                     else:
                         self.logger.warning(f"  ⚠️ {spell} 释义同步失败", module="iteration_manager", function="_handle_level_1_selection")
 
-                self._update_it_state(voc_id, 1, f"AI Scored {score}: {res.get('justification')}")
+                self._update_it_state(voc_id, 1, f"AI Scored {score}: {res.get('justification')}", iteration_data=iteration_context)
         except Exception as e:
             self.logger.error(f"  [Level 1 Error] {spell}: {e} | Raw: {text[:100]}", module="iteration_manager", function="_handle_level_1_selection")
 
@@ -296,16 +311,29 @@ class IterationManager:
 
         try:
             try:
-                import json_repair
+                import importlib
+                json_repair = importlib.import_module("json_repair")
             except ImportError:
                 import json
                 json_repair = json
             new_data = json_repair.loads(text.strip())
             if isinstance(new_data, list) and len(new_data) > 0:
                 new_note = new_data[0]["memory_aid"]
+                iteration_context = {
+                    "stage": "level_2_refinement",
+                    "score": None,
+                    "justification": None,
+                    "tags": new_data[0].get("tags"),
+                    "refined_content": new_note,
+                    "raw_response": text,
+                    "candidate_notes": word.get('memory_aid', ''),
+                    "spelling": spell,
+                    "voc_id": voc_id,
+                    "it_level": word["it_level"] + 1,
+                }
 
                 # 2. 同步到墨墨助记
-                sync_res = self.momo.create_note(voc_id, "1", new_note)
+                sync_res = self.momo.create_note(voc_id, "1", new_note, tags=new_data[0].get("tags"))
                 if sync_res and sync_res.get("success"):
                     self.logger.info(f"  🔥 {spell} 强力重炼助记已同步 (Level 2)", module="iteration_manager", function="_handle_level_2_refinement")
 
@@ -313,14 +341,15 @@ class IterationManager:
                     if not (hasattr(self.momo, 'creation_limit_reached') and self.momo.creation_limit_reached):
                         brief_meaning = word.get("meanings", "")
                         if brief_meaning:
-                            brief_meaning = brief_meaning[:50] + "..." if len(brief_meaning) > 50 else brief_meaning
+                            if len(brief_meaning) > MAIMEMO_BRIEF_MEANING_MAX_LENGTH:
+                                brief_meaning = brief_meaning[:MAIMEMO_BRIEF_MEANING_MAX_LENGTH] + "..."
                             sync_interpretation_res = self.momo.sync_interpretation(voc_id, brief_meaning, tags=["雅思", "考研"], spell=spell)
                             if sync_interpretation_res:
                                 self.logger.info(f"  ✅ {spell} 释义已同步至墨墨", module="iteration_manager", function="_handle_level_2_refinement")
                             else:
                                 self.logger.warning(f"  ⚠️ {spell} 释义同步失败", module="iteration_manager", function="_handle_level_2_refinement")
 
-                    self._update_it_state(voc_id, word["it_level"] + 1, "Power Refined", new_note, text)
+                    self._update_it_state(voc_id, word["it_level"] + 1, "Power Refined", new_note, text, iteration_data=iteration_context)
                     if hasattr(self, 'notepad_additions'):
                         self.notepad_additions.append(spell)
             else:
@@ -328,42 +357,47 @@ class IterationManager:
         except Exception as e:
             self.logger.error(f"  [Level 2 Error] {spell}: {str(e)[:120]} | Raw: {text[:100]}", module="iteration_manager", function="_handle_level_2_refinement")
 
-    def _update_it_state(self, voc_id, level, reason, new_note=None, raw_text=None):
+    def _update_it_state(self, voc_id, level, reason, new_note=None, raw_text=None, iteration_data=None):
         """原子化更新迭代状态。"""
         conn = _get_conn(DB_PATH)
         cur = conn.cursor()
         
         # 获取当前熟悉度作为基准
         current_progress = get_latest_progress(voc_id)
-        current_fam = current_progress["familiarity_short"] if current_progress else 0.0
+        current_fam = current_progress.get("familiarity_short", 0.0) if current_progress else 0.0
+        if current_fam is None:
+            current_fam = 0.0
 
         history_item = {
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "time": get_timestamp_with_tz(),
             "level": level,
             "reason": reason,
             "baseline_fam": current_fam
         }
         
         # 获取旧 history
-        cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+        cur.execute("SELECT it_history, memory_aid, raw_full_text FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
         row = cur.fetchone()
         old_history = json.loads(row[0]) if row and row[0] else []
         old_history.append(history_item)
+
+        if iteration_data:
+            save_ai_word_iteration(voc_id, iteration_data, conn=conn)
         
         if new_note:
             # 模式：将重炼结果置顶保存，保留历史
             combined_note = f"{new_note}\n\n--- 历史记录 ---\n{row[1]}" if row else new_note
             cur.execute("""
                 UPDATE ai_word_notes 
-                SET it_level = ?, it_history = ?, memory_aid = ?, raw_full_text = ?, updated_at = CURRENT_TIMESTAMP
+                SET it_level = ?, it_history = ?, memory_aid = ?, updated_at = ?
                 WHERE voc_id = ?
-            """, (level, json.dumps(old_history, ensure_ascii=False), combined_note, raw_text or (row[2] if row else None), voc_id))
+            """, (level, json.dumps(old_history, ensure_ascii=False), combined_note, get_timestamp_with_tz(), voc_id))
         else:
             cur.execute("""
                 UPDATE ai_word_notes 
-                SET it_level = ?, it_history = ?, updated_at = CURRENT_TIMESTAMP
+                SET it_level = ?, it_history = ?, updated_at = ?
                 WHERE voc_id = ?
-            """, (level, json.dumps(old_history, ensure_ascii=False), voc_id))
+            """, (level, json.dumps(old_history, ensure_ascii=False), get_timestamp_with_tz(), voc_id))
             
         conn.commit()
         conn.close()

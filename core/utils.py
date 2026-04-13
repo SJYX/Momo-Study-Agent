@@ -7,7 +7,7 @@
 import functools
 import hashlib
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, Optional, TypeVar, cast
 
 from core.constants import CACHE_MAX_SIZE, CACHE_TTL_SECONDS
@@ -187,10 +187,12 @@ def monitor_performance(threshold_ms: int = 1000, logger: Optional[Any] = None):
 # 时间工具 (Time Utilities)
 # ============================================================================
 
+UTC_PLUS_8 = timezone(timedelta(hours=8))
+
 
 def get_timestamp_with_tz() -> str:
     """获取当前时间戳，格式为 ISO 8601 含时区"""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC_PLUS_8).isoformat()
 
 
 def parse_iso_timestamp(timestamp: str) -> datetime:
@@ -201,7 +203,7 @@ def parse_iso_timestamp(timestamp: str) -> datetime:
 def get_elapsed_days(timestamp: str) -> int:
     """计算从指定时间戳到现在经过的天数"""
     dt = parse_iso_timestamp(timestamp)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC_PLUS_8)
     return (now - dt).days
 
 

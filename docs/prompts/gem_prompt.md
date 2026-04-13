@@ -19,7 +19,8 @@ Each object in the JSON array must follow this exact schema:
     "discrimination": "[Content for Synonym Discrimination, empty string if N/A]",
     "example_sentences": "[Content for Example Sentence]",
     "memory_aid": "[Content for Memory Aid]",
-    "word_ratings": "[Content for Word Ratings]"
+    "word_ratings": "[Content for Word Ratings]",
+    "tags": ["[Choose 1-3 tags only from the whitelist below]"]
   }
 ]
 
@@ -84,6 +85,11 @@ Format Rules (CRITICAL):
 - **提分杠杆率 (ROI): [X]/10** - [Brief reason]
 - **学术输出潜力 (Academic Yield): [X]/10** - [Brief reason]
 - **易错踩坑指数 (Trap Probability): [X]/10** - [Brief reason]
+
+### Field: "tags"
+- 只能从以下现有标签中选择 1-3 个，不允许自创：词根词缀、固定搭配、近反义词、派生、词源、辨析、语法、联想、谐音、串记、口诀、扩展、合成、其他、帮助、>-<
+- 优先根据记忆法和核心特征选择最贴切的标签；不确定时优先返回 ["帮助"] 或 ["其他"]
+- 返回格式必须是 JSON 数组，例如 ["词根词缀", "联想"]
 
 ========================
 Execution

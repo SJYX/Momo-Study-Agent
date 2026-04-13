@@ -26,6 +26,7 @@
 | [VIBE_CODING_SUMMARY.md](dev/VIBE_CODING_SUMMARY.md) | Vibe Coding 优化总结 |
 | [DECISIONS.md](dev/DECISIONS.md) | 已否定方案记录 |
 | [CONTRIBUTING.md](dev/CONTRIBUTING.md) | 开发规约、代码规范 |
+| [NEW_USER_ZERO_CREDENTIAL_PLAN.md](dev/NEW_USER_ZERO_CREDENTIAL_PLAN.md) | 零凭证新用户上手改造计划 |
 
 ## 🔌 API 参考
 

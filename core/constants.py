@@ -70,6 +70,30 @@ GEMINI_DEFAULT_MODEL = "gemini-2.0-flash"
 MIMO_DEFAULT_MODEL = "mimo-v2-flash"
 MIMO_DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 
+# 释义摘要长度配置
+MAIMEMO_BRIEF_MEANING_MAX_LENGTH = 120  # 同步到墨墨时的简短释义长度上限
+
+# 墨墨助记标签白名单（只允许从现有标签中选择，不自创）
+MAIMEMO_NOTE_TAG_OPTIONS = [
+	"词根词缀",
+	"固定搭配",
+	"近反义词",
+	"派生",
+	"词源",
+	"辨析",
+	"语法",
+	"联想",
+	"谐音",
+	"串记",
+	"口诀",
+	"扩展",
+	"合成",
+	"其他",
+	"帮助",
+	">-<",
+]
+MAIMEMO_NOTE_TAG_FALLBACK = ["帮助"]
+
 # AI 请求超时
 AI_REQUEST_TIMEOUT_SECONDS = 60
 AI_REQUEST_MAX_TOKENS = 4096

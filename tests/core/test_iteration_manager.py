@@ -55,7 +55,8 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
         json.dumps({
             "score": 9,
             "justification": "Test justification",
-            "refined_content": "Selected Best Note"
+            "refined_content": "Selected Best Note",
+            "tags": ["词根词缀", "联想"]
         }), {}
     )
     mock_momo.create_note.return_value = {"success": True}
@@ -69,6 +70,19 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
     row = cur.fetchone()
     assert row[0] == 1
     assert "AI Scored 9" in row[1]
+    assert mock_momo.create_note.call_args_list[0][1]["tags"] == ["词根词缀", "联想"]
+
+    cur.execute("SELECT id, voc_id, stage, it_level, score, justification, tags, refined_content, candidate_notes, raw_response FROM ai_word_iterations WHERE voc_id = ? ORDER BY id ASC", (voc_id,))
+    rows = cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0][2] == "level_1_selection"
+    assert rows[0][3] == 1
+    assert rows[0][4] == 9
+    assert "Test justification" in rows[0][5]
+    assert rows[0][6] == '["词根词缀", "联想"]'
+    assert rows[0][7] == "Selected Best Note"
+    assert "Method A" in rows[0][8]
+    assert '"score": 9' in rows[0][9]
     
     # --- 阶段二：Level 2 (由于熟悉度未提升触发重炼) ---
     # 模拟用户又背了一次，但熟悉度只涨了 0.01 (低于 0.1 的阈值)
@@ -78,7 +92,7 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
     
     # 模拟强力重炼 AI 返回 (数组格式)
     mock_ai.generate_with_instruction.return_value = (
-        json.dumps([{"spelling": spell, "memory_aid": "**[Refined]** Power Hook"}]), {}
+        json.dumps([{"spelling": spell, "memory_aid": "**[Refined]** Power Hook", "tags": ["帮助"]}]), {}
     )
     
     manager.run_iteration(familiarity_threshold=3.0)
@@ -86,9 +100,22 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
     # 验证状态变更为 Level 2
     cur.execute("SELECT it_level, it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
     row = cur.fetchone()
-    conn.close()
-    
+
     assert row[0] == 2
     assert "Power Refined" in row[1]
     assert "**[Refined]**" in row[2]
     assert "Method A" in row[2] # 验证了旧内容被保留在下方
+    assert mock_momo.create_note.call_args_list[1][1]["tags"] == ["帮助"]
+
+    cur.execute("SELECT stage, it_level, score, justification, tags, refined_content, candidate_notes, raw_response FROM ai_word_iterations WHERE voc_id = ? ORDER BY id ASC", (voc_id,))
+    rows = cur.fetchall()
+    assert len(rows) == 2
+    assert rows[1][0] == "level_2_refinement"
+    assert rows[1][1] == 2
+    assert rows[1][2] is None
+    assert rows[1][3] is None
+    assert rows[1][4] == '["帮助"]'
+    assert rows[1][5] == "**[Refined]** Power Hook"
+    assert "Method A" in rows[1][6]
+    assert '"stage": "level_2_refinement"' in rows[1][7]
+    conn.close()

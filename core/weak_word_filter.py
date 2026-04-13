@@ -9,7 +9,7 @@ import json
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple
-from core.db_manager import _get_conn, DB_PATH
+from core.db_manager import _get_conn, DB_PATH, _row_to_dict
 
 
 class WeakWordFilter:
@@ -19,6 +19,15 @@ class WeakWordFilter:
         else:
             from core.logger import get_logger
             self.logger = get_logger()
+
+    @staticmethod
+    def _as_number(value, default=0.0):
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def calculate_weak_score(self, word: Dict) -> float:
         """计算单词的薄弱分数（0-100，越高越薄弱）
@@ -33,12 +42,12 @@ class WeakWordFilter:
         score = 0
 
         # 1. 熟悉度权重 (0-40分)
-        familiarity = word.get('familiarity_short', 0)
+        familiarity = self._as_number(word.get('familiarity_short'), 0.0)
         if familiarity < 3.0:
             score += (3.0 - familiarity) * 13.33  # 3.0以下每0.1增加1.33分
 
         # 2. 复习次数权重 (0-20分)
-        review_count = word.get('review_count', 0)
+        review_count = int(self._as_number(word.get('review_count'), 0))
         if review_count < 5:
             score += 20
         elif review_count < 10:
@@ -48,18 +57,7 @@ class WeakWordFilter:
         elif review_count < 30:
             score += 5
 
-        # 3. 复习次数权重 (0-20分)
-        review_count = word.get('review_count', 0)
-        if review_count < 5:
-            score += 20
-        elif review_count < 10:
-            score += 15
-        elif review_count < 20:
-            score += 10
-        elif review_count < 30:
-            score += 5
-
-        # 4. 时间权重 (0-10分) - 使用 created_at 字段
+        # 3. 时间权重 (0-10分) - 使用 created_at 字段
         created_at = word.get('created_at', '')
         if created_at:
             try:
@@ -78,8 +76,8 @@ class WeakWordFilter:
             except Exception as e:
                 self.logger.warning(f"解析日期失败: {created_at}, 错误: {e}")
 
-        # 5. 迭代级别权重 (0-10分)
-        it_level = word.get('it_level', 0)
+        # 4. 迭代级别权重 (0-10分)
+        it_level = int(self._as_number(word.get('it_level'), 0))
         score += min(it_level * 2, 10)  # 迭代级别越高，分数越高
 
         return min(score, 100)
@@ -174,32 +172,37 @@ class WeakWordFilter:
         conn = _get_conn(DB_PATH)
         cur = conn.cursor()
 
-        # 获取所有单词的最新进度
-        query = """
-            SELECT
-                h.voc_id,
-                h.familiarity_short,
-                h.review_count,
-                h.created_at,
-                n.it_level,
-                n.memory_aid,
-                p.spelling
-            FROM word_progress_history h
-            JOIN (
-                SELECT voc_id, MAX(created_at) as max_created_at
-                FROM word_progress_history
-                GROUP BY voc_id
-            ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
-            LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
-            LEFT JOIN processed_words p ON h.voc_id = p.voc_id
-        """
-        cur.execute(query)
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
+        try:
+            # 获取所有单词的最新进度
+            query = """
+                SELECT
+                    h.voc_id,
+                    h.familiarity_short,
+                    h.review_count,
+                    h.created_at,
+                    n.it_level,
+                    n.memory_aid,
+                    p.spelling
+                FROM word_progress_history h
+                JOIN (
+                    SELECT voc_id, MAX(created_at) as max_created_at
+                    FROM word_progress_history
+                    GROUP BY voc_id
+                ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
+                LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
+                LEFT JOIN processed_words p ON h.voc_id = p.voc_id
+            """
+            cur.execute(query)
+            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+        finally:
+            conn.close()
 
         # 计算每个单词的薄弱分数
         scored_words = []
         for word in rows:
+            # 复习次数过低的词不参与迭代薄弱词筛选，避免把初始脏数据当薄弱词
+            if int(self._as_number(word.get('review_count'), 0)) < 3:
+                continue
             score = self.calculate_weak_score(word)
             if score >= min_score:
                 word['weak_score'] = score
@@ -222,36 +225,42 @@ class WeakWordFilter:
         conn = _get_conn(DB_PATH)
         cur = conn.cursor()
 
-        # 获取所有单词的最新进度
-        query = """
-            SELECT
-                h.voc_id,
-                h.familiarity_short,
-                h.review_count,
-                h.created_at,
-                n.it_level,
-                n.memory_aid,
-                p.spelling
-            FROM word_progress_history h
-            JOIN (
-                SELECT voc_id, MAX(created_at) as max_created_at
-                FROM word_progress_history
-                GROUP BY voc_id
-            ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
-            LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
-            LEFT JOIN processed_words p ON h.voc_id = p.voc_id
-        """
-        cur.execute(query)
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
+        try:
+            # 获取所有单词的最新进度
+            query = """
+                SELECT
+                    h.voc_id,
+                    h.familiarity_short,
+                    h.review_count,
+                    h.created_at,
+                    n.it_level,
+                    n.memory_aid,
+                    p.spelling
+                FROM word_progress_history h
+                JOIN (
+                    SELECT voc_id, MAX(created_at) as max_created_at
+                    FROM word_progress_history
+                    GROUP BY voc_id
+                ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
+                LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
+                LEFT JOIN processed_words p ON h.voc_id = p.voc_id
+            """
+            cur.execute(query)
+            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+        finally:
+            conn.close()
 
         urgent_words = []
         normal_words = []
         potential_words = []
 
         for word in rows:
-            familiarity = word.get('familiarity_short', 0)
-            review_count = word.get('review_count', 0)
+            familiarity = self._as_number(word.get('familiarity_short'), 0.0)
+            review_count = int(self._as_number(word.get('review_count'), 0))
+
+            # 复习次数过低的词跳过，不进入迭代分类
+            if review_count < 3:
+                continue
 
             # 紧急薄弱词：熟悉度极低
             if familiarity < threshold * 0.7:

@@ -7,6 +7,8 @@ import os
 import json
 import argparse
 import threading
+import socket
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from core.maimemo_api import MaiMemoAPI
 from core.mimo_client import MimoClient
@@ -19,7 +21,7 @@ from core.db_manager import (
     get_processed_ids_in_batch,
 
     # 用户会话管理
-    save_user_session, save_user_info_to_hub, update_user_login_time,
+    save_user_session, save_user_info_to_hub, save_user_credentials_to_hub, update_user_login_time,
 
     # 用户认证和权限
     is_admin_username, get_user_by_username,
@@ -35,7 +37,7 @@ from core.db_manager import (
 from config import (
     MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY, BATCH_SIZE, DRY_RUN,
     AI_PROVIDER, ACTIVE_USER, PROMPT_FILE, SCORE_PROMPT_FILE, REFINE_PROMPT_FILE,
-    FORCE_CLOUD_MODE, PROFILES_DIR
+    FORCE_CLOUD_MODE, PROFILES_DIR, TURSO_DB_URL, TURSO_AUTH_TOKEN
 )
 from core.logger import setup_logger
 from core.log_config import get_full_config
@@ -146,6 +148,20 @@ class StudyFlowManager:
                 role="admin" if self.is_admin else "user",
                 conn=hub_conn
             )
+
+            # 同步当前用户的敏感配置到 Hub（加密存储，需 ENCRYPTION_KEY）
+            save_user_credentials_to_hub(
+                user_id,
+                {
+                    "turso_db_url": TURSO_DB_URL,
+                    "turso_auth_token": TURSO_AUTH_TOKEN,
+                    "momo_token": MOMO_TOKEN,
+                    "mimo_api_key": MIMO_API_KEY,
+                    "gemini_api_key": GEMINI_API_KEY,
+                },
+                conn=hub_conn,
+            )
+
             update_user_login_time(user_id, conn=hub_conn)
 
             # 2. 只有用户信息成功记录后，才记录会话（user_sessions 表是 child）
@@ -154,7 +170,7 @@ class StudyFlowManager:
                 "python_version": sys.version.split()[0],
                 "ai_provider": AI_PROVIDER
             })
-            ip_address = "127.0.0.1"  # 本地运行，默认 localhost
+            ip_address = self._get_client_ip()
             save_user_session(user_id, session_id, client_info, ip_address, conn=hub_conn)
             self.logger.info(f"用户会话已记录到 Hub: {user_id}", session_id=session_id)
 
@@ -214,6 +230,11 @@ class StudyFlowManager:
         
         self.prompt_version = self.prompt_hashes["main"]
         self._post_sync_thread = None
+        # 方案3：短期判重缓存（session + TTL）
+        self._session_processed_ids = set()
+        self._processed_cache = {}
+        self._processed_cache_ttl_seconds = int(os.getenv("PROCESSED_CACHE_TTL_SECONDS", "900"))
+        self._processed_cache_max_entries = int(os.getenv("PROCESSED_CACHE_MAX_ENTRIES", "50000"))
 
         # B. 初始化 AI 客户端
         if AI_PROVIDER == "mimo":
@@ -225,6 +246,88 @@ class StudyFlowManager:
             if not GEMINI_API_KEY: raise ValueError("GEMINI_API_KEY required")
             self.ai_client = GeminiClient(GEMINI_API_KEY)
             self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (Google Gemini)")
+
+    @staticmethod
+    def _get_client_ip() -> str:
+        """获取本机出口 IP，失败时回退 localhost。"""
+        # 使用 UDP 套接字探测本机对外路由地址（不会真正发包）
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+                if ip:
+                    return ip
+            finally:
+                s.close()
+        except Exception:
+            pass
+
+        # 回退：主机名解析
+        try:
+            host_ip = socket.gethostbyname(socket.gethostname())
+            if host_ip and host_ip != "127.0.0.1":
+                return host_ip
+        except Exception:
+            pass
+
+        return "127.0.0.1"
+
+    def _prune_processed_cache(self):
+        if len(self._processed_cache) <= self._processed_cache_max_entries:
+            return
+        # 淘汰最旧的一批键，避免缓存无限增长
+        overflow = len(self._processed_cache) - self._processed_cache_max_entries
+        keys = sorted(self._processed_cache.items(), key=lambda kv: kv[1].get("ts", 0.0))
+        for k, _ in keys[:overflow]:
+            self._processed_cache.pop(k, None)
+
+    def _get_processed_ids_cached(self, voc_ids):
+        now = time.time()
+        processed_ids = set()
+        to_query = []
+
+        for vid in voc_ids:
+            v = str(vid)
+            if v in self._session_processed_ids:
+                processed_ids.add(v)
+                continue
+
+            cached = self._processed_cache.get(v)
+            if cached and (now - cached.get("ts", 0.0) <= self._processed_cache_ttl_seconds):
+                if cached.get("processed"):
+                    processed_ids.add(v)
+                continue
+
+            to_query.append(v)
+
+        if to_query:
+            fresh_processed = set(get_processed_ids_in_batch(to_query))
+            for v in to_query:
+                is_processed = v in fresh_processed
+                self._processed_cache[v] = {"processed": is_processed, "ts": now}
+                if is_processed:
+                    self._session_processed_ids.add(v)
+            processed_ids.update(fresh_processed)
+            self._prune_processed_cache()
+
+        return processed_ids
+
+    def _mark_processed_with_cache(self, voc_id, spelling):
+        v = str(voc_id)
+        mark_processed(v, spelling)
+        now = time.time()
+        self._session_processed_ids.add(v)
+        self._processed_cache[v] = {"processed": True, "ts": now}
+
+    def _invalidate_processed_cache(self, only_negative=True):
+        if only_negative:
+            stale_keys = [k for k, v in self._processed_cache.items() if not v.get("processed")]
+            for k in stale_keys:
+                self._processed_cache.pop(k, None)
+        else:
+            self._processed_cache.clear()
+            self._session_processed_ids.clear()
 
     def _check_esc_interrupt(self):
         if msvcrt.kbhit():
@@ -255,11 +358,19 @@ class StudyFlowManager:
         stats = sync_databases(dry_run=True)
         un_up = stats.get('upload', 0)
         un_down = stats.get('download', 0)
+        sync_status = stats.get('status', 'ok')
+        sync_reason = stats.get('reason', '')
 
         # 标记是否已合并数据（默认未合并）
         self.data_merged = False
 
-        if un_up > 0 or un_down > 0:
+        if sync_status == 'skipped':
+            self.logger.warning(f"⚠️ 未执行云端一致性检查: {sync_reason}")
+            self.data_merged = False
+        elif sync_status == 'error':
+            self.logger.warning(f"⚠️ 云端一致性检查失败: {sync_reason}")
+            self.data_merged = False
+        elif un_up > 0 or un_down > 0:
             print(f"\n[!] 发现同步差异: 云端有 {un_down} 条新数据，本地有 {un_up} 条待上传。")
             ch = input("是否立即进行合并？(Y/N, 默认 Y): ").strip().lower()
             if ch != 'n':
@@ -352,7 +463,16 @@ class StudyFlowManager:
             return
 
         self.logger.info("🔁 正在后台将最新进度推送到云端...", module="main")
-        self._post_sync_thread = threading.Thread(target=sync_databases, kwargs={'dry_run': False}, daemon=True)
+        def _sync_all_in_background():
+            try:
+                sync_databases(dry_run=False)
+                sync_hub_databases(dry_run=False)
+                # 后台同步后仅失效负缓存，避免重复查库且保证远端新增可见
+                self._invalidate_processed_cache(only_negative=True)
+            except Exception as e:
+                self.logger.warning(f"后台同步失败: {e}", module="main")
+
+        self._post_sync_thread = threading.Thread(target=_sync_all_in_background, daemon=True)
         self._post_sync_thread.start()
 
     def _process_word_list(self, word_list, name):
@@ -374,7 +494,7 @@ class StudyFlowManager:
         all_voc_ids = [str(w.get("voc_id")) for w in word_list]
 
         # 先批量过滤已处理词，避免重复同步和重复日志
-        processed_ids = get_processed_ids_in_batch(all_voc_ids)
+        processed_ids = self._get_processed_ids_cached(all_voc_ids)
         if processed_ids:
             self.logger.info(f"已过滤 {len(processed_ids)} 个已处理单词")
 
@@ -436,40 +556,107 @@ class StudyFlowManager:
 
             # 批量标记为已处理
             for item in cached_words:
-                mark_processed(item['voc_id'], item['spell'])
+                self._mark_processed_with_cache(item['voc_id'], item['spell'])
         
         if not pending_words:
             self.logger.info("✨ 无需调用 AI。")
             return
             
         self.logger.info(f"💎 [AI Phase] 需解析 {len(pending_words)} 个单词")
-        
-        for i in range(0, len(pending_words), BATCH_SIZE):
-            batch = pending_words[i : i + BATCH_SIZE]
-            batch_spells = [w["voc_spelling"] for w in batch]
-            self.logger.info(f"批次 {i//BATCH_SIZE + 1} ({i+len(batch)}/{len(pending_words)})")
-            
-            start = time.time()
-            results, metadata = self.ai_client.generate_mnemonics(batch_spells)
-            latency = int((time.time() - start) * 1000)
 
-            if not results:
-                self.logger.error("AI 处理失败")
-                continue
-                
-            bid = str(uuid.uuid4())
-            save_ai_batch({
-                "batch_id": bid, "request_id": metadata.get("request_id"),
-                "ai_provider": AI_PROVIDER, "model_name": self.ai_client.model_name,
-                "prompt_version": self.prompt_version, "batch_size": len(batch),
-                "total_latency_ms": latency, "total_tokens": metadata.get("total_tokens", 0),
-                "finish_reason": metadata.get("finish_reason")
-            })
-            self._process_results(batch, results, i, len(pending_words), bid)
-            
-            if i + BATCH_SIZE < len(pending_words):
-                # 批处理之间添加延迟，避免触发墨墨 API 频率限制
-                time.sleep(3)
+        # 方案2：AI 生成与写入/同步流水化
+        # - 受控并发生成（默认 2 线程）
+        # - 主线程按批次顺序落库/同步，保证语义与日志顺序稳定
+        total_pending = len(pending_words)
+        max_safe_batch = max(BATCH_SIZE, int(os.getenv("MAX_SAFE_BATCH_SIZE", "25")))
+        min_batch = 1
+        current_batch_size = max(min_batch, BATCH_SIZE)
+        ai_workers = max(1, int(os.getenv("AI_PIPELINE_WORKERS", "2")))
+        submit_gap = float(os.getenv("AI_BATCH_SUBMIT_DELAY_S", "0.3"))
+
+        next_pos = 0
+        next_batch_idx = 0
+        expected_idx = 0
+        in_flight = {}
+        last_submit_ts = 0.0
+
+        def _submit_next(executor):
+            nonlocal next_pos, next_batch_idx, last_submit_ts
+            if next_pos >= total_pending:
+                return False
+
+            now = time.time()
+            if now - last_submit_ts < submit_gap:
+                time.sleep(submit_gap - (now - last_submit_ts))
+
+            batch = pending_words[next_pos: next_pos + current_batch_size]
+            start_pos = next_pos
+            idx = next_batch_idx
+            next_pos += len(batch)
+            next_batch_idx += 1
+
+            batch_spells = [w["voc_spelling"] for w in batch]
+            self.logger.info(
+                f"批次 {idx + 1} 入队 ({start_pos + len(batch)}/{total_pending}) | "
+                f"size={len(batch)} | workers={ai_workers}"
+            )
+            start_ts = time.time()
+            fut = executor.submit(self.ai_client.generate_mnemonics, batch_spells)
+            in_flight[idx] = {
+                "future": fut,
+                "batch": batch,
+                "start_pos": start_pos,
+                "start_ts": start_ts,
+            }
+            last_submit_ts = time.time()
+            return True
+
+        with ThreadPoolExecutor(max_workers=ai_workers) as executor:
+            while len(in_flight) < ai_workers and _submit_next(executor):
+                pass
+
+            while expected_idx < next_batch_idx:
+                slot = in_flight.get(expected_idx)
+                if slot is None:
+                    break
+
+                batch = slot["batch"]
+                start_pos = slot["start_pos"]
+                start_ts = slot["start_ts"]
+
+                results, metadata = slot["future"].result()
+                latency = int((time.time() - start_ts) * 1000)
+
+                if not results:
+                    self.logger.error(f"批次 {expected_idx + 1} AI 处理失败")
+                    # 失败时收缩批大小
+                    current_batch_size = max(min_batch, current_batch_size - 1)
+                else:
+                    bid = str(uuid.uuid4())
+                    save_ai_batch({
+                        "batch_id": bid,
+                        "request_id": metadata.get("request_id"),
+                        "ai_provider": AI_PROVIDER,
+                        "model_name": self.ai_client.model_name,
+                        "prompt_version": self.prompt_version,
+                        "batch_size": len(batch),
+                        "total_latency_ms": latency,
+                        "total_tokens": metadata.get("total_tokens", 0),
+                        "finish_reason": metadata.get("finish_reason"),
+                    })
+                    self._process_results(batch, results, start_pos, total_pending, bid)
+
+                    # 自适应批大小：成功且快则增，慢则降
+                    if latency <= 12000 and len(results) >= max(1, len(batch) // 2):
+                        current_batch_size = min(max_safe_batch, current_batch_size + 1)
+                    elif latency >= 30000:
+                        current_batch_size = max(min_batch, current_batch_size - 1)
+
+                del in_flight[expected_idx]
+                expected_idx += 1
+
+                while len(in_flight) < ai_workers and _submit_next(executor):
+                    pass
 
     def _process_results(self, batch_words, ai_results, current_start, total, batch_id):
         ai_map = {item["spelling"].lower(): item for item in ai_results}
@@ -492,7 +679,6 @@ class StudyFlowManager:
                     or w.get("meanings")
                     or w.get("meaning")
                     or w.get("original_meanings")
-                    or payload.get("basic_meanings")
                 )
                 meta = {
                     "batch_id": batch_id,
@@ -507,15 +693,13 @@ class StudyFlowManager:
                 
                 sync_success = True
                 if not DRY_RUN:
-                    res = self.momo.list_interpretations(vid)
-                    if not (res and res.get("success") and res.get("data", {}).get("interpretations", [])):
-                        brief = clean_for_maimemo(payload.get('basic_meanings', ''))
-                        self.logger.info(f"[{num}/{total}] ✅ {spell} 同步中...")
-                        sync_success = self.momo.sync_interpretation(vid, brief, tags=["雅思"], spell=spell)
+                    brief = clean_for_maimemo(payload.get('basic_meanings', ''))
+                    self.logger.info(f"[{num}/{total}] ✅ {spell} 同步中...")
+                    sync_success = self.momo.sync_interpretation(vid, brief, tags=["雅思"], spell=spell)
                 
                 # 只有同步成功（或跳过同步）才标记为已处理
                 if sync_success:
-                    mark_processed(vid, spell)
+                    self._mark_processed_with_cache(vid, spell)
                 else:
                     self.logger.error(f"❌ {spell} 同步至墨墨失败，流程将跳过标记以便下次重试")
             else:
