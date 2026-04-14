@@ -19,8 +19,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 sys.path.insert(0, ROOT_DIR)
 
 from dotenv import load_dotenv
-from maimemo_api import MaiMemoAPI
-from gemini_client import GeminiClient
+from compat.maimemo_api import MaiMemoAPI
+from compat.gemini_client import GeminiClient
 from db_manager import init_test_db, save_test_word_note, log_test_run, TEST_DB_PATH
 
 # ── 解决 Windows 终端中文乱码 ──────────────────────────────────────────────────

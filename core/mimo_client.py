@@ -19,6 +19,10 @@ class MimoClient:
         if not self.api_key:
             raise ValueError("MIMO_API_KEY is required but not set")
 
+    def close(self):
+        """统一清理入口；当前 requests 为短连接调用，保留接口供主流程统一收尾。"""
+        return
+
     def _load_instruction(self) -> str:
         """加载系统提示词"""
         if not os.path.exists(self.prompt_file):
@@ -29,6 +33,8 @@ class MimoClient:
     def generate_with_instruction(self, prompt: str, instruction: str = None) -> Tuple[str, dict]:
         """与 OpenAI 兼容的通用请求逻辑"""
         system_instr = instruction or self._load_instruction()
+        last_error = ""
+        last_error_type = ""
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 headers = {
@@ -63,10 +69,28 @@ class MimoClient:
                 }
                 return text, metadata
             except Exception as e:
+                last_error = str(e)
+                last_error_type = type(e).__name__
+                try:
+                    from core.logger import get_logger
+                    get_logger().warning(
+                        f"Mimo 请求失败，准备重试 ({attempt}/{MAX_RETRIES})",
+                        module="mimo_client",
+                        attempt=attempt,
+                        max_retries=MAX_RETRIES,
+                        error=last_error,
+                        error_type=last_error_type,
+                    )
+                except Exception:
+                    pass
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_WAIT_S[attempt-1])
                     continue
-                return "", {}
+                return "", {
+                    "error": last_error,
+                    "error_type": last_error_type,
+                    "stage": "request",
+                }
 
     def generate_mnemonics(self, words_batch: list) -> Tuple[list, dict]:
         """生成助记法，返回 JSON 数组格式"""
@@ -78,7 +102,9 @@ class MimoClient:
         """
         text, metadata = self.generate_with_instruction(prompt)
         if not text:
-            return [], {}
+            meta = metadata or {}
+            meta.setdefault("stage", "request")
+            return [], meta
 
         try:
             # 利用强大的启发式库解析破损的 JSON 对象并提取 results
@@ -100,12 +126,23 @@ class MimoClient:
             
             return results, metadata
         except Exception as e:
+            preview = text[:500] if text else ""
             try:
                 from core.logger import get_logger
-                get_logger().error("[JSON Parse Error]", error=str(e), module="mimo_client")
+                get_logger().error(
+                    "[JSON Parse Error]",
+                    error=str(e),
+                    module="mimo_client",
+                    words_count=len(words_batch),
+                    response_preview=preview,
+                )
             except:
                 print(f"  [Mimo Parse Error]: {str(e)[:120]}")
-            return [], {}
+            return [], {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "stage": "parse",
+            }
 
 
 def _extract_json_array(text: str) -> str:

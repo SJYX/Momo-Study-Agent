@@ -232,6 +232,19 @@ def safe_str(obj: Any, default: str = "") -> str:
         return default
 
 
+def mask_sensitive(value: Optional[str], prefix: int = 4, suffix: int = 2) -> str:
+    """对敏感字符串进行脱敏展示。"""
+    if not value:
+        return ""
+
+    value = str(value)
+    if len(value) <= prefix + suffix:
+        return "*" * len(value)
+
+    masked_len = len(value) - prefix - suffix
+    return f"{value[:prefix]}{'*' * masked_len}{value[-suffix:]}"
+
+
 # ============================================================================
 # 哈希工具 (Hash Utilities)
 # ============================================================================

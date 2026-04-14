@@ -5,7 +5,7 @@ import platform
 from dotenv import load_dotenv
 
 # Force UTF-8 encoding for console output on Windows
-if platform.system() == "Windows":
+if platform.system() == "Windows" and "pytest" not in sys.modules:
     if sys.stdout.encoding != 'utf-8':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     if sys.stderr.encoding != 'utf-8':
@@ -54,8 +54,41 @@ if os.path.exists(global_env_path):
 # 多用户 Profile 初始化 (Multi-user Initialization)
 # ──────────────────────────────────────────────────────────────────────────────
 # 只有在直接运行主程序或脚本时触发交互，如果是自动化测试，建议通过环境变量指定用户
+if "pytest" in sys.modules and os.getenv("MOMO_USER") is None:
+    os.environ["MOMO_USER"] = "test_user"
+
+# 帮助模式下避免触发交互式用户选择，确保 `python main.py --help` 可直接输出帮助。
+if any(arg in ("-h", "--help") for arg in sys.argv[1:]) and os.getenv("MOMO_USER") is None:
+    os.environ["MOMO_USER"] = "default"
+
 ACTIVE_USER = os.getenv("MOMO_USER") or "default"
 _USER_FROM_ENV = os.getenv("MOMO_USER") is not None
+
+
+def _normalize_username(username: str) -> str:
+    return (username or "").strip().lower()
+
+
+def _resolve_profile_env_path(username: str):
+    """按大小写不敏感方式定位 profile 文件，返回 (规范用户名, 文件路径或 None)。"""
+    normalized = _normalize_username(username)
+    if not normalized:
+        return normalized, None
+
+    direct_path = os.path.join(PROFILES_DIR, f"{normalized}.env")
+    if os.path.exists(direct_path):
+        return normalized, direct_path
+
+    for entry in os.listdir(PROFILES_DIR):
+        if not entry.lower().endswith(".env"):
+            continue
+        stem = entry[:-4]
+        if stem.strip().lower() == normalized:
+            return normalized, os.path.join(PROFILES_DIR, entry)
+    return normalized, None
+
+
+ACTIVE_USER = _normalize_username(ACTIVE_USER)
 
 def _resolve_user_db_paths(user: str):
     db_filename = f"history-{user.lower()}.db"
@@ -81,8 +114,8 @@ from core.profile_manager import ProfileManager
 pm = ProfileManager(PROFILES_DIR)
 
 # 如果通过环境变量指定用户，先加载该用户 profile
-profile_env = os.path.join(PROFILES_DIR, f"{ACTIVE_USER}.env")
-if _USER_FROM_ENV and os.path.exists(profile_env):
+ACTIVE_USER, profile_env = _resolve_profile_env_path(ACTIVE_USER)
+if _USER_FROM_ENV and profile_env:
     load_dotenv(profile_env, override=True)
 
 # 先为当前用户（或 default）准备路径，供其他模块在初始化期间引用
@@ -110,12 +143,12 @@ if os.path.exists(global_env_path):
 
 if not _USER_FROM_ENV:
     # 交互式选择或创建用户（放在 DB_PATH 定义之后，避免新建用户时触发循环导入）
-    ACTIVE_USER = pm.pick_profile()
+    ACTIVE_USER = _normalize_username(pm.pick_profile())
     os.environ["MOMO_USER"] = ACTIVE_USER
 
     # 重新加载选中用户的配置文件（用户配置优先级更高）
-    profile_env = os.path.join(PROFILES_DIR, f"{ACTIVE_USER}.env")
-    if os.path.exists(profile_env):
+    ACTIVE_USER, profile_env = _resolve_profile_env_path(ACTIVE_USER)
+    if profile_env:
         load_dotenv(profile_env, override=True)  # override=False: 用户配置覆盖全局
 
     # 根据最终选中的用户重新计算数据库路径

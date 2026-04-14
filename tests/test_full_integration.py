@@ -9,22 +9,22 @@ import time
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.logger import setup_logger, log_performance
+from core.logger import setup_logger, log_performance, get_logger
 from core.log_config import get_full_config
 from core.log_archiver import auto_archive_logs
 
-@log_performance
+@log_performance(get_logger)
 def slow_operation():
     """模拟慢操作"""
     time.sleep(0.1)
     return "completed"
 
-@log_performance
+@log_performance(get_logger)
 def fast_operation():
     """模拟快操作"""
     return "done"
 
-@log_performance
+@log_performance(get_logger)
 def error_operation():
     """模拟错误操作"""
     raise ValueError("测试错误")
@@ -70,7 +70,7 @@ def test_full_integration():
         print(f"   级别分布: {stats['level_distribution']}")
         if stats['performance']['total_functions'] > 0:
             print(f"   性能统计: {stats['performance']['total_functions']} 个函数")
-            print(".1f"
+            print(f"   平均耗时: {stats['performance']['avg_duration']:.1f}ms")
     # 5. 测试日志压缩
     print("\n5️⃣ 测试日志压缩")
     archived, removed = auto_archive_logs("logs", config)

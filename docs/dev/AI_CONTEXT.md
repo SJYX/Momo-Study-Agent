@@ -1,10 +1,8 @@
 # AI_CONTEXT.md — Momo Study Agent 上下文速查
 
-> **Vibe Coding 入口文件。** 每次新对话开始时，请先 `@` 引用本文件。
+> **AI 执行规范唯一来源。** 每次新对话开始时，请先 `@` 引用本文件。
 
 ---
-
-
 
 ## 项目概述
 
@@ -48,17 +46,71 @@
 
 ---
 
-## 硬性规则（违反即为 Bug）
+## 执行规则分级（Vibe Coding）
 
-1. **禁止 `print()`**，必须使用 `from core.logger import get_logger; get_logger().info/error(...)`
-2. **禁止 `conn.row_factory = sqlite3.Row`**，Turso 连接不支持。用 `_row_to_dict(cursor, row)` 替代
-3. **新增数据库字段**：只在 `db_manager._create_tables()` 中添加，并用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 兼容旧库
-4. **新增 AI 提供商**：必须实现 `generate_mnemonics(words, prompt)` + `generate_with_instruction(prompt, instruction)` 两个接口，并在 `main.py` 路由表注册
-5. **用户数据隔离**：所有路径通过 `ACTIVE_USER` 区分，禁止硬编码用户名
-6. **Prompt 文件路径**：统一从 `config.PROMPT_FILE / SCORE_PROMPT_FILE / REFINE_PROMPT_FILE` 取，不得硬编码
-7. **时间戳格式**：所有数据库时间字段使用 ISO 8601 含时区格式，调用 `db_manager.get_timestamp_with_tz()`
-8. **凭证管理**：开源版本由用户自行在 `.env` 或 profile 中维护凭证；禁止将真实凭证提交到仓库
-9. **薄弱词筛选**：使用 `WeakWordFilter` 类进行多维度评分，而非单一阈值
+### MUST（违反即为 Bug）
+
+1. 运行时日志必须走 logger；核心业务模块禁止用 `print()` 代替日志（交互式 CLI 提示允许 `print()/input()`）
+2. 禁止 `conn.row_factory = sqlite3.Row`（Turso 不支持）；统一使用 `_row_to_dict(cursor, row)`
+3. 新增数据库字段只在 `db_manager._create_tables()` 中添加，并用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 兼容旧库
+4. 新增 AI 提供商必须实现 `generate_mnemonics(words, prompt)` 与 `generate_with_instruction(prompt, instruction)`，并在 `main.py` 路由注册
+5. 用户数据隔离必须通过 `ACTIVE_USER`，禁止硬编码用户名
+6. 用户名身份语义不区分大小写：所有身份比较与 user_id 生成应基于 `username.strip().lower()`
+7. Prompt 路径必须从 `config.PROMPT_FILE / SCORE_PROMPT_FILE / REFINE_PROMPT_FILE` 读取
+8. 时间字段必须使用含时区的 ISO 8601，调用 `db_manager.get_timestamp_with_tz()`
+9. 禁止提交真实凭证；终端输出必须脱敏
+10. 首次配置流程保持“先保存后校验”，并通过 `tools/preflight_check.py` 统一体检
+11. 薄弱词筛选必须使用 `WeakWordFilter`，不能退化为单阈值筛选
+12. 任何影响行为/配置/接口/流程/目录结构的代码改动，必须同轮同步文档
+13. 文档更新顺序固定：先本文件（规则层）→ 再专项文档（如 `AUTO_SYNC.md` / `LOGGING.md`）→ 最后 `README.md`
+14. 同步回调与显示分层必须保持：
+       - 同步函数可接受 `progress_callback: Callable[[Dict[str, Any]], None]`
+       - 前台同步由 `main.py` 的 `_run_sync_with_progress()` 显示进度
+       - 后台同步由 `_run_sync_with_stage_logs()` 记录阶段日志，不输出进度条
+       - `db_manager` 同步函数内部禁止 `print()` 进度
+15. compat 为迁移过渡层：
+       - 历史 shim 放 `compat/`（如 `compat.gemini_client` / `compat.maimemo_api`）
+       - 业务代码只从 `core/` 导入
+       - 测试/实验脚本在迁移期可从 `compat/` 导入
+16. 输入环节捕获 `KeyboardInterrupt` / `EOFError` 时必须向上抛出，由顶层统一收尾；禁止底层 `print()+sys.exit()`
+17. 文档示例中的函数签名、参数、路径必须与当前代码一致
+18. 行为已变更但文档未同步，视为未完成实现
+
+### SHOULD（强建议，默认遵循）
+
+1. 在变更说明中附“受影响文档清单”，方便 review 快速核对
+2. 对前台/后台行为差异（同步、日志、重试）必须成对描述，避免只写单一路径
+3. 新增规范时优先给“可复制模板”，减少 AI 解释误差
+4. Hub 初始化应优先命中持久化状态缓存窗口，避免每次启动重复做云端 schema 校验；仅在指纹或 schema 版本变化时回补
+
+### NICE-TO-HAVE（可选增强）
+
+1. 对复杂流程补一段“失败路径”说明（例如同步失败时的降级与收尾）
+2. 对高风险改动补一条“为什么不采用替代方案”
+
+## 变更影响矩阵（最小同步集）
+
+| 代码改动类型 | 必须同步文档 |
+|---|---|
+| 同步逻辑/同步展示改动 | `docs/dev/AUTO_SYNC.md`、`docs/architecture/LOG_SYSTEM.md`、`README.md` |
+| 规则或开发约束改动 | `docs/dev/AI_CONTEXT.md`、`docs/dev/CONTRIBUTING.md` |
+| 目录结构/导入路径改动 | `README.md`、`docs/DOCUMENT_INDEX.md`、相关专项文档 |
+| 新手流程/体检流程改动 | `docs/dev/QUICK_START.md`、`docs/dev/NEW_USER_ZERO_CREDENTIAL_PLAN.md` |
+
+## 提交前最小检查清单
+
+1. 规则是否仍与代码一致（尤其是同步、异常处理、导入约束）
+2. 文档示例签名是否与真实函数一致
+3. 文档里的路径和文件名是否真实存在
+4. 前台与后台行为差异是否都已记录
+5. CHANGELOG 是否记录了本轮重要文档策略变化
+
+## 反模式（禁止写法）
+
+1. 在 `db_manager` 同步函数里直接 `print()` 进度
+2. 在输入函数底层捕获中断后直接 `print()+sys.exit()`
+3. 新业务代码从 `compat/` 导入
+4. 改了接口签名但不更新文档示例
 
 ---
 
@@ -68,7 +120,7 @@
 |---------|---------|------|
 | `AdvanceStudy` API 强推复习队列 | **云词本 (Notepad) 隔离** | 用户明确要求不打乱每日复习节奏 |
 | 纯云端 Turso | **本地 SQLite + Turso 双轨** | 网络抖动时本地继续工作，启动不依赖云端 |
-| 逐条 API 请求同步 | **Batch Chunking（100条/次）** | 消除同步"假死"感，显著降低网络往返延迟 |
+| 逐条 API 请求同步 | **批量/缓存复用** | 减少重复 AI 调用，但仍可能产生云端查询延迟 |
 | `get_today_items` 验证 Token | **`get_study_progress` 验证** | 新用户未开课时 today_items 为空会误判 Token 无效 |
 | 纯云端中央 Hub | **Turso + 本地 SQLite 回退** | 允许在没有云端凭据时通过本地 Hub.db 进行用户管理与验证 |
 
@@ -94,19 +146,11 @@
 
 ---
 
-## 当前状态
+## 当前状态维护策略
 
-- **已完成**：
-  - 日志系统全量归一化、多设备双轨同步、薄弱词云词本隔离、新用户向导防雷
-       - 新用户可选 Turso 云数据库创建
-  - 中央用户信息库（momo-users-hub）已完成云端建立并支持双轨：
-    - 逻辑：优先 Turso，无配置则自动回退至 `data/momo-users-hub.db`
-    - 表结构：users, user_api_keys, user_sync_history, user_stats, user_sessions, admin_logs
-    - 鉴权：集成 **Token 自提升逻辑**，使用专用 `momo-hub-manager` 令牌
-       - 开源凭证模式上线：用户自配 `TURSO_MGMT_TOKEN`、`TURSO_ORG_SLUG` 与 AI Key
-  - 用户会话自动跟踪（startup 记录，支持后续 logout 更新）
-  - 全局时区感知（ISO 8601 格式 + UTC 时区偏移）
-- **已知限制**：智能迭代功能（选项 3）依赖 `word_progress_history` 有足够的历史快照才能触发，新库首次运行可能无薄弱词
+- 本文件聚焦“稳定约束与执行规则”，不承载频繁变化的实施细节。
+- 最新状态、阶段性落地结果与文档演进，请以 `docs/CHANGELOG.md` 为准。
+- 若某功能状态影响规则判断，应先更新规则，再在 CHANGELOG 记录状态变化。
 
 ---
 
@@ -121,4 +165,15 @@ grep "ERROR" logs/Asher.log
 
 # 筛选特定模块
 grep '"module": "maimemo_api"' logs/Asher.log
+```
+
+```powershell
+# Windows PowerShell 查看日志
+Get-Content logs/Asher.log
+
+# 筛选错误
+Get-Content logs/Asher.log | Select-String "ERROR"
+
+# 筛选特定模块
+Get-Content logs/Asher.log | Select-String '"module": "maimemo_api"'
 ```

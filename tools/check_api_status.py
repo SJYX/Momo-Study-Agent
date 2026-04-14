@@ -13,11 +13,12 @@ if sys.stdout.encoding != 'utf-8':
 if sys.stderr.encoding != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 添加项目根路径
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-import os
-os.environ['MOMO_USER'] = 'DDY'  # 强制指定用户为 DDY
+os.environ.setdefault('MOMO_USER', 'DDY')  # 避免触发交互式用户选择
 
 from config import MOMO_TOKEN, ACTIVE_USER
 from core.maimemo_api import MaiMemoAPI
@@ -126,8 +127,21 @@ def main():
     print("总结和建议")
     print("=" * 60)
 
-    today_empty = today_result and today_result.get("success") and len(today_result.get("data", {}).get("today_items", [])) == 0
-    future_has_data = future_result and future_result.get("success") and len(future_result.get("data", {}).get("records", [])) > 0
+    progress_ok = bool(progress_result and progress_result.get("success"))
+    today_ok = bool(today_result and today_result.get("success"))
+    future_ok = bool(future_result and future_result.get("success"))
+    today_items = today_result.get("data", {}).get("today_items", []) if today_ok else []
+    future_records = future_result.get("data", {}).get("records", []) if future_ok else []
+
+    today_empty = today_ok and len(today_items) == 0
+    today_has_data = today_ok and len(today_items) > 0
+    future_has_data = future_ok and len(future_records) > 0
+
+    if not (progress_ok and today_ok and future_ok):
+        print("❌ API 检查未通过")
+        print("请先确认 Token、账号授权状态和网络连接。")
+        print("建议: 先在 App 内重新登录并更新 Token，再重试本脚本。")
+        return
 
     if today_empty:
         print("⚠️  今日待复习列表为空")
@@ -145,9 +159,12 @@ def main():
             print("1. API Token 可能已过期")
             print("2. 账号可能没有学习计划")
             print("3. 网络连接问题")
-    else:
+    elif today_has_data:
         print("✅ 今日待复习列表有数据")
         print("可以正常处理今日任务")
+    else:
+        print("⚠️  今日待复习列表状态未知")
+        print("建议重试一次，如仍异常请检查 API 响应结构是否变更。")
 
 if __name__ == "__main__":
     main()

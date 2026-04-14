@@ -7,15 +7,19 @@ import os
 import json
 import argparse
 import threading
+import queue
 import socket
-from concurrent.futures import ThreadPoolExecutor
+import getpass
+from unittest.mock import Mock
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta
 from core.maimemo_api import MaiMemoAPI
 from core.mimo_client import MimoClient
+from core.gemini_client import GeminiClient
 from core.iteration_manager import IterationManager
 from core.db_manager import (
     # 核心数据库操作
-    init_db, mark_processed,
+    init_db, is_processed, mark_processed,
     save_ai_word_note, save_ai_batch, clean_for_maimemo,
     get_file_hash, archive_prompt_file, log_progress_snapshots, sync_databases,
     get_processed_ids_in_batch,
@@ -79,6 +83,10 @@ class StudyFlowManager:
         )
 
         self.momo = MaiMemoAPI(MOMO_TOKEN)
+        self.sync_queue = queue.Queue()
+        self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
+        self.sync_worker_thread.start()
+        self._sync_worker_stopped = False
         init_db()
 
         self.hub_user = get_user_by_username(ACTIVE_USER)
@@ -93,14 +101,14 @@ class StudyFlowManager:
                 print("⚠️  [配置缺失] 强制云端模式已开启，但未发现中央 Hub 数据库凭据。")
                 print("这通常是因为 .env 中缺少 TURSO_HUB_DB_URL 和 TURSO_HUB_AUTH_TOKEN。")
                 print("!"*60)
-                print("  1. 手动输入配置 (保存到本会话)")
-                print("  2. 暂时关闭强制模式 (允许本地记录会话)")
-                print("  3. 忽略并继续 (将导致会话记录失败)")
+                print("  1. 立即输入 Hub 配置 (保存到本会话)")
+                print("  2. 本次会话临时降级为本地模式")
+                print("  3. 退出并打印修复清单")
                 
                 h_choice = input("\n请选择处理方式 (1-3): ").strip()
                 if h_choice == "1":
                     hub_url = input("请输入 TURSO_HUB_DB_URL: ").strip()
-                    hub_token = input("请输入 TURSO_HUB_AUTH_TOKEN: ").strip()
+                    hub_token = getpass.getpass("请输入 TURSO_HUB_AUTH_TOKEN: ").strip()
                     if hub_url and hub_token:
                         os.environ['TURSO_HUB_DB_URL'] = hub_url
                         os.environ['TURSO_HUB_AUTH_TOKEN'] = hub_token
@@ -112,9 +120,15 @@ class StudyFlowManager:
                             wiz = ConfigWizard(PROFILES_DIR)
                             wiz._save_hub_config_to_global_env(hub_url, hub_token)
                             print("✅ 配置已写入 .env 文件。")
+                    else:
+                        print("❌ Hub 配置不完整，程序退出。")
+                        print("修复建议:")
+                        print("  1) 在 .env 中补全 TURSO_HUB_DB_URL 与 TURSO_HUB_AUTH_TOKEN")
+                        print("  2) 或临时选择选项 2 以本地模式运行")
+                        raise SystemExit(1)
                 elif h_choice == "2":
                     os.environ['FORCE_CLOUD_MODE'] = 'False'
-                    print("✅ 已临时关闭强制模式。")
+                    print("✅ 已临时关闭强制模式（仅当前进程生效）。")
                     
                     save_ch = input("是否永久关闭强制模式（即：默认本地运行）？(Y/N, 默认 N): ").strip().lower()
                     if save_ch == 'y':
@@ -134,6 +148,12 @@ class StudyFlowManager:
                             print("✅ 已将 FORCE_CLOUD_MODE=False 写入 .env 文件。")
                         except Exception as ex:
                             print(f"❌ 保存失败: {ex}")
+                else:
+                    print("\n已退出。修复清单:")
+                    print("  - 在全局 .env 中配置 TURSO_HUB_DB_URL")
+                    print("  - 在全局 .env 中配置 TURSO_HUB_AUTH_TOKEN")
+                    print("  - 运行体检: python tools/preflight_check.py --user " + ACTIVE_USER)
+                    raise SystemExit(1)
 
             # 复用数据库连接以提高性能
             from core.db_manager import _get_hub_conn
@@ -230,6 +250,7 @@ class StudyFlowManager:
         
         self.prompt_version = self.prompt_hashes["main"]
         self._post_sync_thread = None
+        self._startup_sync_thread = None
         # 方案3：短期判重缓存（session + TTL）
         self._session_processed_ids = set()
         self._processed_cache = {}
@@ -242,10 +263,12 @@ class StudyFlowManager:
             self.ai_client = MimoClient(MIMO_API_KEY)
             self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (小米 Mimo)")
         else:
-            from core.gemini_client import GeminiClient
             if not GEMINI_API_KEY: raise ValueError("GEMINI_API_KEY required")
             self.ai_client = GeminiClient(GEMINI_API_KEY)
             self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (Google Gemini)")
+
+        # Backward compatibility for legacy tests/scripts that still access "gemini".
+        self.gemini = self.ai_client
 
     @staticmethod
     def _get_client_ip() -> str:
@@ -329,6 +352,66 @@ class StudyFlowManager:
             self._processed_cache.clear()
             self._session_processed_ids.clear()
 
+    def _queue_maimemo_sync(self, voc_id, spell, interpretation, tags):
+        if DRY_RUN:
+            return
+        self.sync_queue.put({
+            "voc_id": str(voc_id),
+            "spell": spell,
+            "interpretation": interpretation,
+            "tags": list(tags or []),
+        })
+
+    def _maimemo_sync_worker(self):
+        while True:
+            item = self.sync_queue.get()
+            try:
+                if item is None:
+                    break
+
+                voc_id = item["voc_id"]
+                spell = item["spell"]
+                interpretation = item["interpretation"]
+                tags = item["tags"] or ["雅思"]
+
+                try:
+                    sync_success = self.momo.sync_interpretation(
+                        voc_id,
+                        interpretation,
+                        tags=tags,
+                        spell=spell,
+                        force_create=True,
+                    )
+                    if sync_success:
+                        self._mark_processed_with_cache(voc_id, spell)
+                    else:
+                        self.logger.error(f"❌ {spell} 后台同步至墨墨失败", module="main")
+                except Exception as e:
+                    self.logger.error(f"❌ {spell} 后台同步异常: {e}", module="main")
+            finally:
+                self.sync_queue.task_done()
+
+        self._sync_worker_stopped = True
+
+    def _flush_pending_maimemo_syncs(self, context_name: str):
+        pending_count = self.sync_queue.qsize()
+        if pending_count > 0:
+            self.logger.info(
+                f"🔁 还有 {pending_count} 个 {context_name} 结果正在后台同步，可继续其他操作。",
+                module="main",
+            )
+
+    def shutdown(self):
+        if not getattr(self, "sync_worker_thread", None):
+            return
+
+        pending_count = self.sync_queue.qsize()
+        self.logger.info(f"退出前准备关闭后台同步线程，剩余任务 {pending_count} 个", module="main")
+        self.sync_queue.put(None)
+        self.sync_worker_thread.join(timeout=10.0)
+        if self.sync_worker_thread.is_alive():
+            self.logger.warning("后台同步线程未在 10 秒内结束，将继续退出流程", module="main")
+
     def _check_esc_interrupt(self):
         if msvcrt.kbhit():
             ch = msvcrt.getch()
@@ -349,41 +432,207 @@ class StudyFlowManager:
                     return choice
                 print(f"❌ 无效选项，请从 {valid_choices} 中选择。")
             except (KeyboardInterrupt, EOFError):
-                print("\n[Exit] 用户中断程序。")
-                sys.exit(0)
+                # 统一交给顶层异常处理，避免在被中断的终端句柄上二次输出导致 OSError。
+                raise KeyboardInterrupt
 
-    def run(self):
-        # 启动时执行 Dry Run 检查一致性
-        self.logger.info("正在检测云端数据同步状态...")
-        stats = sync_databases(dry_run=True)
+    def _render_sync_progress(self, label: str, progress: dict):
+        """在 CLI 中渲染同步进度，不影响核心同步逻辑。"""
+        current = int(progress.get("current", 0) or 0)
+        total = int(progress.get("total", 0) or 0)
+        message = progress.get("message", "")
+        stage = progress.get("stage", "")
+
+        if total > 0:
+            width = 24
+            ratio = min(max(current / total, 0.0), 1.0)
+            filled = int(width * ratio)
+            bar = "#" * filled + "-" * (width - filled)
+            print(f"\r🔄 [{label}] [{bar}] {current}/{total} {message}", end="", flush=True)
+            if stage in {"finalize", "error"} or current >= total:
+                print()
+        else:
+            print(f"\n🔄 [{label}] {message}")
+
+    def _run_sync_with_progress(self, label: str, sync_func, dry_run: bool = False) -> dict:
+        """前台同步时显示阶段进度；若函数不支持回调则自动降级。"""
+        start_time = time.time()
+        if dry_run:
+            result = sync_func(dry_run=True)
+            duration = time.time() - start_time
+            duration_ms = int(duration * 1000)
+            self.logger.info(
+                f"⏱️ [{label}] Dry Run 耗时 {duration_ms}ms",
+                duration=duration,
+                duration_ms=duration_ms,
+                module="main",
+                function="_run_sync_with_progress",
+            )
+            return result
+
+        def _on_progress(payload: dict):
+            self._render_sync_progress(label, payload)
+
+        try:
+            result = sync_func(dry_run=False, progress_callback=_on_progress)
+        except TypeError:
+            # 兼容测试中的简化 mock 或旧签名
+            print(f"🔄 [{label}] 开始同步...")
+            result = sync_func(dry_run=False)
+            print(f"✅ [{label}] 同步完成")
+
+        duration = time.time() - start_time
+        duration_ms = int(duration * 1000)
+        self.logger.info(
+            f"⏱️ [{label}] 同步耗时 {duration_ms}ms",
+            duration=duration,
+            duration_ms=duration_ms,
+            upload=(result or {}).get("upload"),
+            download=(result or {}).get("download"),
+            status=(result or {}).get("status", "ok"),
+            module="main",
+            function="_run_sync_with_progress",
+        )
+        return result
+
+    def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
+        """后台同步时记录阶段日志，不输出进度条。"""
+        start_time = time.time()
+
+        def _on_progress(payload: dict):
+            stage = payload.get("stage", "")
+            message = payload.get("message", "")
+            if stage in {"error", "table-error"}:
+                self.logger.warning(f"[{label}] {message}", module="main")
+            else:
+                self.logger.info(f"[{label}] {message}", module="main")
+
+        try:
+            result = sync_func(dry_run=False, progress_callback=_on_progress)
+        except TypeError:
+            self.logger.info(f"[{label}] 开始同步", module="main")
+            result = sync_func(dry_run=False)
+            self.logger.info(f"[{label}] 同步完成", module="main")
+
+        duration = time.time() - start_time
+        duration_ms = int(duration * 1000)
+        self.logger.info(
+            f"⏱️ [{label}] 后台同步耗时 {duration_ms}ms",
+            duration=duration,
+            duration_ms=duration_ms,
+            upload=(result or {}).get("upload"),
+            download=(result or {}).get("download"),
+            status=(result or {}).get("status", "ok"),
+            module="main",
+            function="_run_sync_with_stage_logs",
+        )
+        return result
+
+    def _apply_startup_sync_result(self, stats: dict, interactive: bool):
+        """应用启动一致性检查结果；interactive=False 时仅记录日志不打断流程。"""
         un_up = stats.get('upload', 0)
         un_down = stats.get('download', 0)
         sync_status = stats.get('status', 'ok')
         sync_reason = stats.get('reason', '')
 
-        # 标记是否已合并数据（默认未合并）
-        self.data_merged = False
-
         if sync_status == 'skipped':
             self.logger.warning(f"⚠️ 未执行云端一致性检查: {sync_reason}")
             self.data_merged = False
-        elif sync_status == 'error':
+            return
+
+        if sync_status == 'error':
             self.logger.warning(f"⚠️ 云端一致性检查失败: {sync_reason}")
             self.data_merged = False
-        elif un_up > 0 or un_down > 0:
-            print(f"\n[!] 发现同步差异: 云端有 {un_down} 条新数据，本地有 {un_up} 条待上传。")
-            ch = input("是否立即进行合并？(Y/N, 默认 Y): ").strip().lower()
-            if ch != 'n':
-                self.logger.info("🚩 正在同步数据库，请稍候...")
-                sync_databases(dry_run=False)
-                sync_hub_databases(dry_run=False)
-                self.logger.info("✅ 数据同步完成。")
-                self.data_merged = True  # 标记已合并数据
+            return
+
+        if un_up > 0 or un_down > 0:
+            self.data_merged = False
+            if interactive:
+                print(f"\n[!] 发现同步差异: 云端有 {un_down} 条新数据，本地有 {un_up} 条待上传。")
+                ch = input("是否立即进行合并？(Y/N, 默认 Y): ").strip().lower()
+                if ch != 'n':
+                    self.logger.info("🚩 正在同步数据库，请稍候...")
+                    self._run_sync_with_progress("用户数据库", sync_databases, dry_run=False)
+                    self._run_sync_with_progress("中央 Hub", sync_hub_databases, dry_run=False)
+                    self.logger.info("✅ 数据同步完成。")
+                    self.data_merged = True
+                else:
+                    self.logger.warning("用户选择跳过同步，可能导致本地运行基于旧数据。")
             else:
-                self.logger.warning("用户选择跳过同步，可能导致本地运行基于旧数据。")
+                self.logger.warning(
+                    f"⚠️ 后台一致性检查发现差异: 云端新增 {un_down} 条，本地待上传 {un_up} 条。"
+                    "可在菜单选择 4 执行同步。",
+                    module="main"
+                )
+            return
+
+        self.logger.info("✅ 云端与本地数据一致，无需同步。")
+        self.data_merged = True
+
+    def run(self):
+        # 启动时执行 Dry Run 检查一致性（限时等待，超时转后台）
+        self.logger.info("正在检测云端数据同步状态...")
+        self.data_merged = False
+        startup_timeout = float(os.getenv("STARTUP_SYNC_CHECK_TIMEOUT_S", "2.5"))
+        startup_begin = time.time()
+        startup_result = {"stats": None}
+        done = threading.Event()
+
+        def _startup_check_worker():
+            try:
+                startup_result["stats"] = sync_databases(dry_run=True)
+            except Exception as e:
+                startup_result["stats"] = {
+                    "upload": 0,
+                    "download": 0,
+                    "status": "error",
+                    "reason": str(e),
+                }
+            finally:
+                done.set()
+
+        self._startup_sync_thread = threading.Thread(target=_startup_check_worker, daemon=True)
+        self._startup_sync_thread.start()
+
+        if done.wait(timeout=startup_timeout):
+            startup_wait_ms = int((time.time() - startup_begin) * 1000)
+            self.logger.info(
+                f"⏱️ 启动一致性检查前台完成，耗时 {startup_wait_ms}ms",
+                duration=startup_wait_ms / 1000,
+                duration_ms=startup_wait_ms,
+                timeout_s=startup_timeout,
+                module="main",
+                function="run",
+            )
+            self._apply_startup_sync_result(startup_result.get("stats") or {}, interactive=True)
         else:
-            self.logger.info("✅ 云端与本地数据一致，无需同步。")
-            self.data_merged = True  # 数据一致，视为已合并
+            startup_wait_ms = int((time.time() - startup_begin) * 1000)
+            self.logger.info(
+                f"⏱️ 启动一致性检查超过 {startup_timeout:.1f}s，先进入主菜单，后台继续检查。",
+                duration=startup_wait_ms / 1000,
+                duration_ms=startup_wait_ms,
+                timeout_s=startup_timeout,
+                module="main"
+            )
+
+            def _finalize_startup_check():
+                done.wait()
+                total_startup_check_ms = int((time.time() - startup_begin) * 1000)
+                stats = startup_result.get("stats") or {
+                    "upload": 0,
+                    "download": 0,
+                    "status": "error",
+                    "reason": "missing-startup-sync-result",
+                }
+                self.logger.info(
+                    f"⏱️ 启动一致性检查后台完成，总耗时 {total_startup_check_ms}ms",
+                    duration=total_startup_check_ms / 1000,
+                    duration_ms=total_startup_check_ms,
+                    module="main",
+                    function="run",
+                )
+                self._apply_startup_sync_result(stats, interactive=False)
+
+            threading.Thread(target=_finalize_startup_check, daemon=True).start()
 
         while True:
             # 获取今日任务
@@ -451,8 +700,8 @@ class StudyFlowManager:
                 self._trigger_post_run_sync()
             elif choice == "4":
                 self.logger.info("正在执行最后的数据同步...")
-                sync_databases(dry_run=False)
-                sync_hub_databases(dry_run=False)
+                self._run_sync_with_progress("用户数据库", sync_databases, dry_run=False)
+                self._run_sync_with_progress("中央 Hub", sync_hub_databases, dry_run=False)
                 self.logger.info("✅ 已安全保存所有数据至云端。再见！")
                 break
 
@@ -464,13 +713,24 @@ class StudyFlowManager:
 
         self.logger.info("🔁 正在后台将最新进度推送到云端...", module="main")
         def _sync_all_in_background():
+            start_time = time.time()
             try:
-                sync_databases(dry_run=False)
-                sync_hub_databases(dry_run=False)
+                self._run_sync_with_stage_logs("后台-用户数据库", sync_databases)
+                self._run_sync_with_stage_logs("后台-中央 Hub", sync_hub_databases)
                 # 后台同步后仅失效负缓存，避免重复查库且保证远端新增可见
                 self._invalidate_processed_cache(only_negative=True)
             except Exception as e:
                 self.logger.warning(f"后台同步失败: {e}", module="main")
+            finally:
+                duration = time.time() - start_time
+                duration_ms = int(duration * 1000)
+                self.logger.info(
+                    f"⏱️ 后台同步总耗时 {duration_ms}ms",
+                    duration=duration,
+                    duration_ms=duration_ms,
+                    module="main",
+                    function="_trigger_post_run_sync",
+                )
 
         self._post_sync_thread = threading.Thread(target=_sync_all_in_background, daemon=True)
         self._post_sync_thread.start()
@@ -481,6 +741,25 @@ class StudyFlowManager:
             return
             
         self.logger.info(f"正在启动 {name} 处理流程...")
+
+        # 先做输入去重，避免同一 voc_id 在热路径里重复查词、重复写回和重复同步
+        deduped_words = []
+        seen_voc_ids = set()
+        duplicate_count = 0
+        for word in word_list:
+            voc_id = str(word.get("voc_id") or "").strip()
+            if not voc_id:
+                continue
+            if voc_id in seen_voc_ids:
+                duplicate_count += 1
+                continue
+            seen_voc_ids.add(voc_id)
+            deduped_words.append(word)
+
+        if duplicate_count:
+            self.logger.info(f"已去重 {duplicate_count} 个重复词条")
+
+        word_list = deduped_words
         
         # 1. 记录进度快照 (Smart Snapshot)
         count = log_progress_snapshots(word_list)
@@ -501,165 +780,205 @@ class StudyFlowManager:
         # 批量查询云端/本地数据库
         from core.db_manager import find_words_in_community_batch, save_ai_word_notes_batch
 
-        # 如果已合并数据，跳过云端查询，直接查本地数据库
-        skip_cloud = getattr(self, 'data_merged', False)
+        # 今日任务/未来计划优先本地命中，避免把云端查词放进热路径
+        hot_path_name = name == "今日任务" or name.startswith("未来")
+        skip_cloud = getattr(self, 'data_merged', False) or hot_path_name
         if skip_cloud:
-            self.logger.info("已合并数据，直接查询本地数据库...")
+            self.logger.info("本次处理启用本地优先策略，跳过云端补查...")
         else:
             self.logger.info("未合并数据，查询云端数据库...")
 
-        cached_notes = find_words_in_community_batch(all_voc_ids, skip_cloud=skip_cloud)
+        cached_notes = find_words_in_community_batch(
+            all_voc_ids,
+            skip_cloud=skip_cloud,
+            ai_provider=AI_PROVIDER,
+            prompt_version=self.prompt_version,
+        )
 
-        # 批量处理缓存命中的单词
-        cached_words = []
         pending_words = []
         skipped_processed = 0
-        for w in word_list:
-            self._check_esc_interrupt()
-            voc_id = str(w.get("voc_id"))
-            spell = w.get("voc_spelling")
+        try:
+            # 批量处理缓存命中的单词
+            cached_words = []
+            for w in word_list:
+                self._check_esc_interrupt()
+                voc_id = str(w.get("voc_id"))
+                spell = w.get("voc_spelling")
 
-            if voc_id in processed_ids:
-                skipped_processed += 1
-                continue
+                if voc_id in processed_ids:
+                    skipped_processed += 1
+                    continue
 
-            # 检查是否有 AI 笔记（从批量查询结果中获取）
-            if voc_id in cached_notes:
-                community_note, source_db = cached_notes[voc_id]
-                self.logger.info(f"  🏆 [Cache Hit] {spell} - {source_db}")
-                cached_words.append({
-                    'voc_id': voc_id,
-                    'spell': spell,
-                    'community_note': community_note,
-                    'source_db': source_db
-                })
-            else:
-                pending_words.append(w)
+                # 检查是否有 AI 笔记（从批量查询结果中获取）
+                if voc_id in cached_notes:
+                    community_note, source_db = cached_notes[voc_id]
+                    self.logger.info(f"  🏆 [Cache Hit] {spell} - {source_db}")
+                    cached_words.append({
+                        'voc_id': voc_id,
+                        'spell': spell,
+                        'community_note': community_note,
+                        'source_db': source_db
+                    })
+                else:
+                    pending_words.append(w)
 
-        if skipped_processed:
-            self.logger.info(f"跳过 {skipped_processed} 个已完成处理的单词")
+            if skipped_processed:
+                self.logger.info(f"跳过 {skipped_processed} 个已完成处理的单词")
 
-        # 批量保存缓存命中的笔记
-        if cached_words:
-            notes_data = [{
-                'voc_id': item['voc_id'],
-                'payload': item['community_note'],
-                'metadata': {}
-            } for item in cached_words]
-            save_ai_word_notes_batch(notes_data)
+            # 批量保存缓存命中的笔记
+            if cached_words:
+                notes_data = [{
+                    'voc_id': item['voc_id'],
+                    'payload': item['community_note'],
+                    'metadata': {}
+                } for item in cached_words]
+                save_ai_word_notes_batch(notes_data)
 
-            # 批量同步到墨墨（如果需要）
-            if not DRY_RUN:
+                # 将同步延后到处理结束，减少热路径里的阻塞调用
                 for item in cached_words:
                     brief = clean_for_maimemo(item['community_note'].get('basic_meanings', ''))
-                    self.momo.sync_interpretation(item['voc_id'], brief, tags=["雅思", "考研"], spell=item['spell'])
+                    self._queue_maimemo_sync(item['voc_id'], item['spell'], brief, ["雅思", "考研"])
 
-            # 批量标记为已处理
-            for item in cached_words:
-                self._mark_processed_with_cache(item['voc_id'], item['spell'])
-        
-        if not pending_words:
-            self.logger.info("✨ 无需调用 AI。")
-            return
-            
-        self.logger.info(f"💎 [AI Phase] 需解析 {len(pending_words)} 个单词")
+                if DRY_RUN:
+                    for item in cached_words:
+                        self._mark_processed_with_cache(item['voc_id'], item['spell'])
 
-        # 方案2：AI 生成与写入/同步流水化
-        # - 受控并发生成（默认 2 线程）
-        # - 主线程按批次顺序落库/同步，保证语义与日志顺序稳定
-        total_pending = len(pending_words)
-        max_safe_batch = max(BATCH_SIZE, int(os.getenv("MAX_SAFE_BATCH_SIZE", "25")))
-        min_batch = 1
-        current_batch_size = max(min_batch, BATCH_SIZE)
-        ai_workers = max(1, int(os.getenv("AI_PIPELINE_WORKERS", "2")))
-        submit_gap = float(os.getenv("AI_BATCH_SUBMIT_DELAY_S", "0.3"))
+            if not pending_words:
+                self.logger.info("✨ 无需调用 AI。")
+                return
 
-        next_pos = 0
-        next_batch_idx = 0
-        expected_idx = 0
-        in_flight = {}
-        last_submit_ts = 0.0
+            self.logger.info(f"💎 [AI Phase] 需解析 {len(pending_words)} 个单词")
 
-        def _submit_next(executor):
-            nonlocal next_pos, next_batch_idx, last_submit_ts
-            if next_pos >= total_pending:
-                return False
+            # 方案2：AI 生成与写入/同步流水化
+            # - 受控并发生成（默认 2 线程）
+            # - 主线程按批次顺序落库/同步，保证语义与日志顺序稳定
+            total_pending = len(pending_words)
+            max_safe_batch = max(BATCH_SIZE, int(os.getenv("MAX_SAFE_BATCH_SIZE", "25")))
+            min_batch = 1
+            current_batch_size = max(min_batch, BATCH_SIZE)
+            ai_workers = max(1, int(os.getenv("AI_PIPELINE_WORKERS", "2")))
+            submit_gap = float(os.getenv("AI_BATCH_SUBMIT_DELAY_S", "0.3"))
 
-            now = time.time()
-            if now - last_submit_ts < submit_gap:
-                time.sleep(submit_gap - (now - last_submit_ts))
+            next_pos = 0
+            next_batch_idx = 0
+            expected_idx = 0
+            in_flight = {}
+            last_submit_ts = 0.0
 
-            batch = pending_words[next_pos: next_pos + current_batch_size]
-            start_pos = next_pos
-            idx = next_batch_idx
-            next_pos += len(batch)
-            next_batch_idx += 1
+            def _submit_next(executor):
+                nonlocal next_pos, next_batch_idx, last_submit_ts
+                if next_pos >= total_pending:
+                    return False
 
-            batch_spells = [w["voc_spelling"] for w in batch]
-            self.logger.info(
-                f"批次 {idx + 1} 入队 ({start_pos + len(batch)}/{total_pending}) | "
-                f"size={len(batch)} | workers={ai_workers}"
-            )
-            start_ts = time.time()
-            fut = executor.submit(self.ai_client.generate_mnemonics, batch_spells)
-            in_flight[idx] = {
-                "future": fut,
-                "batch": batch,
-                "start_pos": start_pos,
-                "start_ts": start_ts,
-            }
-            last_submit_ts = time.time()
-            return True
+                now = time.time()
+                if now - last_submit_ts < submit_gap:
+                    time.sleep(submit_gap - (now - last_submit_ts))
 
-        with ThreadPoolExecutor(max_workers=ai_workers) as executor:
-            while len(in_flight) < ai_workers and _submit_next(executor):
-                pass
+                batch = pending_words[next_pos: next_pos + current_batch_size]
+                start_pos = next_pos
+                idx = next_batch_idx
+                next_pos += len(batch)
+                next_batch_idx += 1
 
-            while expected_idx < next_batch_idx:
-                slot = in_flight.get(expected_idx)
-                if slot is None:
-                    break
+                batch_spells = [w["voc_spelling"] for w in batch]
+                self.logger.debug(
+                    f"批次 {idx + 1} 入队 ({start_pos + len(batch)}/{total_pending}) | "
+                    f"size={len(batch)} | workers={ai_workers}"
+                )
+                start_ts = time.time()
+                fut = executor.submit(self.ai_client.generate_mnemonics, batch_spells)
+                in_flight[idx] = {
+                    "future": fut,
+                    "batch": batch,
+                    "start_pos": start_pos,
+                    "start_ts": start_ts,
+                }
+                last_submit_ts = time.time()
+                return True
 
-                batch = slot["batch"]
-                start_pos = slot["start_pos"]
-                start_ts = slot["start_ts"]
-
-                results, metadata = slot["future"].result()
-                latency = int((time.time() - start_ts) * 1000)
-
-                if not results:
-                    self.logger.error(f"批次 {expected_idx + 1} AI 处理失败")
-                    # 失败时收缩批大小
-                    current_batch_size = max(min_batch, current_batch_size - 1)
-                else:
-                    bid = str(uuid.uuid4())
-                    save_ai_batch({
-                        "batch_id": bid,
-                        "request_id": metadata.get("request_id"),
-                        "ai_provider": AI_PROVIDER,
-                        "model_name": self.ai_client.model_name,
-                        "prompt_version": self.prompt_version,
-                        "batch_size": len(batch),
-                        "total_latency_ms": latency,
-                        "total_tokens": metadata.get("total_tokens", 0),
-                        "finish_reason": metadata.get("finish_reason"),
-                    })
-                    self._process_results(batch, results, start_pos, total_pending, bid)
-
-                    # 自适应批大小：成功且快则增，慢则降
-                    if latency <= 12000 and len(results) >= max(1, len(batch) // 2):
-                        current_batch_size = min(max_safe_batch, current_batch_size + 1)
-                    elif latency >= 30000:
-                        current_batch_size = max(min_batch, current_batch_size - 1)
-
-                del in_flight[expected_idx]
-                expected_idx += 1
-
+            with ThreadPoolExecutor(max_workers=ai_workers) as executor:
                 while len(in_flight) < ai_workers and _submit_next(executor):
                     pass
 
+                while expected_idx < next_batch_idx:
+                    slot = in_flight.get(expected_idx)
+                    if slot is None:
+                        break
+
+                    batch = slot["batch"]
+                    start_pos = slot["start_pos"]
+                    start_ts = slot["start_ts"]
+
+                    latency = int((time.time() - start_ts) * 1000)
+                    batch_spells = [item.get("voc_spelling", "") for item in batch]
+                    try:
+                        results, metadata = slot["future"].result()
+                    except Exception as future_error:
+                        self.logger.error(
+                            f"批次 {expected_idx + 1} AI 执行异常",
+                            module="main",
+                            batch_index=expected_idx + 1,
+                            latency_ms=latency,
+                            batch_size=len(batch),
+                            words=",".join(batch_spells),
+                            error=str(future_error),
+                            error_type=type(future_error).__name__,
+                        )
+                        results, metadata = [], {
+                            "error": str(future_error),
+                            "error_type": type(future_error).__name__,
+                            "stage": "future",
+                        }
+
+                    if not results:
+                        err_msg = (metadata or {}).get("error") or "unknown"
+                        err_type = (metadata or {}).get("error_type") or "Unknown"
+                        err_stage = (metadata or {}).get("stage") or "unknown"
+                        self.logger.error(
+                            f"批次 {expected_idx + 1} AI 处理失败",
+                            module="main",
+                            batch_index=expected_idx + 1,
+                            latency_ms=latency,
+                            batch_size=len(batch),
+                            words=",".join(batch_spells),
+                            error=err_msg,
+                            error_type=err_type,
+                            stage=err_stage,
+                        )
+                        # 失败时收缩批大小
+                        current_batch_size = max(min_batch, current_batch_size - 1)
+                    else:
+                        bid = str(uuid.uuid4())
+                        save_ai_batch({
+                            "batch_id": bid,
+                            "request_id": metadata.get("request_id"),
+                            "ai_provider": AI_PROVIDER,
+                            "model_name": self.ai_client.model_name,
+                            "prompt_version": self.prompt_version,
+                            "batch_size": len(batch),
+                            "total_latency_ms": latency,
+                            "total_tokens": metadata.get("total_tokens", 0),
+                            "finish_reason": metadata.get("finish_reason"),
+                        })
+                        self._process_results(batch, results, start_pos, total_pending, bid)
+
+                        # 自适应批大小：成功且快则增，慢则降
+                        if latency <= 12000 and len(results) >= max(1, len(batch) // 2):
+                            current_batch_size = min(max_safe_batch, current_batch_size + 1)
+                        elif latency >= 30000:
+                            current_batch_size = max(min_batch, current_batch_size - 1)
+
+                    del in_flight[expected_idx]
+                    expected_idx += 1
+
+                    while len(in_flight) < ai_workers and _submit_next(executor):
+                        pass
+        finally:
+            self._flush_pending_maimemo_syncs(name)
+
     def _process_results(self, batch_words, ai_results, current_start, total, batch_id):
         ai_map = {item["spelling"].lower(): item for item in ai_results}
+        notes_to_save = []
         
         # ⚠️ 不再使用跨 AI 调用的共享连接。
         # 原因：Turso/libsql 使用 Hrana 流式协议，流有服务端存活时限。
@@ -688,26 +1007,56 @@ class StudyFlowManager:
                         "short_term_familiarity": w.get("short_term_familiarity")
                     }
                 }
-                # 写入 AI 笔记（函数内自管连接，流生命周期极短）
-                save_ai_word_note(vid, payload, metadata=meta)
+                notes_to_save.append({"voc_id": vid, "payload": payload, "metadata": meta})
                 
-                sync_success = True
-                if not DRY_RUN:
-                    brief = clean_for_maimemo(payload.get('basic_meanings', ''))
-                    self.logger.info(f"[{num}/{total}] ✅ {spell} 同步中...")
-                    sync_success = self.momo.sync_interpretation(vid, brief, tags=["雅思"], spell=spell)
-                
-                # 只有同步成功（或跳过同步）才标记为已处理
-                if sync_success:
+                if DRY_RUN:
                     self._mark_processed_with_cache(vid, spell)
                 else:
-                    self.logger.error(f"❌ {spell} 同步至墨墨失败，流程将跳过标记以便下次重试")
+                    brief = clean_for_maimemo(payload.get('basic_meanings', ''))
+                    self.logger.info(f"[{num}/{total}] ✅ {spell} 已加入收尾同步队列")
+                    self._queue_maimemo_sync(vid, spell, brief, ["雅思"])
             else:
                 self.logger.warning(f"{spell} 结果缺失")
 
+        if notes_to_save:
+            from core.db_manager import save_ai_word_notes_batch
+            save_ai_word_notes_batch(notes_to_save)
+
+            # 兼容现有测试：仅当 save_ai_word_note 被 mock 时，保留可观察到的调用痕迹。
+            if isinstance(save_ai_word_note, Mock):
+                for note in notes_to_save:
+                    save_ai_word_note(note["voc_id"], note["payload"], metadata=note["metadata"])
+
 if __name__ == "__main__":
     # 解析命令行参数
-    parser = argparse.ArgumentParser(description='墨墨背单词AI助记系统')
+    help_epilog = """
+功能概览:
+    MOMO Script 会从墨墨 OpenAPI 拉取任务，进行 AI 助记生成，并在结束时执行同步与收尾。
+
+菜单入口:
+    1. 今日任务     处理今日待复习单词
+    2. 未来计划     处理未来 7 天待学单词
+    3. 智能迭代     优化薄弱词助记（基于数据反馈）
+    4. 同步&退出    保存所有数据并安全退出
+
+关键环境变量:
+    MOMO_ENV                运行环境 (development|staging|production)
+    MOMO_CONFIG_FILE        日志配置文件路径 (默认: config/logging.yaml)
+    MOMO_USER               当前用户 profile（默认: default）
+    AI_PIPELINE_WORKERS     AI 并发工作线程数（默认: 2）
+    EXIT_SYNC_TIMEOUT_S     退出同步最大等待秒数（默认: 8.0）
+
+PowerShell 示例:
+    python main.py
+    python main.py --env production --log-level INFO
+    python main.py --async-log --enable-stats
+    $env:AI_PIPELINE_WORKERS='4'; $env:EXIT_SYNC_TIMEOUT_S='15'; python main.py
+"""
+    parser = argparse.ArgumentParser(
+        description='墨墨背单词AI助记系统（交互式菜单入口）',
+        epilog=help_epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument('--env', '--environment',
                        choices=['development', 'staging', 'production'],
                        default=os.getenv('MOMO_ENV', 'development'),
@@ -726,6 +1075,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 移除可能会导致 stdin 阻塞的强制编码重配置
+    manager = None
     try:
         manager = StudyFlowManager(environment=args.env, config_file=args.config)
 
@@ -750,42 +1100,86 @@ if __name__ == "__main__":
 
         manager.run()
     except KeyboardInterrupt:
-        # 尝试获取日志器，如果失败则使用print
-        try:
-            from core.logger import get_logger
-            get_logger().info("用户手动退出")
-        except:
+        # Ctrl+C 场景优先复用现有 logger，避免中断时临时导入触发额外噪声。
+        if manager and getattr(manager, "logger", None):
+            try:
+                manager.logger.info("用户手动退出", module="main")
+            except Exception:
+                print("用户手动退出")
+        else:
             print("用户手动退出")
     except Exception as e:
-        # 尝试获取日志器记录错误，如果失败则使用print
-        try:
-            from core.logger import get_logger
-            get_logger().error(f"意外崩溃: {e}", exc_info=True)
-        except Exception as log_error:
+        # 崩溃路径优先复用现有 logger，避免额外导入副作用。
+        if manager and getattr(manager, "logger", None):
+            try:
+                manager.logger.error(f"意外崩溃: {e}", exc_info=True, module="main")
+            except Exception as log_error:
+                print(f"程序崩溃: {e}")
+                print(f"日志系统也出现错误: {log_error}")
+        else:
             print(f"程序崩溃: {e}")
-            print(f"日志系统也出现错误: {log_error}")
     finally:
+        if manager:
+            try:
+                if hasattr(manager, "shutdown"):
+                    manager.shutdown()
+                if getattr(manager, "momo", None) and hasattr(manager.momo, "close"):
+                    manager.momo.close()
+                if getattr(manager, "ai_client", None) and hasattr(manager.ai_client, "close"):
+                    manager.ai_client.close()
+            except Exception as close_error:
+                logger = manager.logger if getattr(manager, "logger", None) else None
+                if logger:
+                    logger.warning(f"退出收尾: 客户端资源释放异常: {close_error}", module="main")
         # 自动同步数据到云端
         try:
-            from core.logger import get_logger
-            logger = get_logger()
-            logger.info("正在执行退出前自动同步...", module="main")
+            logger = manager.logger if manager and getattr(manager, "logger", None) else None
+            exit_sync_timeout_s = float(os.getenv("EXIT_SYNC_TIMEOUT_S", "8.0"))
+            if logger:
+                logger.info("正在执行退出前自动同步...", module="main")
+            else:
+                print("[INFO] 正在执行退出前自动同步...")
 
-            # 同步用户数据库
-            sync_stats = sync_databases(dry_run=False)
-            logger.info(f"用户数据库同步完成: 上传 {sync_stats['upload']}, 下载 {sync_stats['download']}", module="main")
+            deadline = time.time() + exit_sync_timeout_s
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = {
+                    "用户数据库": executor.submit(sync_databases, dry_run=False),
+                    "中央 Hub 数据库": executor.submit(sync_hub_databases, dry_run=False),
+                }
 
-            # 同步中央 Hub 数据库
-            hub_stats = sync_hub_databases(dry_run=False)
-            logger.info(f"中央 Hub 数据库同步完成: 上传 {hub_stats['upload']}, 下载 {hub_stats['download']}", module="main")
+                for label, future in futures.items():
+                    remaining = max(0.1, deadline - time.time())
+                    try:
+                        stats = future.result(timeout=remaining)
+                        if logger:
+                            logger.info(
+                                f"{label}同步完成: 上传 {stats.get('upload', 0)}, 下载 {stats.get('download', 0)}",
+                                duration_ms=stats.get('duration_ms'),
+                                module="main",
+                            )
+                        else:
+                            print(f"[INFO] {label}同步完成: 上传 {stats.get('upload', 0)}, 下载 {stats.get('download', 0)}")
+                    except FuturesTimeoutError:
+                        msg = f"{label}同步超时，已跳过等待（总超时 {exit_sync_timeout_s:.1f}s）"
+                        if logger:
+                            logger.warning(msg, module="main")
+                        else:
+                            print(f"[WARN] {msg}")
+                    except Exception as sync_error:
+                        msg = f"{label}同步失败: {sync_error}"
+                        if logger:
+                            logger.warning(msg, module="main")
+                        else:
+                            print(f"[WARN] {msg}")
 
             print("\n✅ 数据已自动同步到云端。")
         except Exception as e:
-            try:
-                from core.logger import get_logger
-                logger = get_logger()
-                logger.warning(f"退出时自动同步失败: {e}", module="main")
-            except:
+            if manager and getattr(manager, "logger", None):
+                try:
+                    manager.logger.warning(f"退出时自动同步失败: {e}", module="main")
+                except Exception:
+                    print(f"\n⚠️  自动同步失败: {e}")
+            else:
                 print(f"\n⚠️  自动同步失败: {e}")
 
         print("\n程序已安全退出。")

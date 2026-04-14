@@ -1,125 +1,45 @@
-# Momo Study Agent — 系统架构概览
+# Momo Study Agent — 架构入口
 
-> 本文档面向开发者和 AI 助手，提供当前系统的完整架构快照。
+> 本目录只保留架构视角的总览与导航。实现细节分别放到 [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)、[DATA_FLOW.md](DATA_FLOW.md)、[DATABASE_DESIGN.md](DATABASE_DESIGN.md) 与 [decision_flow.md](decision_flow.md)。
 
----
+## 定位
 
-## 系统定位
+Momo Study Agent 是一个基于墨墨背单词 OpenAPI 的多用户 CLI 工具。主流程负责拉取今日/未来词汇、调用 AI 生成助记、写回墨墨，并将用户数据同步到本地 SQLite 和 Turso 云端。
 
-多用户、跨设备的英语单词助记自动化平台。通过 MaiMemo OpenAPI 获取每日词汇，调用 AI 模型生成结构化助记笔记，写回 MaiMemo App，并用本地 SQLite + 云端 Turso 持久化所有数据。
-
----
-
-## 整体数据流
+## 架构分层
 
 ```mermaid
 graph TD
-    User([用户]) --> CLI[main.py\nStudyFlowManager]
-    CLI --> MaiMemo[maimemo_api.py\nOpenAPI 封装]
-    CLI --> DB[db_manager.py\n持久化中心]
-    CLI --> AI[AI 客户端抽象]
-    CLI --> IT[iteration_manager.py\n智能迭代引擎]
+    User([用户]) --> Main[main.py\nStudyFlowManager]
+    Main --> Wizard[core/config_wizard.py\n首次配置]
+    Main --> API[core/maimemo_api.py\n墨墨 OpenAPI]
+    Main --> AI[core/gemini_client.py\ncore/mimo_client.py]
+    Main --> DB[core/db_manager.py\n本地/云端数据层]
+    Main --> IT[core/iteration_manager.py\n薄弱词迭代]
+    Main --> Preflight[tools/preflight_check.py\n启动体检]
 
-    AI --> Gemini[gemini_client.py]
-    AI --> Mimo[mimo_client.py]
-
-    DB --> Local[(本地 SQLite\ndata/history_*.db)]
-    DB --> Cloud[(Turso 云端\n双向同步)]
-
-    IT --> DB
-    IT --> AI
-    IT --> Notepad[云词本\n薄弱词攻坚]
-
-    MaiMemo --> Cloud2[MaiMemo 服务器]
-
-    Logger[logger.py\n日志系统] -.-> CLI
-    Logger -.-> DB
-    Logger -.-> IT
+    DB --> Local[(本地 SQLite)]
+    DB --> Cloud[(Turso 云端)]
+    DB --> Hub[(momo-users-hub)]
+    API --> App[(墨墨服务器)]
 ```
 
----
+## 当前关键事实
 
-## 模块详解
+- 主流程入口是 [main.py](../../main.py)，菜单循环中提供今日任务、未来计划、智能迭代和同步退出。
+- 新用户向导是 [core/config_wizard.py](../../core/config_wizard.py)，默认“先保存后校验”，敏感输入使用隐藏回显。
+- 持久化中心是 [core/db_manager.py](../../core/db_manager.py)，负责本地 SQLite、Turso 同步和中央 Hub 数据。
+- AI 客户端抽象是 [core/gemini_client.py](../../core/gemini_client.py) 与 [core/mimo_client.py](../../core/mimo_client.py)。
+- 启动前体检是 [tools/preflight_check.py](../../tools/preflight_check.py)。
 
-### `main.py` — 核心编排器
-- **职责**：主菜单、批处理调度、ESC 中断安全
-- **设计**：封装为 `StudyFlowManager` 类，持有 API 和 AI 客户端实例
-- **流程**：获取 → 过滤（查重）→ AI 生成 → 写回 → 同步
+## 推荐阅读顺序
 
-### `core/db_manager.py` — 持久化中心
-- **职责**：所有数据库读写，本地 ↔ Turso 双向同步
-- **中央 Hub**：持有全局 `momo-users-hub` 连接，记录用户元数据、会话、审计日志
-- **关键函数**：`_get_conn()`（用户库路路由）、`_get_hub_conn()`（中央库路由，优先 Turso）、`sync_databases()`
-- **设计**：每用户独立数据库；社区缓存机制（跨用户复用 AI 笔记）
+1. [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md) 看模块边界和职责。
+2. [DATA_FLOW.md](DATA_FLOW.md) 看主流程和同步路径。
+3. [DATABASE_DESIGN.md](DATABASE_DESIGN.md) 看表结构和同步策略。
+4. [decision_flow.md](decision_flow.md) 看配置与启动分支。
 
-### `core/maimemo_api.py` — 协议抽象
-- **职责**：MaiMemo OpenAPI 完整封装（释义/助记/例句/云词本/学习数据）
-- **接口**：`sync_interpretation()`、`create_note()`、`list_notepads()`、`create_notepad()`、`update_notepad()`
+## 不在本页展开的内容
 
-### `core/iteration_manager.py` — 智能迭代引擎
-- **职责**：薄弱词检测 → AI 重炼 → 推送至专属云词本
-- **逻辑**：
-  - L0 → L1（选优同步）：对首次检测词，AI 打分选出最优助记
-  - L1 → L2（强力重炼）：对退步/停滞词，调用高强度 Prompt 重新生成
-  - 重炼完成后批量写入 `MomoAgent: 薄弱词攻坚` 云词本（不影响主线复习队列）
-
-### `core/gemini_client.py` & `core/mimo_client.py` — AI 抽象层
-- **职责**：多模型兼容，统一暴露 `generate_mnemonics` + `generate_with_instruction`
-- **容错**：`json_repair` 库处理破损 JSON；logger 收容解析异常
-
-### `core/logger.py` — 企业级日志系统
-- **文件输出**：结构化 JSON（含时间戳、用户、会话、模块、耗时）
-- **控制台输出**：`[LEVEL] message` 可读文本（不输出 JSON）
-- **使用**：`from core.logger import get_logger; get_logger().info(...)`
-
----
-
-## 核心设计模式
-
-### Prompt 版本指纹
-启动时自动计算 Prompt 文件 MD5，存入 `ai_batches.prompt_version`，并将原文归档至 `data/prompts/`，便于追溯任何历史笔记由哪个版本 Prompt 生成。
-
-### 冷热数据分离
-- **热**：内存中的当前任务 Batch
-- **温**：`processed_words` 表（极速查重）
-- **冷**：`ai_word_notes` 中的全量知识（仅同步/迭代时读取）
-
-### 容错与恢复
-Batch 失败带指数退避重试 + `mark_processed` 延迟标记法，确保中途断电后下次从失败点继续，不重复调用 AI。
-
----
-
-## 目录结构
-
-```
-e:\MOMO_Script\
-├── main.py                 # 程序入口
-├── config.py               # 全局配置与路径
-├── .env.example            # 环境变量配置模板
-├── CLAUDE.md               # AI 上下文文档
-├── PROJECT_STATUS.md       # 项目状态总结
-├── core/                   # 核心模块
-│   ├── db_manager.py       # 持久化中心（SQLite + Turso 双轨）
-│   ├── maimemo_api.py      # MaiMemo OpenAPI 封装
-│   ├── iteration_manager.py # 薄弱词智能迭代引擎
-│   ├── weak_word_filter.py # 薄弱词筛选系统
-│   ├── gemini_client.py    # Google Gemini 客户端
-│   ├── mimo_client.py      # 小米 Mimo 客户端
-│   ├── logger.py           # 企业级日志系统
-│   ├── log_archiver.py     # 日志自动压缩归档
-│   ├── profile_manager.py  # 多用户 Profile 管理
-│   └── config_wizard.py    # 新用户引导向导
-├── data/                   # 运行时数据（gitignore）
-│   ├── profiles/           # 用户配置 .env
-│   └── prompts/            # Prompt 历史归档
-├── docs/                   # 文档体系
-│   ├── architecture/       # 架构设计文档
-│   ├── api/                # 外部 API 参考
-│   ├── prompts/            # Prompt 源文件
-│   └── dev/                # 开发者规约
-├── tools/                  # 独立工具脚本
-├── scripts/                # 维护脚本
-├── tests/                  # 测试文件
-├── logs/                   # 用户日志（gitignore）
-└── scratch/                # 临时开发脚本
-```
+- 详细日志配置请看 [../dev/LOGGING.md](../dev/LOGGING.md)
+- 代码规范与 AI 执行规范请看 [../dev/AI_CONTEXT.md](../dev/AI_CONTEXT.md)

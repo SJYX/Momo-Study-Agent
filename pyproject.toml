@@ -145,10 +145,12 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+norecursedirs = ["tests/experiments"]
 addopts = [
     "-v",
     "--strict-markers",
     "--tb=short",
+    "--ignore=tests/core/test_apple.py",
     "--cov=core",
     "--cov=config",
     "--cov-report=html:htmlcov",

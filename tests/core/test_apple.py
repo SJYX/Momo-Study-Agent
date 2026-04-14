@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 # Add root directory to path so we can import project modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from gemini_client import GeminiClient
+from compat.gemini_client import GeminiClient
 
 # 解决终端中文的输出乱码
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")

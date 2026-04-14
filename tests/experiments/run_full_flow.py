@@ -8,8 +8,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 sys.path.insert(0, ROOT_DIR)
 
 from config import MOMO_TOKEN, GEMINI_API_KEY, TEST_DB_PATH, DB_PATH
-from maimemo_api import MaiMemoAPI
-from gemini_client import GeminiClient
+from compat.maimemo_api import MaiMemoAPI
+from compat.gemini_client import GeminiClient
 from db_manager import init_db, save_ai_word_note, mark_processed
 
 # 终端编码修正 (Windows 友好)

@@ -5,6 +5,10 @@ import config
 @pytest.fixture
 def mock_flow(mocker):
     """提供一个全 Mock 的 StudyFlowManager 环境。"""
+    # 强制走 Gemini 路径，避免 MIMO_KEY 依赖
+    mocker.patch("main.AI_PROVIDER", "gemini")
+    mocker.patch("main.GEMINI_API_KEY", "fake-key")
+
     # Mock API 和 Client
     mocker.patch("main.MaiMemoAPI")
     mocker.patch("main.GeminiClient")
@@ -13,6 +17,8 @@ def mock_flow(mocker):
     mocker.patch("main.is_processed", return_value=False)
     mocker.patch("main.mark_processed")
     mocker.patch("main.save_ai_word_note")
+    mocker.patch("main.save_ai_batch")
+    mocker.patch("main.StudyFlowManager._wait_for_choice", side_effect=["1", "4"])
     # Mock time
     mocker.patch("time.sleep", return_value=None)
     
@@ -33,10 +39,13 @@ def test_flow_dry_run_respect(mock_flow, mocker):
     }
     
     # 模拟 AI 返回
-    mock_flow.gemini.generate_mnemonics.return_value = [
-        {"spelling": "word1", "basic_meanings": "m1"},
-        {"spelling": "word2", "basic_meanings": "m2"}
-    ]
+    mock_flow.gemini.generate_mnemonics.return_value = (
+        [
+            {"spelling": "word1", "basic_meanings": "m1"},
+            {"spelling": "word2", "basic_meanings": "m2"}
+        ],
+        {"total_tokens": 10}
+    )
     
     # 强制开启 DRY_RUN
     mocker.patch("main.DRY_RUN", True)
@@ -68,9 +77,10 @@ def test_flow_partial_ai_failure(mock_flow, mocker):
     }
     
     # AI 只返回了 word1
-    mock_flow.gemini.generate_mnemonics.return_value = [
-        {"spelling": "word1", "basic_meanings": "m1"}
-    ]
+    mock_flow.gemini.generate_mnemonics.return_value = (
+        [{"spelling": "word1", "basic_meanings": "m1"}],
+        {"total_tokens": 10}
+    )
     
     mock_flow.run()
     

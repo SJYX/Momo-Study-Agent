@@ -7,8 +7,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from core.mimo_client import MimoClient
 from core.db_manager import save_test_word_note, log_test_run, is_processed, mark_processed, TEST_DB_PATH
+import pytest
 
 def test_pipeline():
+    if not os.getenv("MIMO_API_KEY"):
+        pytest.skip("MIMO_API_KEY not configured; skipping external pipeline test")
+
     print("=== Mimo Pipeline Validation Test ===")
     print(f"Target DB: {TEST_DB_PATH}")
 

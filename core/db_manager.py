@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Tuple, List, Any
+from typing import Optional, Dict, Tuple, List, Any, Callable
 import requests
 from urllib.parse import urlparse
 from config import ACTIVE_USER, DB_PATH, TEST_DB_PATH, DATA_DIR, PROFILES_DIR, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, HUB_DB_PATH, FORCE_CLOUD_MODE, ENCRYPTION_KEY
@@ -43,6 +43,11 @@ _table_exists_cache = {}
 _cloud_targets_cache = {"expire_at": 0.0, "targets": []}
 _CLOUD_TARGET_CACHE_TTL_SECONDS = int(os.getenv("CLOUD_TARGET_CACHE_TTL_SECONDS", "600"))
 _CLOUD_LOOKUP_MAX_TARGETS = int(os.getenv("CLOUD_LOOKUP_MAX_TARGETS", "40"))
+_MGMT_TOKEN_VALIDATE_TTL_SECONDS = int(os.getenv("MGMT_TOKEN_VALIDATE_TTL_SECONDS", "300"))
+_mgmt_token_validation_cache = {"expire_at": 0.0, "valid": None, "reason": ""}
+_HUB_INIT_STATE_TTL_SECONDS = int(os.getenv("HUB_INIT_STATE_TTL_SECONDS", "600"))
+_HUB_SCHEMA_VERSION = os.getenv("HUB_SCHEMA_VERSION", "1")
+_hub_init_state_cache = {"expire_at": 0.0, "state": None}
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 def _hash_fingerprint(raw: str) -> str:
@@ -67,6 +72,73 @@ def _hub_db_fingerprint() -> str:
     if TURSO_HUB_DB_URL:
         return f"cloud:{TURSO_HUB_DB_URL.strip()}"
     return f"local:{os.path.abspath(HUB_DB_PATH)}"
+
+
+def _hub_init_state_path() -> str:
+    marker_dir = os.path.join(DATA_DIR, "db_init_markers")
+    os.makedirs(marker_dir, exist_ok=True)
+    return os.path.join(marker_dir, "hub_init_state.json")
+
+
+def _load_hub_init_state(force_refresh: bool = False) -> Optional[dict]:
+    now = time.time()
+    if not force_refresh and _hub_init_state_cache.get("state") and now < _hub_init_state_cache.get("expire_at", 0.0):
+        return _hub_init_state_cache["state"]
+
+    path = _hub_init_state_path()
+    if not os.path.exists(path):
+        _hub_init_state_cache["state"] = None
+        _hub_init_state_cache["expire_at"] = now + _HUB_INIT_STATE_TTL_SECONDS
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if isinstance(state, dict):
+            _hub_init_state_cache["state"] = state
+            _hub_init_state_cache["expire_at"] = now + _HUB_INIT_STATE_TTL_SECONDS
+            return state
+    except Exception as e:
+        _debug_log(f"读取 Hub 初始化状态失败: {e}")
+
+    _hub_init_state_cache["state"] = None
+    _hub_init_state_cache["expire_at"] = now + _HUB_INIT_STATE_TTL_SECONDS
+    return None
+
+
+def _save_hub_init_state(state: dict) -> None:
+    path = _hub_init_state_path()
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+        _hub_init_state_cache["state"] = state
+        _hub_init_state_cache["expire_at"] = time.time() + _HUB_INIT_STATE_TTL_SECONDS
+    except Exception as e:
+        _debug_log(f"保存 Hub 初始化状态失败: {e}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+def _hub_init_state_is_fresh(hub_fp: str) -> bool:
+    state = _load_hub_init_state()
+    if not state:
+        return False
+
+    if state.get("hub_fp") != hub_fp:
+        return False
+    if state.get("schema_version") != _HUB_SCHEMA_VERSION:
+        return False
+
+    last_success_at = float(state.get("last_success_at", 0.0) or 0.0)
+    if not last_success_at:
+        return False
+
+    return (time.time() - last_success_at) <= _HUB_INIT_STATE_TTL_SECONDS
 
 def _get_db_init_marker_path(db_type: str, db_fingerprint: str = None) -> str:
     """获取数据库初始化标记文件路径"""
@@ -168,27 +240,99 @@ def _read_profile_cloud_config(profile_env_path: str) -> Optional[Dict[str, str]
         _debug_log(f"读取 profile 云配置失败: {profile_env_path} -> {e}")
     return None
 
+def _validate_turso_management_token(force_refresh: bool = False) -> Dict[str, Any]:
+    """Validate Turso management token once per TTL to avoid repeated slow failures."""
+    now = time.time()
+    mgmt_token = (os.getenv("TURSO_MGMT_TOKEN") or "").strip()
+    if not mgmt_token:
+        return {"checked": False, "valid": False, "reason": "missing-mgmt-token"}
+
+    if not force_refresh and _mgmt_token_validation_cache.get("valid") is not None and now < _mgmt_token_validation_cache.get("expire_at", 0.0):
+        return {
+            "checked": True,
+            "valid": bool(_mgmt_token_validation_cache.get("valid")),
+            "reason": _mgmt_token_validation_cache.get("reason", "cached"),
+            "cached": True,
+        }
+
+    headers = {"Authorization": f"Bearer {mgmt_token}"}
+    validate_url = "https://api.turso.tech/v1/auth/validate"
+    fallback_validate_url = "https://api.turso.tech/v1/user"
+    try:
+        started_at = time.time()
+        resp = requests.get(validate_url, headers=headers, timeout=6)
+        elapsed_ms = int((time.time() - started_at) * 1000)
+
+        if resp.status_code == 200:
+            _mgmt_token_validation_cache["valid"] = True
+            _mgmt_token_validation_cache["reason"] = "ok"
+            _mgmt_token_validation_cache["expire_at"] = now + _MGMT_TOKEN_VALIDATE_TTL_SECONDS
+            _debug_log(f"Turso 管理令牌校验通过 (/auth/validate) | validate_ms={elapsed_ms}")
+            return {"checked": True, "valid": True, "reason": "ok", "cached": False}
+
+        # 兼容不同 token 类型与后端能力差异：主校验失败时回退 /v1/user
+        fallback_started_at = time.time()
+        fallback_resp = requests.get(fallback_validate_url, headers=headers, timeout=6)
+        fallback_elapsed_ms = int((time.time() - fallback_started_at) * 1000)
+        if fallback_resp.status_code == 200:
+            _mgmt_token_validation_cache["valid"] = True
+            _mgmt_token_validation_cache["reason"] = "ok-fallback-user"
+            _mgmt_token_validation_cache["expire_at"] = now + _MGMT_TOKEN_VALIDATE_TTL_SECONDS
+            _debug_log(
+                "Turso 管理令牌校验通过 (/auth/validate 失败后回退 /user) "
+                f"| validate_ms={elapsed_ms}, fallback_ms={fallback_elapsed_ms}"
+            )
+            return {"checked": True, "valid": True, "reason": "ok-fallback-user", "cached": False}
+
+        reason = f"auth-validate-http-{resp.status_code};fallback-http-{fallback_resp.status_code}"
+        _mgmt_token_validation_cache["valid"] = False
+        _mgmt_token_validation_cache["reason"] = reason
+        _mgmt_token_validation_cache["expire_at"] = now + _MGMT_TOKEN_VALIDATE_TTL_SECONDS
+        _debug_log(
+            "Turso 管理令牌校验失败: "
+            f"{reason} | validate_ms={elapsed_ms}, fallback_ms={fallback_elapsed_ms}"
+        )
+        return {"checked": True, "valid": False, "reason": reason, "cached": False}
+    except Exception as e:
+        reason = f"validate-error:{e}"
+        _mgmt_token_validation_cache["valid"] = False
+        _mgmt_token_validation_cache["reason"] = reason
+        _mgmt_token_validation_cache["expire_at"] = now + _MGMT_TOKEN_VALIDATE_TTL_SECONDS
+        _debug_log(f"Turso 管理令牌校验异常: {e}")
+        return {"checked": True, "valid": False, "reason": reason, "cached": False}
+
 def _fetch_turso_cloud_targets_via_api() -> List[Tuple[str, str, str]]:
     """Use Turso management API to discover history databases and generate DB auth tokens."""
+    started_at = time.time()
     mgmt_token = (os.getenv("TURSO_MGMT_TOKEN") or "").strip()
     org_slug = (os.getenv("TURSO_ORG_SLUG") or "").strip()
     if not mgmt_token or not org_slug:
         return []
 
+    validation = _validate_turso_management_token()
+    if not validation.get("valid"):
+        _debug_log(f"Turso API 云库发现跳过：管理令牌不可用 ({validation.get('reason')})")
+        return []
+
     headers = {"Authorization": f"Bearer {mgmt_token}", "Content-Type": "application/json"}
     list_url = f"https://api.turso.tech/v1/organizations/{org_slug}/databases"
     try:
+        list_started_at = time.time()
         resp = requests.get(list_url, headers=headers, timeout=12)
+        list_elapsed_ms = int((time.time() - list_started_at) * 1000)
         if resp.status_code != 200:
-            _debug_log(f"Turso API 获取数据库列表失败: {resp.status_code}")
+            _debug_log(f"Turso API 获取数据库列表失败: {resp.status_code} | list_ms={list_elapsed_ms}")
             return []
 
         dbs = resp.json().get("databases", [])
         targets: List[Tuple[str, str, str]] = []
+        history_candidates = 0
+        token_elapsed_total_ms = 0
         for db in dbs:
             db_name = (db.get("Name") or db.get("name") or "").strip()
             if not db_name.startswith("history-") and not db_name.startswith("history_"):
                 continue
+            history_candidates += 1
 
             hostname = (db.get("Hostname") or db.get("hostname") or "").strip()
             db_url = _normalize_turso_url(hostname)
@@ -196,9 +340,12 @@ def _fetch_turso_cloud_targets_via_api() -> List[Tuple[str, str, str]]:
                 continue
 
             token_url = f"https://api.turso.tech/v1/organizations/{org_slug}/databases/{db_name}/auth/tokens"
+            token_started_at = time.time()
             token_resp = requests.post(token_url, headers=headers, json={}, timeout=12)
+            token_elapsed_ms = int((time.time() - token_started_at) * 1000)
+            token_elapsed_total_ms += token_elapsed_ms
             if token_resp.status_code not in (200, 201):
-                _debug_log(f"Turso API 生成数据库令牌失败: {db_name} ({token_resp.status_code})")
+                _debug_log(f"Turso API 生成数据库令牌失败: {db_name} ({token_resp.status_code}) | token_ms={token_elapsed_ms}")
                 continue
 
             token_json = token_resp.json() if token_resp.text else {}
@@ -208,9 +355,16 @@ def _fetch_turso_cloud_targets_via_api() -> List[Tuple[str, str, str]]:
 
             targets.append((db_url, db_token, f"云端数据库({db_name})"))
 
+        total_elapsed_ms = int((time.time() - started_at) * 1000)
+        _debug_log(
+            "Turso API 云库发现完成: "
+            f"db_total={len(dbs)}, history_candidates={history_candidates}, discovered={len(targets)} "
+            f"| list_ms={list_elapsed_ms}, token_total_ms={token_elapsed_total_ms}, total_ms={total_elapsed_ms}"
+        )
         return targets
     except Exception as e:
-        _debug_log(f"Turso API 云库发现失败: {e}")
+        total_elapsed_ms = int((time.time() - started_at) * 1000)
+        _debug_log(f"Turso API 云库发现失败: {e} | total_ms={total_elapsed_ms}")
         return []
 
 def _get_cached_turso_cloud_targets() -> List[Tuple[str, str, str]]:
@@ -218,11 +372,14 @@ def _get_cached_turso_cloud_targets() -> List[Tuple[str, str, str]]:
     now = time.time()
     cached_targets = _cloud_targets_cache.get("targets", [])
     if cached_targets and now < _cloud_targets_cache.get("expire_at", 0.0):
+        ttl_left = int(_cloud_targets_cache.get("expire_at", 0.0) - now)
+        _debug_log(f"Turso API 云库目标缓存命中: {len(cached_targets)} 个，TTL 剩余约 {ttl_left}s")
         return list(cached_targets)
 
     fresh_targets = _fetch_turso_cloud_targets_via_api()
     _cloud_targets_cache["targets"] = list(fresh_targets)
     _cloud_targets_cache["expire_at"] = now + _CLOUD_TARGET_CACHE_TTL_SECONDS
+    _debug_log(f"Turso API 云库目标缓存刷新: {len(fresh_targets)} 个，TTL={_CLOUD_TARGET_CACHE_TTL_SECONDS}s")
     return fresh_targets
 
 def _get_secret_key_bytes() -> bytes:
@@ -333,7 +490,7 @@ def get_timestamp_with_tz() -> str:
 def generate_user_id(username: str) -> str:
     """统一用户 ID 生成算法：SHA256(username) 的前 16 位"""
     import hashlib
-    normalized = username.strip()
+    normalized = username.strip().lower()
     return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 def clean_for_maimemo(text: str) -> str:
@@ -915,19 +1072,56 @@ def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, meta
 def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
     c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),)); r = cur.fetchone(); c.close(); return _row_to_dict(cur, r) if r else None
 
-def find_word_in_community(voc_id: str) -> Optional[Tuple[dict, str]]:
-    """在社区数据库中查找单词笔记（优先云端，回退本地历史，最后查当前数据库）"""
+def _matches_ai_generation_context(note_row: Dict[str, Any], ai_provider: Optional[str] = None, prompt_version: Optional[str] = None) -> bool:
+    """判断笔记是否与当前 AI 生成上下文一致。"""
+    current_provider = (ai_provider or "").strip().lower()
+    current_prompt_version = (prompt_version or "").strip()
+
+    batch_provider = str(
+        note_row.get("batch_ai_provider")
+        or note_row.get("ai_provider")
+        or ""
+    ).strip().lower()
+    batch_prompt_version = str(
+        note_row.get("batch_prompt_version")
+        or note_row.get("prompt_version")
+        or ""
+    ).strip()
+
+    if not current_provider or not current_prompt_version:
+        return False
+
+    if current_provider and batch_provider != current_provider:
+        return False
+
+    if current_prompt_version and batch_prompt_version != current_prompt_version:
+        return False
+
+    return bool(batch_provider and batch_prompt_version)
+
+
+def find_word_in_community(voc_id: str, ai_provider: str = None, prompt_version: str = None) -> Optional[Tuple[dict, str]]:
+    """在社区数据库中查找单词笔记（优先云端，回退本地历史，最后查当前数据库）。"""
     # 1. 优先查询云端数据库
     if TURSO_DB_URL and TURSO_AUTH_TOKEN and HAS_LIBSQL:
         try:
             cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
             cloud_cur = cloud_conn.cursor()
-            cloud_cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
+            cloud_cur.execute(
+                '''
+                SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                FROM ai_word_notes n
+                LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                WHERE n.voc_id = ?
+                ''',
+                (str(voc_id),)
+            )
             r = cloud_cur.fetchone()
             cloud_conn.close()
             if r:
                 note_dict = _row_to_dict(cloud_cur, r)
-                return note_dict, "云端数据库"
+                if _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
+                    return note_dict, "云端数据库"
         except Exception as e:
             _debug_log(f"云端社区查询失败: {e}")
 
@@ -942,29 +1136,54 @@ def find_word_in_community(voc_id: str) -> Optional[Tuple[dict, str]]:
         try:
             c = _get_local_conn(os.path.join(dr, df))
             cur = c.cursor()
-            cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
+            cur.execute(
+                '''
+                SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                FROM ai_word_notes n
+                LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                WHERE n.voc_id = ?
+                ''',
+                (str(voc_id),)
+            )
             r = cur.fetchone()
             c.close()
             if r:
-                return _row_to_dict(cur, r), df
+                note_dict = _row_to_dict(cur, r)
+                if _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
+                    return note_dict, df
         except: continue
 
     # 3. 最后查询当前数据库
     try:
         c = _get_local_conn(DB_PATH)
         cur = c.cursor()
-        cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
+        cur.execute(
+            '''
+            SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+            FROM ai_word_notes n
+            LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+            WHERE n.voc_id = ?
+            ''',
+            (str(voc_id),)
+        )
         r = cur.fetchone()
         c.close()
         if r:
-            return _row_to_dict(cur, r), "当前数据库"
+            note_dict = _row_to_dict(cur, r)
+            if _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
+                return note_dict, "当前数据库"
     except: pass
 
     return None
 
 
-def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) -> Dict[str, Tuple[dict, str]]:
-    """批量在社区数据库中查找单词笔记（优先云端，回退本地历史，最后查当前数据库）
+def find_words_in_community_batch(
+    voc_ids: List[str],
+    skip_cloud: bool = False,
+    ai_provider: str = None,
+    prompt_version: str = None,
+) -> Dict[str, Tuple[dict, str]]:
+    """批量在社区数据库中查找单词笔记（优先本地历史/当前库，云端只补查剩余项）
 
     Args:
         voc_ids: 单词 ID 列表
@@ -978,10 +1197,80 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
 
     result = {}
 
-    # 1. 优先查询云端数据库（当前用户 + 其他 profile）
-    if not skip_cloud and HAS_LIBSQL:
+    remaining_ids = [str(vid) for vid in voc_ids]
+
+    # 1. 先查询本地历史数据库文件（只查未找到的单词）
+    if remaining_ids:
+        cdb = os.path.basename(DB_PATH)
+        dr = os.path.dirname(DB_PATH)
+        dfs = sorted([f for f in os.listdir(dr) if (f.startswith('history_') or f.startswith('history-')) and f.endswith('.db')],
+                     key=lambda x: os.path.getmtime(os.path.join(dr, x)), reverse=True)
+
+        for df in dfs:
+            if df == cdb:
+                continue
+            try:
+                c = _get_local_conn(os.path.join(dr, df))
+                cur = c.cursor()
+                placeholders = ','.join(['?'] * len(remaining_ids))
+                cur.execute(
+                    f'''
+                    SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                    FROM ai_word_notes n
+                    LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                    WHERE n.voc_id IN ({placeholders})
+                    ''',
+                    remaining_ids,
+                )
+                rows = cur.fetchall()
+                c.close()
+
+                if rows:
+                    for row in rows:
+                        note_dict = _row_to_dict(cur, row)
+                        voc_id = note_dict.get('voc_id')
+                        if voc_id and voc_id not in result and _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
+                            result[voc_id] = (note_dict, df)
+                            if voc_id in remaining_ids:
+                                remaining_ids.remove(voc_id)
+
+                if not remaining_ids:
+                    break
+            except:
+                continue
+
+    # 2. 再查询当前数据库（只查未找到的单词）
+    if remaining_ids:
+        try:
+            c = _get_local_conn(DB_PATH)
+            cur = c.cursor()
+            placeholders = ','.join(['?'] * len(remaining_ids))
+            cur.execute(
+                f'''
+                SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                FROM ai_word_notes n
+                LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                WHERE n.voc_id IN ({placeholders})
+                ''',
+                remaining_ids,
+            )
+            rows = cur.fetchall()
+            c.close()
+
+            if rows:
+                for row in rows:
+                    note_dict = _row_to_dict(cur, row)
+                    voc_id = note_dict.get('voc_id')
+                    if voc_id and voc_id not in result and _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
+                        result[voc_id] = (note_dict, "当前数据库")
+                        if voc_id in remaining_ids:
+                            remaining_ids.remove(voc_id)
+        except:
+            pass
+
+    # 3. 云端只补查本地未命中的剩余单词
+    if not skip_cloud and HAS_LIBSQL and remaining_ids:
         cloud_targets = _collect_cloud_lookup_targets()
-        remaining_ids = [str(vid) for vid in voc_ids]
 
         for cloud_url, cloud_token, source_label in cloud_targets:
             if not remaining_ids:
@@ -992,7 +1281,15 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
                 cloud_cur = cloud_conn.cursor()
 
                 placeholders = ','.join(['?'] * len(remaining_ids))
-                cloud_cur.execute(f'SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})', remaining_ids)
+                cloud_cur.execute(
+                    f'''
+                    SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                    FROM ai_word_notes n
+                    LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                    WHERE n.voc_id IN ({placeholders})
+                    ''',
+                    remaining_ids,
+                )
                 rows = cloud_cur.fetchall()
 
                 if rows:
@@ -1001,7 +1298,7 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
                     for row in rows:
                         note_dict = dict(zip(columns, row))
                         voc_id = note_dict.get('voc_id')
-                        if voc_id and voc_id not in result:
+                        if voc_id and voc_id not in result and _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
                             result[voc_id] = (note_dict, source_label)
                             found_count += 1
 
@@ -1017,57 +1314,6 @@ def find_words_in_community_batch(voc_ids: List[str], skip_cloud: bool = False) 
                         cloud_conn.close()
                     except Exception:
                         pass
-
-    # 2. 回退查询本地历史数据库文件（只查未找到的单词）
-    remaining_ids = [vid for vid in voc_ids if vid not in result]
-    if remaining_ids:
-        cdb = os.path.basename(DB_PATH)
-        dr = os.path.dirname(DB_PATH)
-        dfs = sorted([f for f in os.listdir(dr) if (f.startswith('history_') or f.startswith('history-')) and f.endswith('.db')],
-                     key=lambda x: os.path.getmtime(os.path.join(dr, x)), reverse=True)
-
-        for df in dfs:
-            if df == cdb:
-                continue
-            try:
-                c = _get_local_conn(os.path.join(dr, df))
-                cur = c.cursor()
-                placeholders = ','.join(['?'] * len(remaining_ids))
-                cur.execute(f'SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})', remaining_ids)
-                rows = cur.fetchall()
-                c.close()
-
-                if rows:
-                    for row in rows:
-                        note_dict = _row_to_dict(cur, row)
-                        voc_id = note_dict.get('voc_id')
-                        if voc_id and voc_id not in result:
-                            result[voc_id] = (note_dict, df)
-                            remaining_ids.remove(voc_id)
-
-                if not remaining_ids:
-                    break
-            except:
-                continue
-
-    # 3. 最后查询当前数据库（只查未找到的单词）
-    if remaining_ids:
-        try:
-            c = _get_local_conn(DB_PATH)
-            cur = c.cursor()
-            placeholders = ','.join(['?'] * len(remaining_ids))
-            cur.execute(f'SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})', remaining_ids)
-            rows = cur.fetchall()
-            c.close()
-
-            if rows:
-                for row in rows:
-                    note_dict = _row_to_dict(cur, row)
-                    voc_id = note_dict.get('voc_id')
-                    if voc_id and voc_id not in result:
-                        result[voc_id] = (note_dict, "当前数据库")
-        except:
-            pass
 
     return result
 
@@ -1112,8 +1358,30 @@ def save_test_word_note(v, p): save_ai_word_note(v, p, db_path=TEST_DB_PATH)
 def log_test_run(t, s, w, a, sp, d=True, e="", res=None):
     c = _get_conn(TEST_DB_PATH); cur = c.cursor(); aj = json.dumps(res, ensure_ascii=False) if res else ""; cur.execute('INSERT INTO test_run_logs (total_count, sample_count, sample_words, ai_calls, success_parsed, is_dry_run, error_msg, ai_results_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (t, s, ",".join(w), a, sp, d, e, aj)); c.commit(); rid = cur.lastrowid; c.close(); return rid
 
+
+def _emit_sync_progress(progress_callback, stage: str, current: int, total: int, message: str, **extra):
+    """统一同步进度事件出口，避免回调异常影响主流程。"""
+    if not progress_callback:
+        return
+    payload = {
+        "stage": stage,
+        "current": current,
+        "total": total,
+        "message": message,
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        progress_callback(payload)
+    except Exception:
+        pass
+
 @log_performance(lambda: ContextLogger(logging.getLogger(__name__)))
-def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]:
+def sync_databases(
+    db_path: str = None,
+    dry_run: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, int]:
     """
     双向同步云端和本地数据库，确保数据一致性。
     支持 dry_run 模式，仅返回需要上传和下载的记录数。
@@ -1128,6 +1396,7 @@ def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]
         else:
             stats['reason'] = 'libsql-unavailable'
         _debug_log(f"云端未配置或不可用，跳过同步: {stats['reason']}")
+        _emit_sync_progress(progress_callback, 'skipped', 0, 0, f"跳过同步: {stats['reason']}", status='skipped', reason=stats['reason'])
         return stats
     
     sync_start = time.time()
@@ -1136,6 +1405,17 @@ def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]
     local_conn = None
     
     try:
+        sync_targets = [
+            ('ai_word_notes', 'voc_id', _sync_table),
+            ('processed_words', 'voc_id', _sync_table),
+            ('word_progress_history', None, _sync_progress_history),
+            ('ai_batches', 'batch_id', _sync_table),
+            ('system_config', 'key', _sync_table),
+        ]
+        total_steps = len(sync_targets) + 2
+        step = 1
+        _emit_sync_progress(progress_callback, 'connect', step, total_steps, '连接本地和云端数据库')
+
         # 获取连接
         cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
         local_conn = _get_local_conn(path)
@@ -1145,34 +1425,38 @@ def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]
         
         cloud_cur = cloud_conn.cursor()
         local_cur = local_conn.cursor()
-        
-        # 同步 ai_word_notes
-        u, d = _sync_table(cloud_conn, local_conn, 'ai_word_notes', 'voc_id', dry_run)
-        stats['upload'] += u; stats['download'] += d
-        
-        # 同步 processed_words
-        u, d = _sync_table(cloud_conn, local_conn, 'processed_words', 'voc_id', dry_run)
-        stats['upload'] += u; stats['download'] += d
-        
-        # 同步 word_progress_history (需要特殊处理，因为有 id 自增)
-        u, d = _sync_progress_history(cloud_conn, local_conn, dry_run)
-        stats['upload'] += u; stats['download'] += d
-        
-        # 同步 ai_batches
-        u, d = _sync_table(cloud_conn, local_conn, 'ai_batches', 'batch_id', dry_run)
-        stats['upload'] += u; stats['download'] += d
-        
-        # 同步 system_config
-        u, d = _sync_table(cloud_conn, local_conn, 'system_config', 'key', dry_run)
-        stats['upload'] += u; stats['download'] += d
-        # 同步 system_config
-        # ... (配置表通常极小，直接同步即可，或者通过 dry_run 略过统计，为简单起见同样计入 stats)
+
+        step += 1
+        for table_name, primary_key, sync_fn in sync_targets:
+            table_started_at = time.time()
+            _emit_sync_progress(progress_callback, 'table', step, total_steps, f"同步表 {table_name}", table=table_name)
+            if primary_key:
+                u, d = sync_fn(cloud_conn, local_conn, table_name, primary_key, dry_run)
+            else:
+                u, d = sync_fn(cloud_conn, local_conn, dry_run)
+            stats['upload'] += u
+            stats['download'] += d
+            table_elapsed_ms = int((time.time() - table_started_at) * 1000)
+            _emit_sync_progress(
+                progress_callback,
+                'table-done',
+                step,
+                total_steps,
+                f"{table_name}: 上传 {u}, 下载 {d}",
+                table=table_name,
+                upload=u,
+                download=d,
+                duration_ms=table_elapsed_ms,
+            )
+            step += 1
         
         if not dry_run:
             cloud_conn.commit()
             local_conn.commit()
+        _emit_sync_progress(progress_callback, 'finalize', total_steps, total_steps, '提交并关闭连接', upload=stats['upload'], download=stats['download'])
         
         total_time = int((time.time() - sync_start) * 1000)
+        stats['duration_ms'] = total_time
         if not dry_run: _debug_log(f"数据库同步完成 | 总耗时: {total_time}ms")
         return stats
         
@@ -1180,6 +1464,7 @@ def sync_databases(db_path: str = None, dry_run: bool = False) -> Dict[str, int]
         _debug_log(f"数据库同步失败: {e}")
         stats['status'] = 'error'
         stats['reason'] = str(e)
+        _emit_sync_progress(progress_callback, 'error', 0, 0, f"同步失败: {e}", status='error', reason=str(e))
         return stats
     finally:
         if cloud_conn:
@@ -1431,9 +1716,14 @@ def init_users_hub_tables() -> bool:
     """初始化中央用户 Hub 数据库的6个表"""
     try:
         hub_fp = _hub_db_fingerprint()
-        # 即使存在初始化标记，也继续执行 CREATE IF NOT EXISTS，确保新增表/列能自动补齐
+        # 命中近期成功的初始化状态时，直接短路，避免每次启动都重复做 Hub 握手和 schema 校验
+        if _hub_init_state_is_fresh(hub_fp):
+            _debug_log("Hub 数据库已在有效缓存窗口内初始化，跳过重复 schema 校验")
+            return True
+
+        # 即使存在旧式初始化标记，也继续执行 CREATE IF NOT EXISTS，确保新增表/列能自动补齐
         if _is_db_initialized("hub", hub_fp):
-            _debug_log("Hub 数据库已初始化（通过标记文件），执行轻量 schema 校验")
+            _debug_log("Hub 数据库已初始化（通过旧标记文件），执行轻量 schema 校验")
 
         hub_start = time.time()
         hub_conn = _get_hub_conn()
@@ -1563,6 +1853,13 @@ def init_users_hub_tables() -> bool:
         _debug_log("中央 Hub 数据库表初始化完成")
         # 标记数据库已初始化
         _mark_db_initialized("hub", hub_fp)
+        _save_hub_init_state({
+            "hub_fp": hub_fp,
+            "schema_version": _HUB_SCHEMA_VERSION,
+            "last_success_at": time.time(),
+            "last_checked_at": time.time(),
+            "mode": "cloud" if TURSO_HUB_DB_URL else "local",
+        })
         return True
         
     except Exception as e:
@@ -1592,7 +1889,7 @@ def save_user_info_to_hub(user_id: str, username: str, email: str, user_notes: s
         cur = hub_conn.cursor()
 
         timestamp = get_timestamp_with_tz()
-        normalized_username = username.strip()
+        normalized_username = username.strip().lower()
         if normalized_username.lower() == 'asher':
             role = 'admin'
 
@@ -1601,7 +1898,7 @@ def save_user_info_to_hub(user_id: str, username: str, email: str, user_notes: s
             cur.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
             existing = cur.fetchone()
         if not existing:
-            cur.execute('SELECT * FROM users WHERE username = ?', (normalized_username,))
+            cur.execute('SELECT * FROM users WHERE lower(username) = ?', (normalized_username,))
             existing = cur.fetchone()
 
         existing_data = _row_to_dict(cur, existing) if existing else {}
@@ -1757,7 +2054,7 @@ def get_user_by_username(username: str) -> Optional[dict]:
     try:
         hub_conn = _get_hub_conn()
         cur = hub_conn.cursor()
-        cur.execute('SELECT * FROM users WHERE username = ?', (username.strip(),))
+        cur.execute('SELECT * FROM users WHERE lower(username) = ?', (username.strip().lower(),))
         row = cur.fetchone()
         hub_conn.close()
         return _row_to_dict(cur, row) if row else None
@@ -2002,10 +2299,15 @@ def get_user_from_hub(user_id: str) -> Optional[dict]:
         _debug_log(f"从 Hub 获取用户信息失败: {e}")
         return None
 
-def sync_hub_databases(dry_run: bool = False) -> Dict[str, int]:
+def sync_hub_databases(
+    dry_run: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, int]:
     """同步中央 Hub 数据库（本地与云端双向同步）"""
     stats = {'upload': 0, 'download': 0}
+    sync_start = time.time()
     if not TURSO_HUB_DB_URL or not TURSO_HUB_AUTH_TOKEN or not HAS_LIBSQL:
+        _emit_sync_progress(progress_callback, 'skipped', 0, 0, '跳过 Hub 同步: 云端凭据或 libsql 不可用', status='skipped')
         return stats
     
     _curr_logger = get_logger()
@@ -2125,18 +2427,53 @@ def sync_hub_databases(dry_run: bool = False) -> Dict[str, int]:
             ('user_credentials', 'user_id'),
         ]
 
+        total_steps = len(sync_targets) + 2
+        step = 1
+        _emit_sync_progress(progress_callback, 'connect', step, total_steps, '连接 Hub 本地和云端数据库')
+
+        step += 1
+
         for table_name, primary_key in sync_targets:
             try:
+                table_started_at = time.time()
+                _emit_sync_progress(progress_callback, 'table', step, total_steps, f"同步 Hub 表 {table_name}", table=table_name)
                 u, d = _sync_hub_table(cloud_conn, local_conn, table_name, primary_key, dry_run)
                 stats['upload'] += u
                 stats['download'] += d
+                table_elapsed_ms = int((time.time() - table_started_at) * 1000)
+                _emit_sync_progress(
+                    progress_callback,
+                    'table-done',
+                    step,
+                    total_steps,
+                    f"Hub {table_name}: 上传 {u}, 下载 {d}",
+                    table=table_name,
+                    upload=u,
+                    download=d,
+                    duration_ms=table_elapsed_ms,
+                )
             except Exception as table_error:
                 _debug_log(f"Hub 表同步跳过: {table_name} -> {table_error}")
+                _emit_sync_progress(
+                    progress_callback,
+                    'table-error',
+                    step,
+                    total_steps,
+                    f"Hub {table_name} 跳过: {table_error}",
+                    table=table_name,
+                    status='error',
+                )
+            step += 1
+
+        _emit_sync_progress(progress_callback, 'finalize', total_steps, total_steps, '完成 Hub 同步', upload=stats['upload'], download=stats['download'])
         
-        if not dry_run: _curr_logger.debug(f"Hub 同步完成: 上传 {stats['upload']}, 下载 {stats['download']}", module="db_manager")
+        total_elapsed_ms = int((time.time() - sync_start) * 1000)
+        stats['duration_ms'] = total_elapsed_ms
+        if not dry_run: _curr_logger.debug(f"Hub 同步完成: 上传 {stats['upload']}, 下载 {stats['download']} | 耗时 {total_elapsed_ms}ms", module="db_manager")
         return stats
     except Exception as e:
         _debug_log(f"Hub 同步失败: {e}")
+        _emit_sync_progress(progress_callback, 'error', 0, 0, f"Hub 同步失败: {e}", status='error', reason=str(e))
         return stats
     finally:
         if cloud_conn:

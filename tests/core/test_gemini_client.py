@@ -1,6 +1,6 @@
 import pytest
 import json
-from gemini_client import GeminiClient, _extract_json_array
+from compat.gemini_client import GeminiClient, _extract_json_array
 
 def test_extract_json_array_standard():
     """测试标准 JSON 数组提取。"""
@@ -28,19 +28,15 @@ def test_gemini_client_init():
 
 def test_generate_mnemonics_mock(mocker):
     """使用 Mock 测试生成逻辑，确保不发生真实请求。"""
-    # Mock genai.Client
-    mock_client_instance = mocker.Mock()
-    mocker.patch("google.genai.Client", return_value=mock_client_instance)
-    
-    # 模拟 response 结构
-    mock_response = mocker.Mock()
-    mock_response.text = '```json\n[{"spelling": "mock_word"}]\n```'
-    mock_client_instance.models.generate_content.return_value = mock_response
-    
     client = GeminiClient(api_key="fake_key")
-    results = client.generate_mnemonics(["test"])
+    mocker.patch.object(
+        client,
+        "generate_with_instruction",
+        return_value=('```json\n[{"spelling": "mock_word"}]\n```', {"total_tokens": 10}),
+    )
+
+    results, metadata = client.generate_mnemonics(["test"])
     
     assert len(results) == 1
     assert results[0]["spelling"] == "mock_word"
-    # 验证是否调用了 generate_content
-    assert mock_client_instance.models.generate_content.called
+    assert metadata.get("total_tokens") == 10

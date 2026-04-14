@@ -11,6 +11,21 @@ class ProfileManager:
         self.profiles_dir = profiles_dir
         os.makedirs(self.profiles_dir, exist_ok=True)
 
+    @staticmethod
+    def normalize_username(username: str) -> str:
+        return (username or "").strip().lower()
+
+    def resolve_profile_name(self, username: str) -> str:
+        """按大小写不敏感方式解析 profile 名称，返回规范化用户名。"""
+        normalized = self.normalize_username(username)
+        if not normalized:
+            return normalized
+
+        for name in self.list_profiles(raw=True):
+            if self.normalize_username(name) == normalized:
+                return normalized
+        return normalized
+
     def _hash_fingerprint(self, raw: str) -> str:
         return hashlib.sha256((raw or "unknown").encode("utf-8")).hexdigest()[:12]
 
@@ -31,7 +46,13 @@ class ProfileManager:
 
     def delete_local_profile(self, username: str) -> bool:
         """删除本地用户数据，但不触碰云端数据库。"""
+        username = self.normalize_username(username)
         env_path = os.path.join(self.profiles_dir, f"{username}.env")
+        if not os.path.exists(env_path):
+            for raw_name in self.list_profiles(raw=True):
+                if self.normalize_username(raw_name) == username:
+                    env_path = os.path.join(self.profiles_dir, f"{raw_name}.env")
+                    break
         local_db, local_test_db, local_db_marker, local_test_marker = self._local_db_paths(username)
 
         removed_any = False
@@ -45,10 +66,22 @@ class ProfileManager:
 
         return removed_any
 
-    def list_profiles(self):
-        """扫描 profiles 目录，返回用户名列表。"""
+    def list_profiles(self, raw: bool = False):
+        """扫描 profiles 目录。默认返回规范化用户名列表。"""
         files = glob.glob(os.path.join(self.profiles_dir, "*.env"))
-        return [os.path.basename(f).replace(".env", "") for f in files]
+        names = [os.path.basename(f).replace(".env", "") for f in files]
+        if raw:
+            return names
+
+        normalized = []
+        seen = set()
+        for name in names:
+            n = self.normalize_username(name)
+            if n and n not in seen:
+                normalized.append(n)
+                seen.add(n)
+        normalized.sort()
+        return normalized
 
     def pick_profile(self) -> Optional[str]:
         """展示菜单供用户选择、创建或退出。"""
@@ -80,8 +113,7 @@ class ProfileManager:
             if choice.isdigit():
                 idx = int(choice)
                 if 1 <= idx <= len(profiles):
-                    username = profiles[idx-1]
-                    return username
+                    return self.normalize_username(profiles[idx-1])
                 elif idx == create_idx:
                     from core.config_wizard import ConfigWizard
                     wizard = ConfigWizard(self.profiles_dir)

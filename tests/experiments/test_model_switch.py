@@ -12,7 +12,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 sys.path.insert(0, ROOT_DIR)
 
 from config import AI_PROVIDER, GEMINI_API_KEY, MIMO_API_KEY
-from gemini_client import GeminiClient
+from compat.gemini_client import GeminiClient
 from mimo_client import MimoClient
 
 def test_gemini_client():

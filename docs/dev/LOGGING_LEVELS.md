@@ -203,6 +203,18 @@ LOG_MODULE_LEVELS=db_manager:DEBUG,mimo:WARNING
 5. **性能调优** - 生产环境建议 WARNING 以上，开发环境可用 DEBUG
 6. **日志持久化** - 所有日志同时输出到控制台和日志文件
 
+## 实现对应
+
+- `StructuredFormatter`：控制台/文件输出的结构化 JSON 格式。
+- `AsyncLogger`：`use_async=True` 时启用的异步队列。
+- `setup_logger()`：统一初始化入口，承接环境配置。
+- `log_performance()`：当前实现以显式传入 logger 或 logger 工厂为主。
+
+## 相关文档
+
+- [LOGGING.md](LOGGING.md)
+- [../architecture/LOG_SYSTEM.md](../architecture/LOG_SYSTEM.md)
+
 ## 扩展开发
 
 ### 为新模块添加日志

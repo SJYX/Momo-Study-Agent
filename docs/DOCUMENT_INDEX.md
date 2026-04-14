@@ -6,7 +6,10 @@
 
 | 文档 | 说明 | 优先级 |
 |------|------|--------|
-| [CLAUDE.md](../CLAUDE.md) | AI 上下文文档，项目概览、架构、关键逻辑 | ⭐⭐⭐ |
+| [AI_CONTEXT.md](dev/AI_CONTEXT.md) | AI 执行规范唯一来源（模块速查、硬性规则、数据流） | ⭐⭐⭐ |
+| [LOGGING.md](dev/LOGGING.md) | 开发日志快速参考 | ⭐⭐ |
+| [QUICK_START.md](dev/QUICK_START.md) | 开发快速启动 | ⭐⭐ |
+| [CLAUDE.md](../CLAUDE.md) | 项目快速上下文（高层概览） | ⭐⭐ |
 | [README.md](../README.md) | 项目介绍、快速上手、目录结构 | ⭐⭐⭐ |
 | [PROJECT_STATUS.md](../PROJECT_STATUS.md) | 项目状态总结、待办事项、已知问题 | ⭐⭐ |
 
@@ -22,11 +25,20 @@
 
 | 文档 | 说明 |
 |------|------|
-| [AI_CONTEXT.md](dev/AI_CONTEXT.md) | 模块速查表、硬性规则、数据流 |
-| [VIBE_CODING_SUMMARY.md](dev/VIBE_CODING_SUMMARY.md) | Vibe Coding 优化总结 |
+| [AI_CONTEXT.md](dev/AI_CONTEXT.md) | AI 执行规范唯一来源 |
+| [LOGGING.md](dev/LOGGING.md) | 日志接入与排障入口 |
+| [QUICK_START.md](dev/QUICK_START.md) | 本地开发起步导航 |
 | [DECISIONS.md](dev/DECISIONS.md) | 已否定方案记录 |
 | [CONTRIBUTING.md](dev/CONTRIBUTING.md) | 开发规约、代码规范 |
-| [NEW_USER_ZERO_CREDENTIAL_PLAN.md](dev/NEW_USER_ZERO_CREDENTIAL_PLAN.md) | 零凭证新用户上手改造计划 |
+| [NEW_USER_ZERO_CREDENTIAL_PLAN.md](dev/NEW_USER_ZERO_CREDENTIAL_PLAN.md) | 零凭证新用户上手入口（已归档） |
+
+## 🗂️ 历史归档
+
+| 文档 | 说明 |
+|------|------|
+| [VIBE_CODING_SUMMARY.md](history/VIBE_CODING_SUMMARY.md) | Vibe Coding 优化历史总结 |
+| [DOCS_OPTIMIZATION_SUMMARY.md](history/DOCS_OPTIMIZATION_SUMMARY.md) | 文档优化历史记录 |
+| [DOCS_COMPLETION_SUMMARY.md](history/DOCS_COMPLETION_SUMMARY.md) | 文档整理完成报告 |
 
 ## 🔌 API 参考
 
@@ -56,18 +68,19 @@
 
 ### 如果你是新开发者
 1. 阅读 [CLAUDE.md](../CLAUDE.md) 了解项目概览
-2. 查看 [AI_CONTEXT.md](dev/AI_CONTEXT.md) 了解模块职责
-3. 参考 [CONTRIBUTING.md](dev/CONTRIBUTING.md) 了解开发规范
+2. 查看 [AI_CONTEXT.md](dev/AI_CONTEXT.md) 了解执行规范与模块职责
+3. 参考 [LOGGING.md](dev/LOGGING.md) 和 [CONTRIBUTING.md](dev/CONTRIBUTING.md) 了解开发规范
 
 ### 如果你要修改代码
 1. 查看 [OVERVIEW.md](architecture/OVERVIEW.md) 了解架构
-2. 参考 [AI_CONTEXT.md](dev/AI_CONTEXT.md) 的硬性规则
-3. 阅读 [CONTRIBUTING.md](dev/CONTRIBUTING.md) 的代码规范
+2. 参考 [AI_CONTEXT.md](dev/AI_CONTEXT.md) 的硬性规则（唯一规范源）
+3. 阅读 [LOGGING.md](dev/LOGGING.md) 和 [CONTRIBUTING.md](dev/CONTRIBUTING.md) 的代码规范
 
 ### 如果你要调试问题
 1. 查看 [LOG_SYSTEM.md](architecture/LOG_SYSTEM.md) 了解日志系统
 2. 参考 [AI_CONTEXT.md](dev/AI_CONTEXT.md) 的数据流说明
 3. 阅读 [DECISIONS.md](dev/DECISIONS.md) 了解已否定方案
+4. 需要同步行为说明时查看 [AUTO_SYNC.md](dev/AUTO_SYNC.md)
 
 ### 如果你要扩展 API
 1. 阅读 [momo_api_summary.md](api/momo_api_summary.md) 了解 API 结构
@@ -76,4 +89,4 @@
 
 ---
 
-*文档更新时间：2026-04-12*
+*文档更新时间：2026-04-14*

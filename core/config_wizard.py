@@ -2,27 +2,42 @@ import os
 import sys
 import sqlite3
 import requests
-from typing import Optional
+import getpass
+from typing import Optional, Dict
 
 # 注入根目录以便导入
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
 from core.maimemo_api import MaiMemoAPI
+from core.preflight import run_preflight
+from core.utils import mask_sensitive
 
 class ConfigWizard:
+    MAX_VALIDATE_RETRIES = 2
+
     def __init__(self, profiles_dir: str):
         self.profiles_dir = profiles_dir
         os.makedirs(self.profiles_dir, exist_ok=True)
 
-    def validate_momo(self, token: str) -> bool:
+    def validate_momo(self, token: str) -> Dict[str, str]:
         """联网验证墨墨 Token"""
         print("  正在验证墨墨 Token...")
-        api = MaiMemoAPI(token)
-        res = api.get_study_progress()
-        return res is not None and res.get("success") is True
+        try:
+            api = MaiMemoAPI(token)
+            res = api.get_study_progress()
+            ok = res is not None and res.get("success") is True
+            if ok:
+                return {"ok": True, "category": "ok", "detail": "Token 可用"}
+            return {"ok": False, "category": "auth", "detail": "鉴权失败或返回异常"}
+        except requests.exceptions.Timeout:
+            return {"ok": False, "category": "network", "detail": "请求超时"}
+        except requests.exceptions.ConnectionError:
+            return {"ok": False, "category": "network", "detail": "网络不可达"}
+        except Exception as exc:
+            return {"ok": False, "category": "unknown", "detail": str(exc)}
 
-    def validate_mimo(self, api_key: str) -> bool:
+    def validate_mimo(self, api_key: str) -> Dict[str, str]:
         """联网验证 Mimo API Key"""
         print("  正在验证 Mimo API Key...")
         headers = {
@@ -42,20 +57,35 @@ class ConfigWizard:
                 json=payload,
                 timeout=10
             )
-            return response.status_code == 200
-        except:
-            return False
+            if response.status_code == 200:
+                return {"ok": True, "category": "ok", "detail": "API Key 可用"}
+            if response.status_code in (401, 403):
+                return {"ok": False, "category": "auth", "detail": f"认证失败: HTTP {response.status_code}"}
+            if response.status_code >= 500:
+                return {"ok": False, "category": "server", "detail": f"服务端异常: HTTP {response.status_code}"}
+            return {"ok": False, "category": "unknown", "detail": f"请求失败: HTTP {response.status_code}"}
+        except requests.exceptions.Timeout:
+            return {"ok": False, "category": "network", "detail": "请求超时"}
+        except requests.exceptions.ConnectionError:
+            return {"ok": False, "category": "network", "detail": "网络不可达"}
+        except Exception as exc:
+            return {"ok": False, "category": "unknown", "detail": str(exc)}
 
-    def validate_gemini(self, api_key: str) -> bool:
+    def validate_gemini(self, api_key: str) -> Dict[str, str]:
         """联网验证 Gemini API Key"""
         print("  正在验证 Gemini API Key...")
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
             client.models.generate_content(model="gemini-2.0-flash", contents="ping")
-            return True
-        except:
-            return False
+            return {"ok": True, "category": "ok", "detail": "API Key 可用"}
+        except ImportError:
+            return {"ok": False, "category": "dependency", "detail": "缺少 google-genai 依赖"}
+        except Exception as exc:
+            msg = str(exc)
+            if "401" in msg or "403" in msg:
+                return {"ok": False, "category": "auth", "detail": msg}
+            return {"ok": False, "category": "unknown", "detail": msg}
 
     def _normalize_turso_db_url(self, hostname: str) -> str:
         if not hostname: return ''
@@ -161,21 +191,36 @@ class ConfigWizard:
         if not auth_token:
             raise ValueError('缺少 TURSO_MGMT_TOKEN，无法调用组织级数据库创建接口。')
 
+        retrieve_url = f'https://api.turso.tech/v1/organizations/{organization_slug}/databases/{database_name}'
         list_url = f'https://api.turso.tech/v1/organizations/{organization_slug}/databases'
         headers = {'Authorization': f'Bearer {auth_token}', 'Content-Type': 'application/json'}
 
-        # 先检查目标数据库是否已存在，避免重复创建
-        list_resp = requests.get(list_url, headers=headers, timeout=20)
-        if list_resp.status_code == 200:
-            for db in list_resp.json().get('databases', []):
-                if (db.get('Name') or db.get('name')) == database_name:
-                    return db
+        # 先检查目标数据库是否已存在（单库查询，避免全量列表开销）
+        retrieve_resp = requests.get(retrieve_url, headers=headers, timeout=20)
+        if retrieve_resp.status_code == 200:
+            payload = retrieve_resp.json() if retrieve_resp.text else {}
+            existing = payload.get('database') if isinstance(payload, dict) else None
+            if isinstance(existing, dict):
+                return existing
+            # 兼容部分响应直接返回数据库对象
+            if isinstance(payload, dict):
+                return payload
 
         url = list_url
         payload = {'name': database_name, 'group': group}
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
         
         if resp.status_code == 409: # Already exists
+            retrieve_resp = requests.get(retrieve_url, headers=headers, timeout=20)
+            if retrieve_resp.status_code == 200:
+                payload = retrieve_resp.json() if retrieve_resp.text else {}
+                existing = payload.get('database') if isinstance(payload, dict) else None
+                if isinstance(existing, dict):
+                    return existing
+                if isinstance(payload, dict):
+                    return payload
+
+            # 极端兼容：若单库查询不支持，再退回全量列表
             list_resp = requests.get(list_url, headers=headers, timeout=20)
             if list_resp.status_code == 200:
                 for db in list_resp.json().get('databases', []):
@@ -273,33 +318,116 @@ class ConfigWizard:
         if not answer: return default
         return answer in ('y', 'yes')
 
+    def _prompt_value(self, prompt: str, sensitive: bool = False, allow_skip: bool = True) -> str:
+        skip_tip = " (输入 s 跳过)" if allow_skip else ""
+        if sensitive:
+            value = getpass.getpass(f"{prompt}{skip_tip}: ").strip()
+        else:
+            value = input(f"{prompt}{skip_tip}: ").strip()
+
+        if allow_skip and value.lower() in ("s", "skip"):
+            return ""
+        return value
+
+    def _maybe_validate(self, label: str, value: str, validator) -> None:
+        if not value:
+            return
+        if not self._confirm(f"  是否立即联网校验 {label}？(Y/N, 默认 N): ", default=False):
+            return
+
+        current = value
+        for attempt in range(1, self.MAX_VALIDATE_RETRIES + 1):
+            result = validator(current)
+            if result.get("ok"):
+                print(f"  ✅ {label} 校验通过")
+                return
+
+            print(
+                f"  ❌ {label} 校验失败 | category={result.get('category')} | detail={result.get('detail')}"
+            )
+            if attempt < self.MAX_VALIDATE_RETRIES and self._confirm("  是否重新输入并重试？(Y/N, 默认 N): ", default=False):
+                current = self._prompt_value(f"  重新输入 {label}", sensitive=True, allow_skip=True)
+                if not current:
+                    print("  ℹ️ 已跳过，保留待校验状态。")
+                    return
+            else:
+                print("  ℹ️ 已保留当前值，后续可通过 preflight 统一检查。")
+                return
+
+    def _print_setup_summary(self, username: str, env_data: Dict[str, str]) -> None:
+        missing = []
+        if not env_data.get("MOMO_TOKEN"):
+            missing.append("MOMO_TOKEN")
+
+        provider = (env_data.get("AI_PROVIDER") or "").lower()
+        if provider not in ("mimo", "gemini"):
+            missing.append("AI_PROVIDER")
+        elif provider == "mimo" and not env_data.get("MIMO_API_KEY"):
+            missing.append("MIMO_API_KEY")
+        elif provider == "gemini" and not env_data.get("GEMINI_API_KEY"):
+            missing.append("GEMINI_API_KEY")
+
+        print("\n" + "-" * 45)
+        print("🧾 配置摘要")
+        print(f"用户: {username}")
+        print(f"MOMO_TOKEN: {mask_sensitive(env_data.get('MOMO_TOKEN')) or '(未配置)'}")
+        print(f"AI_PROVIDER: {env_data.get('AI_PROVIDER') or '(未配置)'}")
+        if env_data.get("MIMO_API_KEY"):
+            print(f"MIMO_API_KEY: {mask_sensitive(env_data.get('MIMO_API_KEY'))}")
+        if env_data.get("GEMINI_API_KEY"):
+            print(f"GEMINI_API_KEY: {mask_sensitive(env_data.get('GEMINI_API_KEY'))}")
+
+        if missing:
+            print(f"\n⚠️ 待配置项: {', '.join(missing)}")
+        else:
+            print("\n✅ 关键项已填写，可继续使用。")
+
+        print("下一步建议:")
+        print(f"  1) 运行体检: python tools/preflight_check.py --user {username}")
+        print("  2) 再启动主程序: python main.py")
+        print("-" * 45)
+
     def run_setup(self) -> str:
         """运行新用户向导 - 所有用户共享全局 Turso 数据库"""
         print("\n" + "*"*35)
         print("🌟  Momo Study Agent - 新用户初始化")
         print("*"*35)
+        print("默认模式: 先保存后校验（可在每一步选择跳过）")
 
-        print("1. 请输入用户名 (唯一标识): ", end='', flush=True)
-        username = sys.stdin.readline().strip()
-        while not username:
-            print("❌ 不能为空: ", end='', flush=True)
-            username = sys.stdin.readline().strip()
+        username = ""
+        for _ in range(3):
+            username = input("1. 请输入用户名 (唯一标识，不区分大小写): ").strip().lower()
+            if username:
+                break
+            print("❌ 用户名不能为空")
+        if not username:
+            raise ValueError("用户名输入失败次数过多")
 
-        print("2. 请输入墨墨 Token: ", end='', flush=True)
-        momo_token = sys.stdin.readline().strip()
-        while not momo_token or not self.validate_momo(momo_token):
-            print("❌ 验证失败，请重新输入: ", end='', flush=True)
-            momo_token = sys.stdin.readline().strip()
+        momo_token = self._prompt_value("2. 请输入墨墨 Token", sensitive=True, allow_skip=True)
+        self._maybe_validate("MOMO_TOKEN", momo_token, self.validate_momo)
 
-        while True:
-            print("\n3. 请选择 AI 引擎 (1: Mimo, 2: Gemini): ", end='', flush=True)
-            choice = sys.stdin.readline().strip()
-            if choice in ("1", "2"): break
+        print("\n3. 请选择 AI 引擎: 1) Mimo  2) Gemini  s) 跳过")
+        provider = ""
+        choice = input("请输入选择: ").strip().lower()
+        if choice == "1":
+            provider = "mimo"
+        elif choice == "2":
+            provider = "gemini"
+        elif choice in ("s", "skip", ""):
+            provider = ""
+        else:
+            print("  ⚠️ 无效输入，已按跳过处理。")
+            provider = ""
 
-        provider = "mimo" if choice == "1" else "gemini"
-        ai_key = input(f"4. 请输入 {provider.upper()} API Key: ").strip()
-        while not (self.validate_mimo(ai_key) if provider == "mimo" else self.validate_gemini(ai_key)):
-            ai_key = input("❌ 验证失败: ").strip()
+        ai_key = ""
+        if provider:
+            ai_key = self._prompt_value(f"4. 请输入 {provider.upper()} API Key", sensitive=True, allow_skip=True)
+            if provider == "mimo":
+                self._maybe_validate("MIMO_API_KEY", ai_key, self.validate_mimo)
+            else:
+                self._maybe_validate("GEMINI_API_KEY", ai_key, self.validate_gemini)
+        else:
+            print("4. 已跳过 AI_PROVIDER，API Key 同步跳过。")
 
         # 步骤 5: 使用全局管理令牌为用户创建 Turso 数据库
         env_lines = [
@@ -366,7 +494,7 @@ class ConfigWizard:
             print(f"  ✅ 如果你已经有 history-{username.lower()}.db，请手动输入现有 Turso 数据库 URL 和 Token。")
             manual_db_url = input("  请输入现有 TURSO_DB_URL (留空则跳过): ").strip()
             if manual_db_url:
-                manual_db_token = input("  请输入现有 TURSO_AUTH_TOKEN: ").strip()
+                manual_db_token = getpass.getpass("  请输入现有 TURSO_AUTH_TOKEN: ").strip()
                 if manual_db_token:
                     env_lines.extend([
                         f'TURSO_DB_URL="{manual_db_url}"',
@@ -377,11 +505,23 @@ class ConfigWizard:
         user_email = input("6. 请输入用户邮箱 (可选): ").strip() or f"{username}@momo-local"
         env_lines.append(f'USER_EMAIL="{user_email}"')
 
+        print("\n⚠️ 风险提醒: profile 文件为本地明文存储，请勿在不可信设备共享。")
+        if not self._confirm("确认写入以上配置并创建用户？(Y/N, 默认 Y): ", default=True):
+            raise KeyboardInterrupt("用户取消写入")
+
         # 写入用户的 .env 文件
-        with open(os.path.join(self.profiles_dir, f"{username}.env"), "w", encoding="utf-8") as f:
+        profile_path = os.path.join(self.profiles_dir, f"{username}.env")
+        with open(profile_path, "w", encoding="utf-8") as f:
             f.write('\n'.join(env_lines) + '\n')
 
         self._init_local_db(username)
+        current_profile = self._read_profile_env(username)
+        self._print_setup_summary(username, current_profile)
+
+        preflight = run_preflight(ROOT_DIR, username)
+        if not preflight.get("ok"):
+            print("\n⚠️ preflight 检测到阻断项，请先按建议修复。")
+
         print(f"\n✨ 用户 '{username}' 已创建成功！")
         return username
 

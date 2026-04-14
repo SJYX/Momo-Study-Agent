@@ -96,7 +96,7 @@ def test_module_level_priority():
     print("\n全局级别: WARNING (30)")
     print("special_module 模块级别: DEBUG (10)")
     
-    print("\nverify_logging_integration.py发送日志到 'special_module':")
+    print("\n发送日志到 'special_module':")
     
     # 模块级别应该覆盖全局级别
     test_results = [

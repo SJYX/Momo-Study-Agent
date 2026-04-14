@@ -408,7 +408,7 @@ def log_performance(logger_or_func):
                 else:
                     logger = logger_or_func
 
-                logger.info(
+                logger.debug(
                     f"Function {func.__name__} completed",
                     duration=duration,
                     success=True,

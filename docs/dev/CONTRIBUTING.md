@@ -30,7 +30,7 @@ get_logger().debug("详细耗时: 120ms")
 ### 查询结果映射
 
 ```python
-# ❌ 错误：Turso 连接不支持
+# ❌ 错误：不要把云连接写法和本地 SQLite 写法混为一谈
 conn.row_factory = sqlite3.Row
 result = dict(row)
 
@@ -76,7 +76,7 @@ export MOMO_USER=Asher
 export PYTHONIOENCODING=utf-8
 python scripts/init_hub.py
 ```
-这将在 `data/momo_users_hub.db` (或云端) 创建 6 张管理表及默认管理员 Asher (密码见 `.env`)。
+这将在 `data/momo-users-hub.db`（或云端）创建管理表及默认管理员 Asher（密码见 `.env`）。
 
 ### 时区处理
 
@@ -128,6 +128,24 @@ class NewAIClient:
 - 所有 Prompt 文件统一存放于 `docs/prompts/`
 - 路径通过 `config.py` 中的常量引用，不得硬编码
 - 修改 Prompt 后启动时系统会自动计算 MD5 指纹并归档到 `data/prompts/`，无需手动操作
+
+---
+
+## compat 导入规范（迁移过渡期）
+
+- `compat/` 是历史导入兼容层，不是新功能入口。
+- 业务代码统一从 `core/` 导入。
+- 测试与实验脚本在迁移过渡期可从 `compat/` 导入，避免历史路径直接失效。
+
+示例：
+
+```python
+# 业务代码
+from core.gemini_client import GeminiClient
+
+# 测试/实验脚本（迁移过渡期）
+from compat.gemini_client import GeminiClient
+```
 
 ---
 
@@ -185,3 +203,6 @@ categorized = filter.get_weak_words_by_category(threshold)
 2. 实现功能
 3. 运行 `python -m py_compile <文件>` 验证语法
 4. 更新 `docs/dev/AI_CONTEXT.md` 中的"当前状态"节
+5. 若功能涉及日志或排障，补充 `docs/dev/LOGGING.md` 与 `docs/dev/QUICK_START.md`
+6. 若改动影响行为/配置/接口/流程，必须同步更新对应专项文档（如 `AUTO_SYNC.md`）
+7. 变更说明中列出“受影响文档清单”，确保评审可追踪

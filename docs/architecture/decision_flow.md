@@ -1,263 +1,100 @@
 # 项目判断与分支走向总结
 
-本文档梳理 `MOMO_Script` 项目中主要判断逻辑、分支流程以及各个模块间的决策路径，帮助快速理解程序运行过程。
+本文档描述当前启动、配置、云端冲突与主流程的真实分支。它是“如何走到哪个路径”的说明，不是历史方案记录。
 
----
+## 1. 启动与配置加载
 
-## 1. 启动与配置加载流程
+### `config.py`
 
-### 1.1 `config.py` 启动分支
+- 先加载根目录 `.env`，再加载用户 profile。
+- 如果 `MOMO_USER` 已经由环境指定，就直接使用该用户。
+- 如果是 pytest 运行且未指定 `MOMO_USER`，会自动降级为 `test_user`，避免交互式选择。
+- 用户配置优先于全局配置；敏感用户级键会从当前进程环境中清理后再覆盖。
 
-- 先加载根目录 `.env`（如果存在），用于读取全局配置。
-- 读取 `MOMO_USER` 环境变量：
-  - 如果存在，则直接使用该用户名为当前活动用户。
-  - 如果不存在，则等 `ProfileManager.pick_profile()` 完成后再确定活动用户。
-- 用户选择完成后，读取对应 `data/profiles/{username}.env`，并覆盖全局配置。
-- 此后才确定 `DB_PATH` / `TEST_DB_PATH`，保证用户选择完成再生成用户数据库路径。
+### `ProfileManager.pick_profile()`
 
-### 1.2 `ProfileManager.pick_profile()` 的分支
-
-- 列出 `data/profiles/*.env` 中已有用户。
-- 提供两类选择：
-  - 选择已有用户。
-  - 创建新用户。
-- 选择已有用户时，会调用 `ConfigWizard.ensure_cloud_database_for_profile(username)`：
-  - 如果该用户已配置 `TURSO_DB_URL` 和 `TURSO_AUTH_TOKEN`，直接返回。
-  - 否则提示是否启用 Turso 云数据库：
-    - 选择“否”：保持当前用户，不创建云数据库。
-    - 选择“是”：继续管理员密码校验，并发起云数据库创建流程。
-- 选择创建新用户时，进入 `ConfigWizard.run_setup()` 新用户向导。
+- 有现成 profile 时，优先选择已有用户。
+- 没有用户时，进入 `ConfigWizard.run_setup()`。
+- 已存在 profile 但缺云端配置时，会询问是否自动启用云数据库。
 
 ```mermaid
 flowchart TD
-  A[启动 config.py] --> B{是否存在 MOMO_USER}
-  B -- 是 --> C[使用环境指定用户]
+  A[启动 config.py] --> B{MOMO_USER 是否已指定}
+  B -- 是 --> C[直接使用指定用户]
   B -- 否 --> D[ProfileManager.pick_profile()]
-  D --> E{选择已有用户 或 创建新用户}
-  E -- 已有用户 --> F[ensure_cloud_database_for_profile()]
-  E -- 新用户 --> G[run_setup()]
-  F --> H{是否已配置 Turso 云数据库}
-  H -- 是 --> I[直接返回当前用户]
-  H -- 否 --> J[询问是否启用 Turso 云数据库]
-  J -- 否 --> I
-  J -- 是 --> K[验证管理员密码] --> L[创建 Turso 云数据库]
-  G --> M[新用户初始化向导]
+  D --> E{已有 profile?}
+  E -- 是 --> F[进入用户选择/补云端配置]
+  E -- 否 --> G[ConfigWizard.run_setup()]
 ```
 
----
+## 2. 新用户与云端配置
 
-## 2. 新用户初始化与云数据库创建流程
+### `ConfigWizard.run_setup()`
 
-### 2.1 `ConfigWizard.run_setup()` 判断与分支
+- 用户名可用后继续。
+- `MOMO_TOKEN`、AI Key 都是可跳过的，默认是“先保存后校验”。
+- 隐藏输入用于 Token / API Key / Turso token。
+- 校验返回结构化结果：`ok/category/detail`。
+- 最后写入 profile 并调用 `tools/preflight_check.py` 作为统一体检提示。
 
-- 收集用户名。
-- 验证 `MOMO_TOKEN`：使用 `MaiMemoAPI.get_study_progress()` 判断 Token 是否可用。
-- 选择 AI 提供商：
-  - `1` -> `mimo`
-  - `2` -> `gemini`
-- 根据选择验证对应 API Key：
-  - `mimo` -> `validate_mimo()`。
-  - `gemini` -> `validate_gemini()`。
-- 询问是否创建专属 Turso 云数据库：
-  - 选择“否”时，仅保存本地配置。
-  - 选择“是”时执行：
-    - 管理员密码校验 `_verify_admin_password()`：
-      - 若根 `.env` 无 `ADMIN_PASSWORD_HASH`，直接跳过校验。
-      - 否则允许最多 3 次输入。
-      - 校验失败则跳过云数据库创建。
-    - 输入 `organizationSlug`、`group`、`Turso Auth Token`。
-    - 调用 `_create_turso_database()` 创建数据库：
-      - 成功则继续。
-      - 失败则提示用户后继续保存本地配置。
-    - 调用 `_ensure_hub_initialized()`：
-      - 若全局 Hub 已配置，则复用现有配置。
-      - 否则创建或获取名为 `momo_users_hub` 的中央 Hub 云数据库。
-      - 为 Hub 生成认证令牌并保存到全局 `.env`。
-      - 初始化 Hub 表结构 `init_users_hub_tables()`。
-    - 保存用户信息到 Hub `save_user_info_to_hub()`。
-- 创建本地 sqlite 数据库并初始化表结构。
-- 将用户配置写入 `data/profiles/{username}.env`。
+### `ConfigWizard.ensure_cloud_database_for_profile()`
 
-### 2.2 `ensure_cloud_database_for_profile()` 判断与分支
+- 只在 profile 缺少 `TURSO_DB_URL` 时触发。
+- 如果用户拒绝，直接保留本地模式。
+- 如果启用，则使用管理令牌创建用户云库并写回 profile。
 
-- 读取用户配置文件。
-- 如果 `TURSO_DB_URL` 和 `TURSO_AUTH_TOKEN` 已存在，立即返回。
-- 否则询问是否启用云数据库：
-  - 否：直接返回。
-  - 是：继续管理员密码验证。
-- 验证通过后输入组织信息、group 与 Turso Token。
-- 调用 `_configure_cloud_for_user()` 完成云数据库创建并更新用户 `.env`。
+### `ConfigWizard._ensure_hub_initialized()`
+
+- 先检查全局 Hub 配置是否存在。
+- 没有时会自动创建或复用 `momo-users-hub`。
+- 初始化 Hub 的用户表、会话表、统计表和审计表。
+
+## 3. 主流程启动
+
+### `StudyFlowManager.__init__()`
+
+- 初始化 logger、数据库和用户会话。
+- 如果 `AI_PROVIDER=mimo`，需要 `MIMO_API_KEY`。
+- 如果 `AI_PROVIDER=gemini`，需要 `GEMINI_API_KEY`。
+- 强制云端模式缺少 Hub 配置时，会提供：
+  - 立即补配置
+  - 本次会话临时降级
+  - 退出并打印修复清单
+
+## 4. 主菜单分支
+
+- `1` 今日任务：拉取今日词汇，批量 AI 生成后写回并触发后台同步。
+- `2` 未来计划：默认 7 天，可自定义天数。
+- `3` 智能迭代：进入 `IterationManager.run_iteration()`。
+- `4` 同步并退出：执行最终同步后退出。
+
+## 5. 运行时同步
+
+- 启动时先执行 `sync_databases(dry_run=True)` 看本地/云端差异。
+- 有差异时，询问是否立即合并。
+- 每次任务完成后，`_trigger_post_run_sync()` 会触发后台同步。
+- 退出时再次执行同步，避免最后一批数据丢失。
 
 ```mermaid
 flowchart TD
-  A[新用户向导 run_setup] --> B[输入用户名]
-  B --> C[验证 MOMO_TOKEN]
-  C --> D[选择 AI 提供商]
-  D --> E[验证对应 API Key]
-  E --> F{是否创建 Turso 云数据库}
-  F -- 否 --> G[保存本地配置]
-  F -- 是 --> H[验证管理员密码]
-  H -- 成功 --> I[创建 Turso 数据库]
-  H -- 失败 --> G
-  I --> J[_ensure_hub_initialized()]
-  J --> K[保存用户信息到 Hub]
-  K --> G
-```
-
----
-
-## 3. 中央 Hub（Users Hub）逻辑
-
-### 3.1 Hub 配置与初始化分支
-
-- `_ensure_hub_initialized()` 先检查全局环境变量：
-  - `TURSO_HUB_DB_URL`
-  - `TURSO_HUB_AUTH_TOKEN`
-- 如果已存在，则复用现有 Hub 配置。
-- 如果不存在，则：
-  - 创建或获取 `momo_users_hub` 数据库。
-  - 生成 Hub 数据库认证令牌。
-  - 保存 Hub 配置到全局 `.env`。
-  - 初始化 Hub 数据库表结构。
-
-### 3.2 Hub 表相关判断
-
-- `save_user_info_to_hub()`：
-  - 判断用户是否已存在（通过 `user_id` 或 `username`）。
-  - 若已存在，则保留原始 `created_at` 和 `role`。
-  - 如果用户名为 `asher`，强制设为 `admin`。
-- `is_admin_username()`：
-  - 先判断用户名是否为 `asher`。
-  - 否则从 Hub 查询用户角色，只有 `role='admin'` 才返回真。
-- `save_user_session()`、`update_user_stats()`、`log_admin_action()` 等：
-  - 只有在 Hub 配置和 `libsql` 可用时才会正常写入。
-  - 失败只记录日志，不抛出致命异常。
-
----
-
-## 4. 数据库连接与读写分支
-
-### 4.1 `_get_conn()` 分支
-
-- 首先判断是否有云端配置且安装 `libsql`。
-- 如果目标数据库是主数据库或测试数据库，且云端 URL/token 存在：
-  - 尝试连接 Turso 云端数据库。
-  - 失败后会回退到本地 SQLite。
-- 如果没有云端配置，直接连接本地 SQLite。
-
-### 4.2 `init_db()` 分支
-
-- 永远先初始化本地数据库。
-- 如果 `HAS_LIBSQL` 且 `TURSO_DB_URL`/`TURSO_AUTH_TOKEN` 存在，则尝试初始化云端数据库表。
-- 云端初始化失败仅日志记录，不阻止程序继续运行。
-
-### 4.3 写入逻辑分支
-
-- `mark_processed()` 和 `save_ai_word_note()`：
-  - 首先尝试写入云端（如果云端连接可用）。
-  - 如果云端写入成功，则额外同步到本地缓存。
-  - 如果云端不可用或失败，则回退写入本地 SQLite。
-- `sync_databases()`：
-  - 若云端未配置或 `libsql` 不可用，则直接返回 `{upload:0, download:0}`。
-  - 否则执行双向同步：本地新数据上传、云端新数据下载。
-
-```mermaid
-flowchart TD
-  A[请求数据库连接] --> B{是否配置 TURSO_DB_URL/TURSO_AUTH_TOKEN 且 HAS_LIBSQL}
-  B -- 是 --> C[尝试连接云端 Turso]
-  C --> D{连接成功}
-  D -- 是 --> E[返回云端连接]
-  D -- 否 --> F[返回本地 SQLite]
-  B -- 否 --> F
-```
-
----
-
-## 5. 运行时主流程判断
-
-### 5.1 `main.py` 启动分支
-
-- 初始化 `StudyFlowManager`：
-  - 创建日志与会话 ID。
-  - `MaiMemoAPI(MOMO_TOKEN)`。
-  - `init_db()` 初始化本地/云数据库。
-  - 查询 Hub 中当前用户信息。
-  - 判断用户是否为管理员。
-  - 尝试记录用户会话与登录时间到 Hub。
-- 如果 `AI_PROVIDER` 为 `mimo`，则要求 `MIMO_API_KEY`；否则要求 `GEMINI_API_KEY`。
-
-### 5.2 同步判断与分支
-
-- 启动时调用 `sync_databases(dry_run=True)`：
-  - 如果发现云端与本地差异，则提示用户是否立即合并。
-  - 若用户选择继续，则执行实际同步。
-  - 否则记录警告并继续。
-
-### 5.3 主菜单分支
-
-程序主循环提供 4 个选项：
-
-1. `今日任务`：
-   - 调用 `MaiMemoAPI.get_today_items(limit=500)`。
-   - 处理返回任务列表。
-   - 运行后触发后台同步。
-2. `未来计划`：
-   - 默认查询 7 天任务。
-   - 允许用户输入自定义天数。
-   - 返回值为空、解析失败或输入无效时，会回到主菜单。
-3. `智能迭代`：
-   - 进入 `IterationManager.run_iteration()`。
-4. `同步&退出`：
-   - 执行一次 `sync_databases(dry_run=False)`，然后退出。
-
-```mermaid
-flowchart TD
-  A[启动完成] --> B[同步差异检查 dry_run]
+  A[启动完成] --> B[sync_databases dry_run]
   B --> C{是否有差异}
-  C -- 有 --> D[询问是否立即合并]
-  D -- Y --> E[执行 sync_databases(False)]
-  D -- N --> F[继续主菜单]
-  C -- 否 --> F
-  F --> G[主菜单]
-  G --> H{选项}
-  H --> |1| I[今日任务]
-  H --> |2| J[未来计划]
-  H --> |3| K[智能迭代]
-  H --> |4| L[同步&退出]
+  C -- 是 --> D[询问是否立即合并]
+  C -- 否 --> E[主菜单]
+  D -- 是 --> F[执行实际同步]
+  D -- 否 --> E
+  E --> G{主菜单选项}
+  G --> H[今日任务]
+  G --> I[未来计划]
+  G --> J[智能迭代]
+  G --> K[同步并退出]
 ```
 
----
+## 6. 相关文档
 
-## 6. AI 迭代与智能分支
-
-### 6.1 `IterationManager.run_iteration()` 分支
-
-- 先读取“弱熟悉度”单词列表。
-- 如果没有弱词，直接停止。
-- 对每个弱词：
-  - 如果 `it_level == 0`：进入 Level 1 选优分支。
-  - 否则进入 Level 2+ 强力重炼分支。
-- Level 2+ 还会比较当前熟悉度与上次基线：
-  - 如果熟悉度没有提升，则继续重炼。
-  - 否则仅记录“保持观察”。
-
-### 6.2 云词本同步分支
-
-- `_sync_weak_words_notepad()`：
-  - 先尝试获取标题为 `MomoAgent: 薄弱词攻坚` 的词本。
-  - 如果存在，则更新内容。
-  - 如果不存在，则创建新词本。
-  - 如果没有新增词，则跳过。
-
----
-
-## 7. 关键分支汇总
-
-### 7.1 用户选择与配置分支
-
-- `MOMO_USER` 环境变量优先。
-- 若不存在，进入用户选择菜单。
-- 已有用户会被询问是否启用 Turso 云数据库。
+- [OVERVIEW.md](OVERVIEW.md)
+- [DATA_FLOW.md](DATA_FLOW.md)
+- [../dev/AI_CONTEXT.md](../dev/AI_CONTEXT.md)
 - 新用户可直接在向导中配置云数据库。
 
 ### 7.2 云数据库启用分支

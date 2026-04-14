@@ -43,6 +43,16 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
     conn.close()
     
     # 模拟薄弱熟悉度
+    mocker.patch("core.iteration_manager.WeakWordFilter._get_user_stats", return_value={"total": 1})
+    mocker.patch("core.iteration_manager.WeakWordFilter.get_dynamic_threshold", return_value=3.0)
+    mocker.patch("core.iteration_manager.WeakWordFilter.get_weak_words_by_category", return_value={"urgent": [], "normal": []})
+    mocker.patch(
+        "core.iteration_manager.WeakWordFilter.get_weak_words_by_score",
+        side_effect=[
+            [{"voc_id": voc_id, "spelling": spell, "it_level": 0, "familiarity_short": 1.0, "memory_aid": "Method A\nMethod B", "meanings": "n. 苹果"}],
+            [{"voc_id": voc_id, "spelling": spell, "it_level": 1, "familiarity_short": 1.01, "memory_aid": "Method A\nMethod B", "meanings": "n. 苹果"}],
+        ],
+    )
     log_progress_snapshots([
         {"voc_id": voc_id, "voc_spelling": spell, "short_term_familiarity": 1.0, "review_count": 5}
     ], db_path=temp_db)
@@ -60,8 +70,10 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
         }), {}
     )
     mock_momo.create_note.return_value = {"success": True}
+    mock_momo.list_notepads.return_value = {"notepads": []}
+    mock_momo.create_notepad.return_value = {"success": True}
     
-    manager.run_iteration(familiarity_threshold=3.0)
+    manager.run_iteration()
     
     # 验证状态变更为 Level 1
     conn = _get_conn(temp_db)
@@ -95,7 +107,7 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
         json.dumps([{"spelling": spell, "memory_aid": "**[Refined]** Power Hook", "tags": ["帮助"]}]), {}
     )
     
-    manager.run_iteration(familiarity_threshold=3.0)
+    manager.run_iteration()
     
     # 验证状态变更为 Level 2
     cur.execute("SELECT it_level, it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
@@ -117,5 +129,5 @@ def test_iteration_lifecycle(temp_db, mock_deps, mocker):
     assert rows[1][4] == '["帮助"]'
     assert rows[1][5] == "**[Refined]** Power Hook"
     assert "Method A" in rows[1][6]
-    assert '"stage": "level_2_refinement"' in rows[1][7]
+    assert '"memory_aid": "**[Refined]** Power Hook"' in rows[1][7]
     conn.close()

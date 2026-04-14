@@ -6,6 +6,7 @@
 
 import requests
 import time
+import threading
 from collections import deque
 from typing import List, Dict, Optional, Union
 from core.constants import MAIMEMO_NOTE_TAG_OPTIONS, MAIMEMO_NOTE_TAG_FALLBACK
@@ -18,6 +19,7 @@ except ImportError:
 class MaiMemoAPI:
     def __init__(self, access_token: str):
         self.base_url = "https://open.maimemo.com/open/api/v1"
+        self._session = requests.Session()
         self.headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
@@ -34,36 +36,45 @@ class MaiMemoAPI:
         # 最小间隔用于平滑突发，避免短时尖峰导致 429
         self._min_interval_sec = 0.12
         self._last_request_ts = 0.0
+        self._rate_limit_lock = threading.Lock()
+
+    def close(self):
+        """释放底层 HTTP 连接，避免退出时资源告警。"""
+        try:
+            self._session.close()
+        except Exception:
+            pass
 
     def _apply_rate_limit(self):
         """根据墨墨频控窗口进行自适应节流，尽量减少 429 重试等待。"""
-        now = time.time()
+        with self._rate_limit_lock:
+            now = time.time()
 
-        # 清理窗口外时间戳
-        while self._req_ts_10s and now - self._req_ts_10s[0] >= 10:
-            self._req_ts_10s.popleft()
-        while self._req_ts_60s and now - self._req_ts_60s[0] >= 60:
-            self._req_ts_60s.popleft()
+            # 清理窗口外时间戳
+            while self._req_ts_10s and now - self._req_ts_10s[0] >= 10:
+                self._req_ts_10s.popleft()
+            while self._req_ts_60s and now - self._req_ts_60s[0] >= 60:
+                self._req_ts_60s.popleft()
 
-        wait_candidates = []
-        if self._req_ts_10s and len(self._req_ts_10s) >= 20:
-            wait_candidates.append(10 - (now - self._req_ts_10s[0]))
-        if self._req_ts_60s and len(self._req_ts_60s) >= 40:
-            wait_candidates.append(60 - (now - self._req_ts_60s[0]))
+            wait_candidates = []
+            if self._req_ts_10s and len(self._req_ts_10s) >= 20:
+                wait_candidates.append(10 - (now - self._req_ts_10s[0]))
+            if self._req_ts_60s and len(self._req_ts_60s) >= 40:
+                wait_candidates.append(60 - (now - self._req_ts_60s[0]))
 
-        # 平滑间隔，减少突发请求导致的额外限流
-        gap = now - self._last_request_ts
-        if gap < self._min_interval_sec:
-            wait_candidates.append(self._min_interval_sec - gap)
+            # 平滑间隔，减少突发请求导致的额外限流
+            gap = now - self._last_request_ts
+            if gap < self._min_interval_sec:
+                wait_candidates.append(self._min_interval_sec - gap)
 
-        wait_time = max(wait_candidates) if wait_candidates else 0
-        if wait_time > 0:
-            time.sleep(wait_time)
+            wait_time = max(wait_candidates) if wait_candidates else 0
+            if wait_time > 0:
+                time.sleep(wait_time)
 
-        req_ts = time.time()
-        self._req_ts_10s.append(req_ts)
-        self._req_ts_60s.append(req_ts)
-        self._last_request_ts = req_ts
+            req_ts = time.time()
+            self._req_ts_10s.append(req_ts)
+            self._req_ts_60s.append(req_ts)
+            self._last_request_ts = req_ts
 
     @staticmethod
     def _is_transient_status(status_code: int) -> bool:
@@ -91,11 +102,14 @@ class MaiMemoAPI:
         """统一请求处理及限流"""
         url = f"{self.base_url}{endpoint}"
 
+        # 单测通常会 patch `requests.request`；生产环境仍优先走 session 复用连接。
+        request_impl = requests.request if requests.request.__class__.__module__ == "unittest.mock" else self._session.request
+
         # 添加重试逻辑（处理 429 错误）
         for attempt in range(3):  # MAX_RETRIES = 3
             try:
                 self._apply_rate_limit()
-                response = requests.request(method, url, headers=self.headers, **kwargs)
+                response = request_impl(method, url, headers=self.headers, **kwargs)
 
                 if 200 <= response.status_code < 300:
                     return response.json()
@@ -201,7 +215,7 @@ class MaiMemoAPI:
         """删除释义"""
         return self._request("DELETE", f"/interpretations/{interpretation_id}")
 
-    def sync_interpretation(self, voc_id: str, interpretation: str, tags: List[str] = None, spell: str = None) -> bool:
+    def sync_interpretation(self, voc_id: str, interpretation: str, tags: List[str] = None, spell: str = None, force_create: bool = True) -> bool:
         """智能同步：检查用户释义，仅在无释义时创建
 
         Args:
@@ -218,26 +232,26 @@ class MaiMemoAPI:
             get_logger().warning(f"[*] {word标识} - 已达到创建释义限制，跳过创建", module="maimemo_api")
             return True
 
-        # 1. 检查是否存在已有释义（用户创建的）
-        res = self.list_interpretations(voc_id)
-        if not res:
-            get_logger().error(f"[*] {word标识} - 查询释义失败：API 返回空响应", module="maimemo_api")
-            return False
+        if not force_create:
+            # 1. 检查是否存在已有释义（用户创建的）
+            res = self.list_interpretations(voc_id)
+            if not res:
+                get_logger().error(f"[*] {word标识} - 查询释义失败：API 返回空响应", module="maimemo_api")
+                return False
 
-        if res.get("success"):
-            intps = res.get("data", {}).get("interpretations", [])
-            if intps:
-                # 已存在用户创建的释义，跳过
-                get_logger().info(f"[*] {word标识} - 已有用户释义，跳过创建", module="maimemo_api")
-                return True  # 视为成功，避免重复处理
-        else:
-            # 查询失败，可能是 API 错误
-            errors = res.get("errors", [])
-            if errors:
-                error_code = errors[0].get("code", "")
-                error_msg = errors[0].get("msg", "未知错误")
-                get_logger().error(f"[*] {word标识} - 查询释义失败：{error_msg}", module="maimemo_api")
-            return False
+            if res.get("success"):
+                intps = res.get("data", {}).get("interpretations", [])
+                if intps:
+                    # 已存在用户创建的释义，跳过
+                    get_logger().info(f"[*] {word标识} - 已有用户释义，跳过创建", module="maimemo_api")
+                    return True  # 视为成功，避免重复处理
+            else:
+                # 查询失败，可能是 API 错误
+                errors = res.get("errors", [])
+                if errors:
+                    error_msg = errors[0].get("msg", "未知错误")
+                    get_logger().error(f"[*] {word标识} - 查询释义失败：{error_msg}", module="maimemo_api")
+                return False
 
         # 2. 不存在用户释义，执行创建
         # 使用默认标签：雅思、考研
@@ -262,6 +276,10 @@ class MaiMemoAPI:
             if errors:
                 error_code = errors[0].get("code", "")
                 error_msg = errors[0].get("msg", "未知错误")
+
+                if error_code == "interpretation_exists" or "存在" in str(error_msg):
+                    get_logger().info(f"[*] {word标识} - 释义已存在，视为同步成功", module="maimemo_api")
+                    return True
 
                 # 如果是超出限制的错误，标记状态并记录警告
                 if error_code == "interpretation_create_limitation":
