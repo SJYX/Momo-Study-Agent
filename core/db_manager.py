@@ -505,8 +505,11 @@ def clean_for_maimemo(text: str) -> str:
 def _get_local_conn(db_path: str = None) -> sqlite3.Connection:
     path = db_path or DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=20.0)  # 增加超时时间以解决多线程死锁
     conn.row_factory = sqlite3.Row
+    # 启用WAL模式以提高并发性能
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
 
@@ -715,7 +718,7 @@ def _create_tables(cur, skip_migrations=False):
     """
     # 创建表（如果不存在）
     cur.execute('CREATE TABLE IF NOT EXISTS processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    cur.execute('CREATE TABLE IF NOT EXISTS ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, ielts_focus TEXT, collocations TEXT, traps TEXT, synonyms TEXT, discrimination TEXT, example_sentences TEXT, memory_aid TEXT, word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cur.execute('CREATE TABLE IF NOT EXISTS ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, ielts_focus TEXT, collocations TEXT, traps TEXT, synonyms TEXT, discrimination TEXT, example_sentences TEXT, memory_aid TEXT, word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, sync_status INTEGER DEFAULT 0, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cur.execute('CREATE TABLE IF NOT EXISTS ai_word_iterations (id INTEGER PRIMARY KEY AUTOINCREMENT, voc_id TEXT NOT NULL, spelling TEXT, stage TEXT, it_level INTEGER, score REAL, justification TEXT, tags TEXT, refined_content TEXT, candidate_notes TEXT, raw_response TEXT, maimemo_context TEXT, batch_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(voc_id) REFERENCES ai_word_notes(voc_id))')
     cur.execute('CREATE TABLE IF NOT EXISTS word_progress_history (id INTEGER PRIMARY KEY AUTOINCREMENT, voc_id TEXT, familiarity_short REAL, familiarity_long REAL, review_count INTEGER, it_level INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     # 添加联合唯一约束，避免历史记录冗余同步
@@ -737,6 +740,7 @@ def _create_tables(cur, skip_migrations=False):
         ('ai_word_notes', 'maimemo_context',    'TEXT'),
         ('ai_word_notes', 'raw_full_text',      'TEXT'),
         ('ai_word_notes', 'word_ratings',       'TEXT'),
+        ('ai_word_notes', 'sync_status',        'INTEGER DEFAULT 0'),
         ('ai_word_notes', 'updated_at',         'TIMESTAMP'),
         ('processed_words', 'updated_at',      'TIMESTAMP'),
     ]:
@@ -915,8 +919,8 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata:
     original_meanings = metadata.get('original_meanings') if metadata else None
     if not original_meanings:
         original_meanings = payload.get('original_meanings')
-    args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, get_timestamp_with_tz())
-    sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, 0, get_timestamp_with_tz())
+    sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
     def _do_sql(cn):
         cur = cn.cursor(); cur.execute(sql, args)
@@ -970,7 +974,7 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
             need_close = True
 
         cur = target_conn.cursor()
-        sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
         batch_args = []
         for data in notes_data:
@@ -987,7 +991,7 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
             original_meanings = metadata.get('original_meanings') if metadata else None
             if not original_meanings:
                 original_meanings = payload.get('original_meanings')
-            args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, get_timestamp_with_tz())
+            args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, 0, get_timestamp_with_tz())
             batch_args.append(args)
 
         cur.executemany(sql, batch_args)
@@ -1068,6 +1072,75 @@ def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, meta
     except Exception as e:
         _debug_log(f"保存迭代历史失败: {e}")
         return False
+
+def mark_note_synced(voc_id: str, db_path: str = None) -> bool:
+    """
+    标记指定单词笔记为已同步（sync_status = 1）
+    
+    Args:
+        voc_id: 单词 ID
+        db_path: 数据库路径（可选）
+    
+    Returns:
+        是否标记成功
+    """
+    try:
+        path = db_path or DB_PATH
+        conn = _get_conn(path)
+        cur = conn.cursor()
+        
+        cur.execute(
+            'UPDATE ai_word_notes SET sync_status = 1, updated_at = ? WHERE voc_id = ?',
+            (get_timestamp_with_tz(), str(voc_id))
+        )
+        
+        conn.commit()
+        conn.close()
+        
+        _debug_log(f"笔记已标记为已同步: {voc_id}")
+        return True
+        
+    except Exception as e:
+        _debug_log(f"标记笔记为已同步失败: {e}")
+        return False
+
+def get_unsynced_notes(db_path: str = None) -> list:
+    """
+    获取所有未同步的笔记（sync_status = 0）
+    
+    Args:
+        db_path: 数据库路径（可选）
+    
+    Returns:
+        包含 voc_id, spelling, basic_meanings, ielts_focus 等字段的字典列表
+    """
+    try:
+        path = db_path or DB_PATH
+        conn = _get_conn(path)
+        cur = conn.cursor()
+        
+        cur.execute(
+            '''SELECT voc_id, spelling, basic_meanings, ielts_focus, collocations, 
+                      traps, synonyms, discrimination, example_sentences, memory_aid, 
+                      word_ratings, raw_full_text, batch_id, original_meanings, 
+                      maimemo_context, it_level, updated_at
+               FROM ai_word_notes 
+               WHERE sync_status = 0 
+               ORDER BY updated_at ASC'''
+        )
+        
+        rows = cur.fetchall()
+        conn.close()
+        
+        # 将行转换为字典列表
+        result = [_row_to_dict(cur, row) for row in rows]
+        
+        _debug_log(f"获取未同步笔记完成: {len(result)} 条")
+        return result
+        
+    except Exception as e:
+        _debug_log(f"获取未同步笔记失败: {e}")
+        return []
 
 def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
     c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),)); r = cur.fetchone(); c.close(); return _row_to_dict(cur, r) if r else None

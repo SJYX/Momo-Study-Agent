@@ -22,7 +22,7 @@ from core.db_manager import (
     init_db, is_processed, mark_processed,
     save_ai_word_note, save_ai_batch, clean_for_maimemo,
     get_file_hash, archive_prompt_file, log_progress_snapshots, sync_databases,
-    get_processed_ids_in_batch,
+    get_processed_ids_in_batch, get_unsynced_notes, mark_note_synced,
 
     # 用户会话管理
     save_user_session, save_user_info_to_hub, save_user_credentials_to_hub, update_user_login_time,
@@ -87,6 +87,19 @@ class StudyFlowManager:
         self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
         self.sync_worker_thread.start()
         self._sync_worker_stopped = False
+
+        # 断点续传（通过数据库状态恢复同步队列）
+        unsynced = get_unsynced_notes()
+        if unsynced:
+            self.logger.info(f"💾 [Resumption] 发现 {len(unsynced)} 条遗留待同步笔记，正在载入队列...")
+            for note in unsynced:
+                self._queue_maimemo_sync(
+                    note['voc_id'], 
+                    note['spelling'], 
+                    clean_for_maimemo(note['basic_meanings']), 
+                    ["雅思"] # 遗留同步默认打标为雅思
+                )
+
         init_db()
 
         self.hub_user = get_user_by_username(ACTIVE_USER)
@@ -384,6 +397,7 @@ class StudyFlowManager:
                     )
                     if sync_success:
                         self._mark_processed_with_cache(voc_id, spell)
+                        mark_note_synced(voc_id) # 物理数据库打标
                     else:
                         self.logger.error(f"❌ {spell} 后台同步至墨墨失败", module="main")
                 except Exception as e:
@@ -406,11 +420,13 @@ class StudyFlowManager:
             return
 
         pending_count = self.sync_queue.qsize()
-        self.logger.info(f"退出前准备关闭后台同步线程，剩余任务 {pending_count} 个", module="main")
+        self.logger.info(f"退出前准备关闭后台同步线程，剩余任务 {pending_count} 个，请稍等...", module="main")
         self.sync_queue.put(None)
         self.sync_worker_thread.join(timeout=10.0)
         if self.sync_worker_thread.is_alive():
-            self.logger.warning("后台同步线程未在 10 秒内结束，将继续退出流程", module="main")
+            self.logger.warning("后台同步线程未在 10 秒内结束，强行退出流程", module="main")
+        else:
+            self.logger.info("✅ 后台同步线程已平滑退出", module="main")
 
     def _check_esc_interrupt(self):
         if msvcrt.kbhit():
@@ -1021,11 +1037,6 @@ class StudyFlowManager:
         if notes_to_save:
             from core.db_manager import save_ai_word_notes_batch
             save_ai_word_notes_batch(notes_to_save)
-
-            # 兼容现有测试：仅当 save_ai_word_note 被 mock 时，保留可观察到的调用痕迹。
-            if isinstance(save_ai_word_note, Mock):
-                for note in notes_to_save:
-                    save_ai_word_note(note["voc_id"], note["payload"], metadata=note["metadata"])
 
 if __name__ == "__main__":
     # 解析命令行参数

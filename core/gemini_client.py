@@ -2,6 +2,7 @@ from typing import Tuple, Dict, Any, List
 import os
 import json
 import time
+import json_repair
 from config import GEMINI_MODEL, MAX_RETRIES, RETRY_WAIT_S, PROMPT_FILE
 import sys
 
@@ -52,12 +53,18 @@ class GeminiClient:
 
     def generate_mnemonics(self, words_batch: list) -> Tuple[list, dict]:
         prompt = f"""
-        请处理以下 {len(words_batch)} 个英语单词，严格遵循系统设定中的全维度 JSON 数组格式返回分析：
+        请处理以下 {len(words_batch)} 个英语单词，严格遵循系统设定中的全维度分析。
+        你必须直接返回一个 JSON 数组（[...]）。
+        绝对不要返回 {{"results": [...]}} 或任何对象包裹结构。
+        输出中不要包含 Markdown 代码块标记（如 ```json 或 ```）。
+        请确保输出是语法完全合法的 JSON。
         待处理单词列表: {", ".join(words_batch)}
         """
         text, metadata = self.generate_with_instruction(prompt)
         if not text:
-            return [], {}
+            meta = metadata or {}
+            meta.setdefault("stage", "request")
+            return [], meta
             
         try:
             # 清洗包裹的 Markdown 字符
@@ -72,18 +79,40 @@ class GeminiClient:
             # 鲁棒修复：用括号计数找出第一个合法结束的 JSON 数组范围
             text = _extract_json_array(text)
             
-            results = json.loads(text)
-            # 为每个结果项记录其自身的原始 JSON（而非整个 batch 字符串）
+            data = json_repair.loads(text)
+            results = []
+            if isinstance(data, list):
+                results = data
+
+            # 备份单词自身的原始内容（在注入 token 统计前先捕获，保持纯粹的 AI 输出）
+            n = len(results) if len(results) > 0 else 1
             for item in results:
                 item['raw_full_text'] = json.dumps(item, ensure_ascii=False)
+                # 均摊 tokens（展示用，不影响存档内容）
+                if metadata:
+                    item["prompt_tokens"] = metadata.get('prompt_tokens', 0) // n
+                    item["completion_tokens"] = metadata.get('completion_tokens', 0) // n
+                    item["total_tokens"] = metadata.get('total_tokens', 0) // n
+            
             return results, metadata
         except Exception as e:
+            preview = text[:500] if text else ""
             try:
                 from core.logger import get_logger
-                get_logger().error("[JSON Parse Error]", error=str(e), module="gemini_client")
+                get_logger().error(
+                    "[JSON Parse Error]",
+                    error=str(e),
+                    module="gemini_client",
+                    words_count=len(words_batch),
+                    response_preview=preview,
+                )
             except:
-                print(f"  [JSON Parse Error]: {str(e)[:120]}")
-            return [], {}
+                print(f"  [Gemini Parse Error]: {str(e)[:120]}")
+            return [], {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "stage": "parse",
+            }
 
 def _extract_json_array(text: str) -> str:
     """从字符串中提取第一个完整的 JSON 数组 [...]，防止末尾乱码干扰。"""

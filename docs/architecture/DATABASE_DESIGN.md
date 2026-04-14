@@ -19,6 +19,11 @@
 - `ai_word_iterations`：迭代过程记录。
 - `system_config`：少量系统键值配置。
 
+`ai_word_notes` 关键状态字段：
+
+- `sync_status`：同步状态（`0=待同步`, `1=已同步`）
+- `updated_at`：最后更新时间戳（ISO 8601，含时区）
+
 ### 中央 Hub
 
 - `users`
@@ -34,6 +39,15 @@
 - 以主键和时间戳为基础做增量比对。
 - `mark_processed()`、`save_ai_word_note()` 和 `save_ai_word_notes_batch()` 会优先写入可用的连接，再回退到本地。
 - Hub 同步是独立职责，不和用户学习库混写。
+- 待同步队列由 `ai_word_notes.sync_status` 持久化；新增笔记默认 `sync_status=0`。
+- 同步成功后可调用 `mark_note_synced(voc_id)` 将记录置为 `sync_status=1`。
+- 同步执行前可通过 `get_unsynced_notes()` 按时间顺序提取待同步记录。
+
+## 本地并发设置
+
+- 本地 SQLite 连接默认启用 `PRAGMA journal_mode=WAL`。
+- 本地 SQLite 连接默认启用 `PRAGMA synchronous=NORMAL`。
+- 本地连接超时设置为 `20.0s`，降低写入竞争导致的锁超时风险。
 
 ## 冲突处理
 

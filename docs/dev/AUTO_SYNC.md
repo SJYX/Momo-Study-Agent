@@ -84,6 +84,21 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 - `ai_batches`
 - `system_config`
 
+### 队列状态持久化（`ai_word_notes.sync_status`）
+
+- `sync_status = 0`：待同步（默认值）
+- `sync_status = 1`：已同步
+- 新增/批量写入笔记时默认落 `sync_status = 0`
+- 可通过 `mark_note_synced(voc_id)` 在单词同步成功后标记为已同步
+- 可通过 `get_unsynced_notes()` 拉取待同步队列（按 `updated_at ASC`）
+
+该机制用于在网络抖动、重试或异常中断时保留“待同步”队列，避免漏传。
+
+## 本地并发写入配置
+
+- 本地 SQLite 连接启用 `WAL` 模式与 `synchronous=NORMAL`
+- 本地连接超时调整为 `20.0s`（降低高并发写入场景下的锁等待失败）
+
 ### Hub 库（`sync_hub_databases`）
 
 - `users`

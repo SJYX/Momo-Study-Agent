@@ -15,13 +15,14 @@ class MimoClient:
         self.model_name = model_name or MIMO_MODEL
         self.api_base = MIMO_API_BASE
         self.prompt_file = prompt_file or PROMPT_FILE
+        self.session = requests.Session()
 
         if not self.api_key:
             raise ValueError("MIMO_API_KEY is required but not set")
 
     def close(self):
-        """统一清理入口；当前 requests 为短连接调用，保留接口供主流程统一收尾。"""
-        return
+        """统一清理入口；关闭复用连接池。"""
+        self.session.close()
 
     def _load_instruction(self) -> str:
         """加载系统提示词"""
@@ -49,10 +50,9 @@ class MimoClient:
                     ],
                     "temperature": 0.7,
                     "max_completion_tokens": 64000,
-                    "response_format": {"type": "json_object"},
                     "thinking": {"type": "disabled"}
                 }
-                response = requests.post(f"{self.api_base}/chat/completions", headers=headers, json=payload, timeout=60)
+                response = self.session.post(f"{self.api_base}/chat/completions", headers=headers, json=payload, timeout=60)
                 if response.status_code != 200:
                     raise Exception(f"API Error {response.status_code}: {response.text}")
 
@@ -95,9 +95,11 @@ class MimoClient:
     def generate_mnemonics(self, words_batch: list) -> Tuple[list, dict]:
         """生成助记法，返回 JSON 数组格式"""
         prompt = f"""
-        请处理以下 {len(words_batch)} 个英语单词，严格遵循系统设定中的全维度分析，并将结果放入一个名为 "results" 的 JSON 数组中返回。
-        必须返回标准的 JSON 对象结构：{{"results": [...]}}。
-        【极其重要】：请确保输出是语法完全合法的 JSON！如果中文字段内需要使用标点符号侧重点，请一律使用单引号或中文引号。绝对不要在字符串值中出现未转义的英文双引号。
+        请处理以下 {len(words_batch)} 个英语单词，严格遵循系统设定中的全维度分析。
+        你必须直接返回一个 JSON 数组（[...]）。
+        绝对不要返回 {{"results": [...]}} 或任何对象包裹结构。
+        输出中不要包含 Markdown 代码块标记（如 ```json 或 ```）。
+        请确保输出是语法完全合法的 JSON。
         待处理单词列表: {", ".join(words_batch)}
         """
         text, metadata = self.generate_with_instruction(prompt)
@@ -107,12 +109,19 @@ class MimoClient:
             return [], meta
 
         try:
-            # 利用强大的启发式库解析破损的 JSON 对象并提取 results
+            # 清洗可能的 Markdown 包裹，再提取首个完整数组
+            if text.startswith("```json"):
+                text = text[7:]
+            elif text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            text = _extract_json_array(text)
+
             data = json_repair.loads(text)
             results = []
-            if isinstance(data, dict):
-                results = data.get("results", [])
-            elif isinstance(data, list):
+            if isinstance(data, list):
                 results = data
             
             # 备份单词自身的原始内容（在注入 token 统计前先捕获，保持纯粹的 AI 输出）
