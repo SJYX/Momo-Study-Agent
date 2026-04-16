@@ -2,6 +2,17 @@
 
 记录 Momo Study Agent 项目文档的变更历史。
 
+## 2026-04-16
+
+### Prompt 迭代优化系统 (Prompt Iteration & Auditor System)
+- **全新 CLI 工具**：新增 `scripts/prompt_dev_tool.py`，支持 `init`, `evaluate`, `optimize`, `loop`, `history`, `accept`, `diff`, `reset`, `clear-eval` 等全生命周期管理。
+- **中间解析结果缓存 (Generation Cache)**：实现 `generation_cache` 表，支持 24 小时内的 AI 生成结果自动复用，大幅降低迭代成本与时间。
+- **分批审计策略 (Batch Auditing)**：为突破 Mimo/Gemini 的响应时长限制，实现 5 词一包的分批审计逻辑，彻底解决长文本 ReadTimeout 问题。
+- **优化器局部重写**：`prompt_optimizer.md` 支持基于审计反馈的“按需更新”，自动冻结已达标模块（得分 >= 9.0），仅针对弱点进行精准微调。
+- **迭代可观测性增强**：在终端实时展示分批进度、各模块评分雷达图、详细审计建议。
+- **精细化统计**：支持汇总累计 生成 + 审计 的 Token 消耗，并在数据库中记录 `gen_batch_size` 和 `audit_batch_size` 供后期分析。
+- **版本回滚与对比**：支持基于 Git 风格的 Prompt 内容回滚，内置彩色 `diff` 命令快速对比生产版与开发版差异。
+
 ## 2026-04-14
 
 ### CLI 帮助信息增强

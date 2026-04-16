@@ -21,67 +21,148 @@ def _get_iteration_conn() -> sqlite3.Connection:
 
 
 def init_iteration_db():
-    """初始化迭代数据库表结构。"""
+    """初始化迭代数据库表结构（含幂等性检查）。"""
     conn = _get_iteration_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS prompt_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            version_hash TEXT UNIQUE NOT NULL,
-            content TEXT NOT NULL,
-            parent_hash TEXT,
-            source TEXT DEFAULT 'optimizer',
-            created_at TEXT NOT NULL
-        )
-    ''')
+        # 1. Prompt 版本记录
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS prompt_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_hash TEXT UNIQUE NOT NULL,
+                content TEXT NOT NULL,
+                parent_hash TEXT,
+                source TEXT DEFAULT 'optimizer',
+                created_at TEXT NOT NULL
+            )
+        ''')
 
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS evaluation_rounds (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            round_number INTEGER NOT NULL,
-            version_hash TEXT NOT NULL,
-            ai_provider TEXT,
-            model_name TEXT,
-            test_words TEXT,
-            avg_score REAL,
-            total_prompt_tokens INTEGER DEFAULT 0,
-            total_completion_tokens INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(version_hash) REFERENCES prompt_versions(version_hash)
-        )
-    ''')
+        # 2. 评估轮次概览
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS evaluation_rounds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                round_number INTEGER NOT NULL,
+                version_hash TEXT NOT NULL,
+                ai_provider TEXT,
+                model_name TEXT,
+                test_words TEXT,
+                avg_score REAL,
+                total_prompt_tokens INTEGER DEFAULT 0,
+                total_completion_tokens INTEGER DEFAULT 0,
+                gen_batch_size INTEGER DEFAULT 5,
+                audit_batch_size INTEGER DEFAULT 5,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(version_hash) REFERENCES prompt_versions(version_hash)
+            )
+        ''')
 
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS module_scores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            round_id INTEGER NOT NULL,
-            test_word TEXT NOT NULL,
-            module_name TEXT NOT NULL,
-            score REAL NOT NULL,
-            feedback TEXT,
-            fix_suggestion TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(round_id) REFERENCES evaluation_rounds(id)
-        )
-    ''')
+        # 字段兼容性升级
+        for col in ["gen_batch_size", "audit_batch_size"]:
+            try:
+                cur.execute(f"ALTER TABLE evaluation_rounds ADD COLUMN {col} INTEGER DEFAULT 5")
+            except:
+                pass
 
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS optimization_actions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            round_id INTEGER NOT NULL,
-            target_modules TEXT NOT NULL,
-            frozen_modules TEXT NOT NULL,
-            input_version_hash TEXT NOT NULL,
-            output_version_hash TEXT NOT NULL,
-            optimizer_reasoning TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(round_id) REFERENCES evaluation_rounds(id)
-        )
-    ''')
+        # 3. 模块级细分分数
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS module_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                round_id INTEGER NOT NULL,
+                test_word TEXT NOT NULL,
+                module_name TEXT NOT NULL,
+                score REAL NOT NULL,
+                feedback TEXT,
+                fix_suggestion TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(round_id) REFERENCES evaluation_rounds(id)
+            )
+        ''')
 
-    conn.commit()
-    conn.close()
+        # 4. 优化决策记录
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS optimization_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                round_id INTEGER NOT NULL,
+                target_modules TEXT NOT NULL,
+                frozen_modules TEXT NOT NULL,
+                input_version_hash TEXT NOT NULL,
+                output_version_hash TEXT NOT NULL,
+                optimizer_reasoning TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (round_id) REFERENCES evaluation_rounds(id)
+            )
+        ''')
+
+        # 5. 中间解析结果缓存 (用于跳过重复生成)
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS generation_cache (
+                version_hash TEXT PRIMARY KEY,
+                test_words_json TEXT,
+                outputs_json TEXT,
+                model_name TEXT,
+                batch_size INTEGER DEFAULT 5,
+                created_at TEXT NOT NULL
+            )
+        ''')
+        
+        # 字段兼容性升级
+        try:
+            cur.execute("ALTER TABLE generation_cache ADD COLUMN batch_size INTEGER DEFAULT 5")
+        except:
+            pass
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_generation_cache(version_hash: str, test_words: list, outputs: list, model_name: str, batch_size: int = 5):
+    """缓存中间生成结果。"""
+    from core.db_manager import get_timestamp_with_tz
+    conn = _get_iteration_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            INSERT OR REPLACE INTO generation_cache 
+            (version_hash, test_words_json, outputs_json, model_name, batch_size, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (version_hash, json.dumps(test_words), json.dumps(outputs), model_name, batch_size, get_timestamp_with_tz()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_generation_cache(version_hash: str) -> Optional[dict]:
+    """获取缓存的中间生成结果（包含 24 小时效期检查）。"""
+    from datetime import datetime, timedelta
+    from core.db_manager import get_timestamp_with_tz
+    
+    conn = _get_iteration_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT outputs_json, test_words_json, created_at, batch_size FROM generation_cache WHERE version_hash = ?', (version_hash,))
+        row = cur.fetchone()
+        if row:
+            outputs_json, words_json, created_at, batch_size = row
+            # 检查是否过期 (24小时)
+            try:
+                # 简单解析 ISO 格式 (假设格式一致)
+                created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                now_dt = datetime.fromisoformat(get_timestamp_with_tz().replace('Z', '+00:00'))
+                if now_dt - created_dt > timedelta(hours=24):
+                    return None 
+            except:
+                pass # 解析失败则保守起见不返回缓存
+                
+            return {
+                "outputs": json.loads(outputs_json),
+                "test_words": json.loads(words_json),
+                "batch_size": batch_size
+            }
+        return None
+    finally:
+        conn.close()
 
 
 def compute_version_hash(content: str) -> str:
@@ -121,6 +202,8 @@ def save_evaluation_round(
     avg_score: float,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
+    gen_batch_size: int = 5,
+    audit_batch_size: int = 5
 ) -> int:
     """保存一轮评估记录，返回 round_id。"""
     from core.db_manager import get_timestamp_with_tz
@@ -135,12 +218,13 @@ def save_evaluation_round(
     cur.execute('''
         INSERT INTO evaluation_rounds
         (round_number, version_hash, ai_provider, model_name, test_words, avg_score,
-         total_prompt_tokens, total_completion_tokens, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         total_prompt_tokens, total_completion_tokens, gen_batch_size, audit_batch_size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         round_number, version_hash, ai_provider, model_name,
         json.dumps(test_words, ensure_ascii=False),
         avg_score, prompt_tokens, completion_tokens,
+        gen_batch_size, audit_batch_size,
         get_timestamp_with_tz()
     ))
 

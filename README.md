@@ -14,6 +14,19 @@ python main.py
 
 首次运行时，向导默认采用“先保存后校验”，敏感输入会隐藏回显；如果暂时没有完整凭证，也可以先跳过，后续再用 preflight 补齐。
 
+## Prompt 工程迭代
+
+如果是为了迭代和优化 `gem_prompt.md`，请执行专门的工具：
+
+```bash
+# 初始化开发环境
+python scripts/prompt_dev_tool.py init
+
+# 启动自动优化循环 (评估 -> 打分 -> 局部重写 -> 再打分)
+python scripts/prompt_dev_tool.py optimize
+```
+详细说明见 [scripts/prompt_dev_tool.py](scripts/prompt_dev_tool.py)。
+
 ## 你会用到的入口
 
 - [docs/DOCUMENT_INDEX.md](docs/DOCUMENT_INDEX.md) 是文档总索引。

@@ -15,6 +15,8 @@
 import sys
 import os
 import json
+import time
+import re
 import shutil
 import argparse
 import hashlib
@@ -32,7 +34,7 @@ from core.prompt_iteration_db import (
     init_iteration_db, compute_version_hash, save_prompt_version,
     save_evaluation_round, save_module_scores, save_optimization_action,
     get_latest_round_number, get_module_score_trends, get_all_rounds_summary,
-    get_prompt_version_content,
+    get_prompt_version_content, save_generation_cache, get_generation_cache,
 )
 
 # ── 模块注册表 ──
@@ -216,76 +218,116 @@ def cmd_evaluate(freeze_threshold: float = DEFAULT_FREEZE_THRESHOLD) -> dict:
     save_prompt_version(dev_prompt, source="manual")
 
     # Step 1: 用当前 dev prompt 生成测试输出
-    print(f"\n🔄 正在使用 dev prompt 生成 {len(words)} 个测试词的输出...")
-    gen_client, gen_model = _get_ai_client(use_auditor_model=False)
-
-    # 分批生成（复用 generate_mnemonics 接口）
-    gen_client_with_dev = gen_client.__class__.__new__(gen_client.__class__)
-    gen_client_with_dev.__dict__.update(gen_client.__dict__)
-    gen_client_with_dev.prompt_file = PROMPT_DEV_FILE
-
+    version_hash = compute_version_hash(dev_prompt)
+    
     all_outputs = []
-    batch_size = 5
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    
+    # 尝试加载缓存
+    cached_data = get_generation_cache(version_hash)
+    if cached_data and cached_data.get("test_words") == words:
+        batch_size = cached_data.get("batch_size", 5)
+        print(f"\n♻️  发现当前版本 ({version_hash}) 已存在生成缓存 (Batch: {batch_size})，跳过生成环节...")
+        all_outputs = cached_data["outputs"]
+    else:
+        print(f"\n🔄 正在使用 dev prompt 生成 {len(words)} 个测试词的输出...")
+        gen_client, gen_model = _get_ai_client(use_auditor_model=False)
 
-    for i in range(0, len(words), batch_size):
-        batch = words[i:i + batch_size]
-        print(f"  生成中... [{i + 1}-{min(i + batch_size, len(words))}/{len(words)}]")
-        results, metadata = gen_client_with_dev.generate_mnemonics(batch)
-        all_outputs.extend(results)
-        total_prompt_tokens += metadata.get("prompt_tokens", 0)
-        total_completion_tokens += metadata.get("completion_tokens", 0)
+        # 分批生成（复用 generate_mnemonics 接口）
+        gen_client_with_dev = gen_client.__class__.__new__(gen_client.__class__)
+        gen_client_with_dev.__dict__.update(gen_client.__dict__)
+        gen_client_with_dev.prompt_file = PROMPT_DEV_FILE
 
+        batch_size = 5
+        for i in range(0, len(words), batch_size):
+            batch = words[i:i + batch_size]
+            print(f"  生成中... [{i + 1}-{min(i + batch_size, len(words))}/{len(words)}]")
+            results, metadata = gen_client_with_dev.generate_mnemonics(batch)
+            all_outputs.extend(results)
+            total_prompt_tokens += metadata.get("prompt_tokens", 0)
+            total_completion_tokens += metadata.get("completion_tokens", 0)
+
+        if not all_outputs:
+            print("❌ 未生成任何有效输出，评估终止。")
+            return {}
+            
+        # 保存到缓存
+        save_generation_cache(version_hash, words, all_outputs, gen_model, batch_size)
+        print(f"✅ 已生成 {len(all_outputs)} 个词的分析结果并存入缓存 (Batch: {batch_size})")
+    
     if not all_outputs:
-        print("❌ 未生成任何有效输出，评估终止。")
         return {}
 
-    print(f"✅ 已生成 {len(all_outputs)} 个词的分析结果")
-
     # Step 2: 用审计器评分
-    print(f"\n🔍 正在调用审计器评分...")
+    from core.logger import get_logger, log_performance
+    logger = get_logger()
+    
     auditor_client, auditor_model = _get_ai_client(use_auditor_model=True)
+    print(f"\n🔍 正在分批审计评分 (模型: {auditor_model})...")
 
     with open(AUDITOR_PROMPT_FILE, "r", encoding="utf-8") as f:
         auditor_instruction = f.read().strip()
 
-    # 构建审计请求
-    outputs_json = json.dumps(all_outputs, ensure_ascii=False, indent=2)
-    audit_prompt = f"请评估以下 AI 生成的词汇分析结果：\n\n{outputs_json}"
-
-    raw_response, audit_metadata = auditor_client.generate_with_instruction(
-        audit_prompt, instruction=auditor_instruction
-    )
-
-    if not raw_response:
-        print("❌ 审计器未返回有效结果。")
-        return {}
-
-    # 解析审计结果
-    try:
-        # 清洗 Markdown 包裹
-        text = raw_response.strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        elif text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-
+    scores_list = []
+    total_audit_prompt_tokens = 0
+    total_audit_completion_tokens = 0
+    
+    # 采用分批审计策略 (每批 5 个词)，防止超长文本导致模型超时
+    audit_batch_size = 5
+    for i in range(0, len(all_outputs), audit_batch_size):
+        batch_outputs = all_outputs[i:i + audit_batch_size]
+        # 优先尝试从提示词定义的 spelling 字段或通用字段提取显示
+        batch_words = [o.get("spelling") or o.get("word") or o.get("word_en") or "unknown" for o in batch_outputs]
+        print(f"  审计中... [{i + 1}-{min(i + audit_batch_size, len(all_outputs))}/{len(all_outputs)}] {', '.join(batch_words)}")
+        
+        outputs_json = json.dumps(batch_outputs, ensure_ascii=False, indent=2)
+        audit_prompt = f"请评估以下 {len(batch_outputs)} 个 AI 生成的词汇分析结果：\n\n{outputs_json}"
+        
+        start_time = time.time()
         try:
-            import json_repair
-            scores_list = json_repair.loads(text)
-        except ImportError:
-            scores_list = json.loads(text)
+            raw_response, audit_metadata = auditor_client.generate_with_instruction(
+                audit_prompt, instruction=auditor_instruction
+            )
+            duration = time.time() - start_time
+            
+            if not raw_response:
+                error_info = audit_metadata.get("error") or audit_metadata.get("finish_reason") or "空响应"
+                print(f"  ⚠️  本批次审计失败: {error_info}")
+                continue
 
-        if not isinstance(scores_list, list):
-            print("❌ 审计器返回格式错误（需为 JSON 数组）。")
-            return {}
-    except Exception as e:
-        print(f"❌ 审计结果解析失败: {e}")
-        print(f"   原始响应前 500 字符: {raw_response[:500]}")
+            # 解析本批次结果
+            text = raw_response.strip()
+            if text.startswith("```json"): text = text[7:]
+            elif text.startswith("```"): text = text[3:]
+            if text.endswith("```"): text = text[:-3]
+            
+            try:
+                import json_repair
+                batch_scores = json_repair.loads(text.strip())
+            except:
+                batch_scores = json.loads(text.strip())
+            
+            if isinstance(batch_scores, list):
+                scores_list.extend(batch_scores)
+            
+            # 统计审计 tokens
+            total_audit_prompt_tokens += audit_metadata.get("prompt_tokens", 0)
+            total_audit_completion_tokens += audit_metadata.get("completion_tokens", 0)
+
+            logger.info(
+                "收单分批审计响应",
+                module="prompt_dev_tool",
+                function="cmd_evaluate",
+                duration=duration,
+                batch_size=len(batch_outputs)
+            )
+        except Exception as e:
+            print(f"  ❌ 本批次审计异常: {e}")
+            continue
+
+    if not scores_list:
+        print("❌ 审计器未返回任何有效结果，无法计算分数。")
         return {}
 
     # Step 3: 汇总分数并保存到数据库
@@ -308,21 +350,27 @@ def cmd_evaluate(freeze_threshold: float = DEFAULT_FREEZE_THRESHOLD) -> dict:
     avg_score = weighted_sum / total_weight if total_weight > 0 else 0
 
     # 保存到数据库
+    # 汇总总 Token (生成 + 审计)
+    final_prompt_tokens = total_prompt_tokens + total_audit_prompt_tokens
+    final_completion_tokens = total_completion_tokens + total_audit_completion_tokens
+
     round_id = save_evaluation_round(
         version_hash=version_hash,
         ai_provider=AI_PROVIDER,
         model_name=auditor_model,
         test_words=words,
         avg_score=round(avg_score, 2),
-        prompt_tokens=total_prompt_tokens,
-        completion_tokens=total_completion_tokens,
+        prompt_tokens=final_prompt_tokens,
+        completion_tokens=final_completion_tokens,
+        gen_batch_size=batch_size,
+        audit_batch_size=audit_batch_size
     )
     save_module_scores(round_id, scores_list)
 
-    print(f"\n✅ 评估完成 (Round #{get_latest_round_number()}, 版本 {version_hash})")
+    print(f"\n✅ 评估完成 (Round #{round_id}, 版本 {version_hash})")
     print(f"   审计模型: {auditor_model}")
     print(f"   测试词数: {len(words)}")
-    print(f"   Token 消耗: prompt={total_prompt_tokens}, completion={total_completion_tokens}")
+    print(f"   Token 消耗: prompt={final_prompt_tokens}, completion={final_completion_tokens}")
 
     # 打印雷达图
     module_status = _compute_module_status(round_scores, freeze_threshold)
@@ -349,16 +397,61 @@ def cmd_evaluate(freeze_threshold: float = DEFAULT_FREEZE_THRESHOLD) -> dict:
     }
 
 
-def cmd_optimize(freeze_threshold: float = DEFAULT_FREEZE_THRESHOLD) -> bool:
+def cmd_optimize(freeze_threshold: float = DEFAULT_FREEZE_THRESHOLD, force_re_eval: bool = False) -> bool:
     """自动优化低分模块（冻结高分模块）。"""
-    # 先评估
-    eval_result = cmd_evaluate(freeze_threshold)
+    init_iteration_db()
+    dev_prompt = _load_dev_prompt()
+    if not dev_prompt: return False
+    version_hash = compute_version_hash(dev_prompt)
+
+    eval_result = None
+
+    # 优先尝试复用数据库中当前版本的最新评估结果
+    if not force_re_eval:
+        from core.prompt_iteration_db import _get_iteration_conn
+        conn = _get_iteration_conn()
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT id, version_hash, avg_score FROM evaluation_rounds 
+            WHERE version_hash = ? ORDER BY round_number DESC LIMIT 1
+        ''', (version_hash,))
+        row = cur.fetchone()
+        conn.close()
+
+        if row:
+            round_id = row[0]
+            print(f"\n♻️  发现当前版本 ({version_hash}) 已有评估记录 (Round #{round_id})，正在复用...")
+            
+            # 重新加载模块状态
+            module_scores_data = [] # 模拟 scores_list
+            conn = _get_iteration_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT module_name, score, feedback, fix_suggestion, test_word FROM module_scores WHERE round_id = ?", (round_id,))
+            round_scores = {}
+            for r in cur.fetchall():
+                field, score, feedback, fix, word = r
+                if field not in round_scores: round_scores[field] = []
+                round_scores[field].append(score)
+                module_scores_data.append({"field": field, "score": score, "feedback": feedback, "fix": fix, "word": word})
+            conn.close()
+            
+            eval_result = {
+                "round_id": round_id,
+                "module_status": _compute_module_status(round_scores, freeze_threshold),
+                "scores_list": module_scores_data,
+                "version_hash": version_hash
+            }
+
+    # 如果没有可复用的结果或强制重测，则运行评估
     if not eval_result:
-        return False
+        print("\n🔍 未找到近期评估记录或强制要求重测，正在启动全流程评估...")
+        eval_result = cmd_evaluate(freeze_threshold)
+        if not eval_result:
+            print("❌ 评估失败，无法继续优化。")
+            return False
 
     module_status = eval_result["module_status"]
     scores_list = eval_result["scores_list"]
-    version_hash = eval_result["version_hash"]
     round_id = eval_result["round_id"]
 
     # 判断哪些模块需要优化
@@ -366,8 +459,11 @@ def cmd_optimize(freeze_threshold: float = DEFAULT_FREEZE_THRESHOLD) -> bool:
     target_modules = [f for f, info in module_status.items() if info["status"] == "needs_improvement"]
 
     if not target_modules:
-        print("\n🎉 所有模块均已达标，无需优化！")
+        print(f"\n🎉 检查完成：所有模块评分均已达到阈值 {freeze_threshold}，无需优化！")
         return True
+
+    print(f"\n🔒 冻结模块 ({len(frozen_modules)}): {', '.join(frozen_modules) or '无'}")
+    print(f"🔧 待优化模块 ({len(target_modules)}): {', '.join(target_modules)}")
 
     print(f"\n🔒 冻结模块 ({len(frozen_modules)}): {', '.join(frozen_modules) or '无'}")
     print(f"🔧 待优化模块 ({len(target_modules)}): {', '.join(target_modules)}")
@@ -437,15 +533,42 @@ def cmd_optimize(freeze_threshold: float = DEFAULT_FREEZE_THRESHOLD) -> bool:
         optimizer_reasoning=optimizer_reasoning,
     )
 
-    print(f"\n✅ 优化完成！")
-    print(f"   旧版本: {version_hash}")
-    print(f"   新版本: {new_hash}")
-    print(f"   优化模块: {', '.join(target_modules)}")
-    print(f"   冻结模块: {', '.join(frozen_modules)}")
+    print(f"\n" + "✨" + "─" * 48)
+    print(f"✅ 优化完成！")
+    print(f"   旧版本 ID: {version_hash}")
+    print(f"   新版本 ID: {new_hash}")
+    print(f"   优化模块:  {', '.join(target_modules)}")
+    print(f"   冻结模块:  {', '.join(frozen_modules)}")
+    print("─" * 50)
 
     if optimizer_reasoning:
-        print(f"\n📝 优化器理由:")
-        print(f"   {optimizer_reasoning[:500]}")
+        print(f"\n📝 优化决策背后的思考:")
+        try:
+            import json_repair
+            reasoning_data = json_repair.loads(optimizer_reasoning)
+        except:
+            try:
+                reasoning_data = json.loads(optimizer_reasoning)
+            except:
+                reasoning_data = None
+
+        if isinstance(reasoning_data, dict) and "changes" in reasoning_data:
+            for idx, change in enumerate(reasoning_data["changes"], 1):
+                section = change.get("section", "未知")
+                what = change.get("what_changed", "未说明")
+                why = change.get("why", "未说明")
+                print(f"  {idx}. 【{section}】")
+                print(f"     🔧 改动: {what}")
+                print(f"     🎯 原因: {why}")
+            
+            preserved = reasoning_data.get("sections_preserved", [])
+            if preserved:
+                print(f"\n  🛡️  已完整保留的原生模块: {', '.join(preserved)}")
+        else:
+            # 备选方案：由于 JSON 解析失败，尝试格式化原始文本
+            print(f"   {optimizer_reasoning}")
+    
+    print("─" * 50 + "\n")
 
     return True
 
@@ -606,6 +729,71 @@ def cmd_accept():
     return True
 
 
+def cmd_diff(hash1: str = None, hash2: str = None):
+    """对比两个版本的 Prompt 差异。
+    若不传参数，默认对比 [生产版] vs [当前开发版]。
+    """
+    import difflib
+    
+    content1 = ""
+    label1 = ""
+    content2 = ""
+    label2 = ""
+
+    if not hash1:
+        # 默认：对比生产版 vs 开发版
+        if not os.path.exists(PROMPT_FILE):
+            print(f"❌ 生产版 Prompt 不存在: {PROMPT_FILE}")
+            return
+        with open(PROMPT_FILE, "r", encoding="utf-8") as f:
+            content1 = f.read().splitlines()
+        label1 = "PROD (gem_prompt.md)"
+        
+        dev_content = _load_dev_prompt()
+        if not dev_content: return
+        content2 = dev_content.splitlines()
+        label2 = "DEV (gem_prompt_iteration.md)"
+    else:
+        # 对比两个哈希版本
+        content1_raw = get_prompt_version_content(hash1)
+        if not content1_raw:
+            print(f"❌ 未找到版本 {hash1}")
+            return
+        content1 = content1_raw.splitlines()
+        label1 = f"Version {hash1}"
+        
+        if hash2:
+            content2_raw = get_prompt_version_content(hash2)
+            if not content2_raw:
+                print(f"❌ 未找到版本 {hash2}")
+                return
+            content2 = content2_raw.splitlines()
+            label2 = f"Version {hash2}"
+        else:
+            dev_content = _load_dev_prompt()
+            content2 = dev_content.splitlines()
+            label2 = "DEV (Current)"
+
+    diff = difflib.unified_diff(content1, content2, fromfile=label1, tofile=label2, lineterm="")
+    
+    has_diff = False
+    print("\n" + "🔍" + "─" * 48)
+    for line in diff:
+        has_diff = True
+        if line.startswith('+'):
+            print(f"\033[32m{line}\033[0m") # 绿色
+        elif line.startswith('-'):
+            print(f"\033[31m{line}\033[0m") # 红色
+        elif line.startswith('^'):
+            print(f"\033[36m{line}\033[0m") # 青色
+        else:
+            print(line)
+    
+    if not has_diff:
+        print("✅ 两个版本完全一致，没有差异。")
+    print("─" * 50 + "\n")
+
+
 def cmd_rollback(version_hash: str):
     """回滚到指定历史版本。"""
     # 从数据库查找
@@ -631,6 +819,54 @@ def cmd_rollback(version_hash: str):
     return True
 
 
+def cmd_reset():
+    """彻底重置当前用户的迭代数据库数据。"""
+    confirm = input("⚠️  确定要清空所有迭代历史、评分和缓存吗？(y/N): ").strip().lower()
+    if confirm != 'y':
+        print("取消重置。")
+        return
+        
+    from config import PROMPT_ITERATION_DB
+    from core.prompt_iteration_db import init_iteration_db
+    if os.path.exists(PROMPT_ITERATION_DB):
+        os.remove(PROMPT_ITERATION_DB)
+        print(f"✅ 已删除本地数据库: {PROMPT_ITERATION_DB}")
+    
+    init_iteration_db()
+    print("✨ 已重新初始化空的迭代数据库。")
+
+
+def cmd_clear_eval(version_hash: str = None):
+    """清除指定版本（默认为当前版本）的审计评分记录，以便重新评分。"""
+    if not version_hash:
+        dev_prompt = _load_dev_prompt()
+        if not dev_prompt: return
+        version_hash = compute_version_hash(dev_prompt)
+    
+    from core.prompt_iteration_db import _get_iteration_conn
+    conn = _get_iteration_conn()
+    try:
+        cur = conn.cursor()
+        # 1. 获取要删除的 round_id
+        cur.execute("SELECT id FROM evaluation_rounds WHERE version_hash = ?", (version_hash,))
+        round_ids = [row[0] for row in cur.fetchall()]
+        
+        if not round_ids:
+            print(f"ℹ️  未发现版本 {version_hash} 的评分记录，无需清理。")
+            return
+
+        # 2. 删除模块分数和轮次记录
+        for rid in round_ids:
+            cur.execute("DELETE FROM module_scores WHERE round_id = ?", (rid,))
+        cur.execute("DELETE FROM evaluation_rounds WHERE version_hash = ?", (version_hash,))
+        
+        conn.commit()
+        print(f"✅ 已成功清除版本 {version_hash} 的 {len(round_ids)} 条审计评分记录。")
+        print("💡 下次运行 optimize 时将强制重新审计，但会复用单词笔记缓存。")
+    finally:
+        conn.close()
+
+
 # ══════════════════════════════════════════════════
 # 菜单集成入口（由 main.py 调用）
 # ══════════════════════════════════════════════════
@@ -648,6 +884,9 @@ def run_interactive_menu():
         print("  5. [历史趋势] 查看模块分数变化")
         print("  6. [上线] 同步到生产环境 (含安全检查)")
         print("  7. [回滚] 恢复到指定历史版本")
+        print("  8. [差异] 对比生产版与当前开发版的不同")
+        print("  9. [重置] 清空所有迭代数据 (慎用)")
+        print("  10. [清理评分] 仅删除当前版本的审计结果")
         print("  0. ← 返回主菜单")
         print("-" * 35)
 
@@ -683,6 +922,12 @@ def run_interactive_menu():
             vh = input("请输入要回滚到的版本哈希: ").strip()
             if vh:
                 cmd_rollback(vh)
+        elif choice == "8":
+            cmd_diff()
+        elif choice == "9":
+            cmd_reset()
+        elif choice == "10":
+            cmd_clear_eval()
         else:
             print("❌ 无效选项。")
 
@@ -700,10 +945,12 @@ def main():
     eval_parser = subparsers.add_parser("evaluate", help="评估：运行 Benchmark 跑分")
     eval_parser.add_argument("--freeze-threshold", type=float, default=DEFAULT_FREEZE_THRESHOLD,
                              help=f"冻结阈值 (默认 {DEFAULT_FREEZE_THRESHOLD})")
+    eval_parser.add_argument("--force", action="store_true", help="强制从零生成（忽略中间缓存）")
 
     opt_parser = subparsers.add_parser("optimize", help="优化：自动改写低分模块")
     opt_parser.add_argument("--freeze-threshold", type=float, default=DEFAULT_FREEZE_THRESHOLD,
                             help=f"冻结阈值 (默认 {DEFAULT_FREEZE_THRESHOLD})")
+    opt_parser.add_argument("--force", action="store_true", help="强制重新评估（忽略已有评分记录）")
 
     loop_parser = subparsers.add_parser("loop", help="自动循环：连续迭代 N 轮")
     loop_parser.add_argument("--rounds", type=int, default=5, help="迭代轮数 (默认 5)")
@@ -712,6 +959,9 @@ def main():
 
     subparsers.add_parser("history", help="查看迭代历史趋势")
     subparsers.add_parser("accept", help="上线：同步到生产环境")
+    subparsers.add_parser("diff", help="对比差异 (默认对比生产版 vs 开发版)")
+    subparsers.add_parser("reset", help="重置迭代数据库 (清空所有历史数据)")
+    subparsers.add_parser("clear-eval", help="仅清除当前版本的评分记录 (保留生成缓存)")
 
     rollback_parser = subparsers.add_parser("rollback", help="回滚到指定版本")
     rollback_parser.add_argument("version_hash", help="版本哈希")
@@ -727,17 +977,23 @@ def main():
     if args.command == "init":
         cmd_init()
     elif args.command == "evaluate":
-        cmd_evaluate(args.freeze_threshold)
+        cmd_evaluate(args.freeze_threshold, force_re_gen=args.force)
     elif args.command == "optimize":
-        cmd_optimize(args.freeze_threshold)
+        cmd_optimize(args.freeze_threshold, force_re_eval=args.force)
     elif args.command == "loop":
         cmd_loop(rounds=args.rounds, freeze_threshold=args.freeze_threshold)
     elif args.command == "history":
         cmd_history()
     elif args.command == "accept":
         cmd_accept()
+    elif args.command == "diff":
+        cmd_diff()
     elif args.command == "rollback":
         cmd_rollback(args.version_hash)
+    elif args.command == "reset":
+        cmd_reset()
+    elif args.command == "clear-eval":
+        cmd_clear_eval()
     elif args.command == "menu":
         run_interactive_menu()
 

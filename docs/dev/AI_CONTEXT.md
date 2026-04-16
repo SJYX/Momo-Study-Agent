@@ -87,6 +87,10 @@
 24. 断点续传要求：所有具备后台同步能力的 Manager 类，在初始化时必须包含从数据库层面恢复（Resumption）未完成任务的逻辑，确保系统在意外中断后能自动收敛。
 25. Prompt 迭代安全：禁止在生产环境直接修改 `gem_prompt.md`；迭代优化必须在 `docs/prompts/dev/gem_prompt_iteration.md` 中进行，通过 `accept` 命令审计通过后方可上线。
 26. 审计基准：Prompt 审计器必须参考 `docs/prompts/evaluation/sample.md` 作为黄金标准（Gold Standard），评分标准以 `system_auditor_prompt.md` 为准。
+27. AI 错误可见性：审计器或优化器等后台 AI 调用失败时，必须在终端直接打印详细错误原因（含异常类型、超时时长、请求批次等），不能仅依赖 log 文件。
+28. 生成结果缓存：Prompt 迭代时的中间生成结果必须进行本地持久化缓存（`generation_cache`），缓存窗期默认为 24 小时。若 Prompt 内容（Hash）未变，应自动复用缓存。
+29. 长文本分批审计：为防止模型在处理大批量 JSON 输出时产生超时，审计器必须采用分批策略（默认每 5 个词一批）进行独立评分。
+30. 迭代参数追踪：所有生成和审计行为的 `batch_size` 必须同步记录到迭代数据库中，以便后续分析模型在不同批次下的稳定性。
 
 ### SHOULD（强建议，默认遵循）
 
