@@ -57,12 +57,16 @@
 | [score_prompt.md](prompts/score_prompt.md) | 迭代打分 Prompt |
 | [refine_prompt.md](prompts/refine_prompt.md) | 强力重炼 Prompt |
 | [original_prompt.md](prompts/original_prompt.md) | 原始 Prompt 存档 |
+| [system_auditor_prompt.md](prompts/evaluation/system_auditor_prompt.md) | 系统审计器 Prompt（模块化评分） |
+| [prompt_optimizer.md](prompts/dev/prompt_optimizer.md) | 提示词优化器 Prompt（局部重写） |
+| [sample.md](prompts/evaluation/sample.md) | 审计黄金标准参考样本 |
 
 ## 🔧 开发工具
 
 | 文档 | 说明 |
 |------|------|
 | [AUTO_SYNC.md](dev/AUTO_SYNC.md) | 自动同步机制说明 |
+| [PROMPT_OPTIMIZER_PLAN.md](dev/PROMPT_OPTIMIZER_PLAN.md) | Prompt 迭代优化系统实施计划 |
 
 ## 📖 快速查找指南
 

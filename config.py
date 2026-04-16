@@ -21,8 +21,20 @@ PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "gem_prompt.md")
 SCORE_PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "score_prompt.md")
 REFINE_PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "refine_prompt.md")
 
+# Prompt 迭代优化工具路径 (Prompt Iteration Dev Tool)
+PROMPT_DEV_DIR = os.path.join(BASE_DIR, "docs", "prompts", "dev")
+PROMPT_DEV_FILE = os.path.join(PROMPT_DEV_DIR, "gem_prompt_iteration.md")
+AUDITOR_PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "evaluation", "system_auditor_prompt.md")
+OPTIMIZER_PROMPT_FILE = os.path.join(PROMPT_DEV_DIR, "prompt_optimizer.md")
+BENCHMARK_DIR = os.path.join(DATA_DIR, "benchmark")
+PROMPT_ITERATION_DB = os.path.join(DATA_DIR, "prompt_iterations.db")
+PROMPT_HISTORY_DIR = os.path.join(BASE_DIR, "docs", "prompts", "history")
+
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PROFILES_DIR, exist_ok=True)
+os.makedirs(PROMPT_DEV_DIR, exist_ok=True)
+os.makedirs(BENCHMARK_DIR, exist_ok=True)
+os.makedirs(PROMPT_HISTORY_DIR, exist_ok=True)
 
 # 先加载全局 .env 以便交互向导可以读取共享配置（如 ADMIN_PASSWORD_HASH / Hub 配置）
 # 参考模板: .env.example

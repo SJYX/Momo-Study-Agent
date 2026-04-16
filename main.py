@@ -675,10 +675,11 @@ class StudyFlowManager:
 
             print(f"  2. [未来计划] 处理未来 7 天待学 ({len(future_task)} 个)")
             print(f"  3. [智能迭代] 优化薄弱词助记 (基于数据反馈)")
-            print(f"  4. [同步&退出] 保存所有数据并安全退出")
+            print(f"  4. [Prompt 实验室] 提示词迭代优化工具")
+            print(f"  5. [同步&退出] 保存所有数据并安全退出")
             print("-" * 35)
 
-            choice = self._wait_for_choice(["1", "2", "3", "4"])
+            choice = self._wait_for_choice(["1", "2", "3", "4", "5"])
             
             if choice == "1":
                 if not today_task:
@@ -715,6 +716,9 @@ class StudyFlowManager:
                 im.run_iteration()
                 self._trigger_post_run_sync()
             elif choice == "4":
+                from scripts.prompt_dev_tool import run_interactive_menu
+                run_interactive_menu()
+            elif choice == "5":
                 self.logger.info("正在执行最后的数据同步...")
                 self._run_sync_with_progress("用户数据库", sync_databases, dry_run=False)
                 self._run_sync_with_progress("中央 Hub", sync_hub_databases, dry_run=False)

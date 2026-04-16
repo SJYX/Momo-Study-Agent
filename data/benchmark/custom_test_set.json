@@ -1,0 +1,27 @@
+{
+  "description": "Custom benchmark test set for prompt iteration evaluation",
+  "version": "1.0",
+  "notes": "20 words covering: multi-meaning, near-synonyms, grammar traps, academic, rare usages",
+  "words": [
+    "run",
+    "set",
+    "minute",
+    "get",
+    "subject",
+    "break",
+    "charge",
+    "yield",
+    "address",
+    "mitigate",
+    "assure",
+    "ensure",
+    "comprise",
+    "constitute",
+    "elaborate",
+    "dispose",
+    "advocate",
+    "supplement",
+    "undermine",
+    "reconcile"
+  ]
+}

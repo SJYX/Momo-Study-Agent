@@ -43,6 +43,10 @@
 | `docs/prompts/score_prompt.md` | 迭代打分 Prompt |
 | `docs/prompts/refine_prompt.md` | 强力重炼 Prompt |
 | `scripts/init_hub.py` | 中央 Hub 数据库初始化工具（表结构 + 管理员创建） |
+| `scripts/prompt_dev_tool.py` | Prompt 迭代优化 CLI 工具（评估/优化/上线/回滚） |
+| `core/prompt_iteration_db.py` | Prompt 迭代追溯数据库（独立于用户生产库） |
+| `docs/prompts/evaluation/system_auditor_prompt.md` | 系统审计器 Prompt（模块化评分） |
+| `docs/prompts/dev/prompt_optimizer.md` | 提示词优化器 Prompt（局部重写） |
 
 ---
 
@@ -81,6 +85,8 @@
 22. 批量优先原则：在处理列表数据（如 AI 生成结果）时，必须优先使用 `save_ai_word_notes_batch` 等批量接口，严禁在热路径循环中调用单条写入函数。
 23. 同步闭环原则（物理打标）：异步同步任务必须通过数据库状态进行闭环管理。后台线程同步成功后，必须立即调用 `mark_note_synced` 更新 `sync_status = 1`。
 24. 断点续传要求：所有具备后台同步能力的 Manager 类，在初始化时必须包含从数据库层面恢复（Resumption）未完成任务的逻辑，确保系统在意外中断后能自动收敛。
+25. Prompt 迭代安全：禁止在生产环境直接修改 `gem_prompt.md`；迭代优化必须在 `docs/prompts/dev/gem_prompt_iteration.md` 中进行，通过 `accept` 命令审计通过后方可上线。
+26. 审计基准：Prompt 审计器必须参考 `docs/prompts/evaluation/sample.md` 作为黄金标准（Gold Standard），评分标准以 `system_auditor_prompt.md` 为准。
 
 ### SHOULD（强建议，默认遵循）
 
