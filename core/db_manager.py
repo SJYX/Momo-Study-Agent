@@ -1142,6 +1142,13 @@ def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> 
     target_status = int(sync_status)
     target_status_text = _status_text(target_status)
 
+    def _format_error(error_obj: Exception) -> str:
+        err_type = type(error_obj).__name__
+        err_detail = repr(error_obj)
+        if isinstance(error_obj, KeyError) and str(error_obj).strip("'\"") == "result":
+            return f"{err_type}: {err_detail}（可能是云端驱动返回结构异常，未包含 result 字段）"
+        return f"{err_type}: {err_detail}"
+
     def _update_local_only(target_path: str) -> bool:
         try:
             local_conn = _get_local_conn(target_path)
@@ -1165,7 +1172,7 @@ def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> 
             return False
         except Exception as local_error:
             _debug_log(
-                f"本地回退写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={local_error}"
+                f"本地回退写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={_format_error(local_error)}"
             )
             return False
 
@@ -1198,7 +1205,7 @@ def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> 
                 )
             except Exception as local_sync_error:
                 _debug_log(
-                    f"本地缓存库写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={local_sync_error}"
+                    f"本地缓存库写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={_format_error(local_sync_error)}"
                 )
         
         conn.close()
@@ -1217,10 +1224,14 @@ def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> 
 
     except Exception as e:
         _debug_log(
-            f"主库写入失败，准备回退本地: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={e}"
+            f"主库写入失败，准备回退本地: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={_format_error(e)}"
         )
         # resumption 依赖本地队列状态；云端异常时回退更新本地，避免重复续传。
-        return _update_local_only(db_path or DB_PATH)
+        fallback_ok = _update_local_only(db_path or DB_PATH)
+        _debug_log(
+            f"主库失败后的本地回退结果: voc_id={voc_id}, sync_status={target_status}, fallback={'success' if fallback_ok else 'failed'}"
+        )
+        return fallback_ok
 
 
 def mark_note_synced(voc_id: str, db_path: str = None) -> bool:

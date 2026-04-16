@@ -108,6 +108,7 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 - `sync_status = 1`：云端释义与本地一致
 - `sync_status = 2`：云端释义存在，但与本地内容不一致
 
+
 **笔记初始化时的状态设置规则：**
 
 - `content_origin = 'ai_generated'` → 默认 `sync_status = 0`（新生成，需要同步）
@@ -116,11 +117,15 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 - `content_origin = 'history_reused'` → 默认 `sync_status = 1`（历史数据已同步）
 - `content_origin = 'legacy_unknown'` → 默认 `sync_status = 0`（旧数据，待审）
 
+
 **断点续传和队列过滤：**
 
 - `get_unsynced_notes()` **只返回** `sync_status = 0 AND content_origin = 'ai_generated'` 的笔记
 - 这确保了来自社区/多库查询命中的笔记不会被重复加入待同步队列（它们已标记为 sync_status=1）
 - co_origin 笔记实际上已经存在于云端，无需当前用户再同步
+
+
+- 入队顺序约束：`main.py` 在生成结果处理中必须先调用批量落库，再将任务加入收尾同步队列；禁止“先入队后落库”，避免后台线程先消费导致误报“未检索到记录”。
 
 **状态更新和持久化：**
 

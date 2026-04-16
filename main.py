@@ -22,7 +22,7 @@ from core.db_manager import (
     init_db, is_processed, mark_processed,
     save_ai_word_note, save_ai_batch, clean_for_maimemo,
     get_file_hash, archive_prompt_file, log_progress_snapshots, sync_databases,
-    get_processed_ids_in_batch, get_unsynced_notes, get_local_word_note, mark_note_synced, set_note_sync_status,
+    get_processed_ids_in_batch, get_unsynced_notes, get_local_word_note, get_word_note, mark_note_synced, set_note_sync_status,
 
     # 用户会话管理
     save_user_session, save_user_info_to_hub, save_user_credentials_to_hub, update_user_login_time,
@@ -494,7 +494,13 @@ class StudyFlowManager:
                 # 出队前二次校验当前数据库状态，避免启动快照过期。
                 current_note = get_local_word_note(voc_id)
                 if not current_note:
-                    self.logger.warning(f"⚠️ {spell} 当前数据库中已不存在，跳过同步", module="main")
+                    # 本地未命中时再查一次主连接（可能是云端连接），避免误判。
+                    current_note = get_word_note(voc_id)
+                if not current_note:
+                    self.logger.warning(
+                        f"⚠️ {spell} 未在数据库中检索到记录（可能尚未落库或已删除），本次跳过同步",
+                        module="main",
+                    )
                     continue
 
                 current_status = int(current_note.get("sync_status", 0) or 0)
@@ -1309,6 +1315,7 @@ class StudyFlowManager:
     def _process_results(self, batch_words, ai_results, current_start, total, batch_id):
         ai_map = {item["spelling"].lower(): item for item in ai_results}
         notes_to_save = []
+        pending_sync_items = []
         
         # ⚠️ 不再使用跨 AI 调用的共享连接。
         # 原因：Turso/libsql 使用 Hrana 流式协议，流有服务端存活时限。
@@ -1346,14 +1353,30 @@ class StudyFlowManager:
                     self._mark_processed_with_cache(vid, spell)
                 else:
                     brief = clean_for_maimemo(payload.get('basic_meanings', ''))
-                    self.logger.info(f"[{num}/{total}] ✅ {spell} 已加入收尾同步队列")
-                    self._queue_maimemo_sync(vid, spell, brief, ["雅思"])
+                    pending_sync_items.append({
+                        "num": num,
+                        "total": total,
+                        "voc_id": vid,
+                        "spell": spell,
+                        "brief": brief,
+                        "tags": ["雅思"],
+                    })
             else:
                 self.logger.warning(f"{spell} 结果缺失")
 
+        saved_ok = True
         if notes_to_save:
             from core.db_manager import save_ai_word_notes_batch
-            save_ai_word_notes_batch(notes_to_save)
+            saved_ok = save_ai_word_notes_batch(notes_to_save)
+
+        if pending_sync_items:
+            if not saved_ok:
+                self.logger.warning("⚠️ 批量落库失败，已取消本批次收尾同步入队", module="main")
+                return
+
+            for item in pending_sync_items:
+                self.logger.info(f"[{item['num']}/{item['total']}] ✅ {item['spell']} 已加入收尾同步队列")
+                self._queue_maimemo_sync(item["voc_id"], item["spell"], item["brief"], item["tags"])
 
 if __name__ == "__main__":
     # 解析命令行参数
