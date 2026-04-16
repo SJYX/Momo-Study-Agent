@@ -11,13 +11,18 @@ def mock_flow(mocker):
 
     # Mock API 和 Client
     mocker.patch("main.MaiMemoAPI")
-    mocker.patch("main.GeminiClient")
+    mocker.patch("core.gemini_client.GeminiClient")
     # Mock DB 操作避免写真实文件
     mocker.patch("main.init_db")
     mocker.patch("main.is_processed", return_value=False)
+    mocker.patch("main.get_processed_ids_in_batch", return_value=[])
+    mocker.patch("main.log_progress_snapshots", return_value=0)
     mocker.patch("main.mark_processed")
+    mocker.patch("main.get_local_word_note", return_value={"sync_status": 0})
     mocker.patch("main.save_ai_word_note")
     mocker.patch("main.save_ai_batch")
+    mocker.patch("core.db_manager.save_ai_word_notes_batch")
+    mocker.patch("core.db_manager.find_words_in_community_batch", return_value={})
     mocker.patch("main.StudyFlowManager._wait_for_choice", side_effect=["1", "4"])
     # Mock time
     mocker.patch("time.sleep", return_value=None)
@@ -59,9 +64,10 @@ def test_flow_dry_run_respect(mock_flow, mocker):
     # 验证：Maimemo 同步由于 DRY_RUN 不应被调用
     assert not mock_flow.momo.sync_interpretation.called
     
-    # 验证：本地状态仍然被保存和标记了（这是规则允许的）
-    from main import save_ai_word_note, mark_processed
-    assert save_ai_word_note.called
+    # 验证：本地状态仍然通过批量保存并被标记了（这是规则允许的）
+    from main import mark_processed
+    from core.db_manager import save_ai_word_notes_batch
+    assert save_ai_word_notes_batch.called
     assert mark_processed.called
 
 def test_flow_partial_ai_failure(mock_flow, mocker):
@@ -96,12 +102,12 @@ def test_process_results_preserves_original_meanings_source(mock_flow, mocker):
     mock_flow.momo.list_interpretations.return_value = {"success": True, "data": {"interpretations": []}}
     mock_flow.momo.sync_interpretation.return_value = True
 
-    save_patch = mocker.patch("main.save_ai_word_note")
+    save_patch = mocker.patch("core.db_manager.save_ai_word_notes_batch")
     batch_words = [{"voc_id": "v1", "voc_spelling": "word1"}]
     ai_results = [{"spelling": "word1", "basic_meanings": "m1"}]
 
     mock_flow._process_results(batch_words, ai_results, 0, 1, "batch-1")
 
     assert save_patch.called
-    _, kwargs = save_patch.call_args
-    assert kwargs["metadata"]["original_meanings"] is None
+    notes_data = save_patch.call_args.args[0]
+    assert notes_data[0]["metadata"]["original_meanings"] is None

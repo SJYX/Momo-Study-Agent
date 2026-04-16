@@ -10,26 +10,24 @@ import threading
 import queue
 import socket
 import getpass
+import signal
 from unittest.mock import Mock
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta
 from core.maimemo_api import MaiMemoAPI
 from core.mimo_client import MimoClient
-from core.gemini_client import GeminiClient
 from core.iteration_manager import IterationManager
 from core.db_manager import (
     # 核心数据库操作
     init_db, is_processed, mark_processed,
     save_ai_word_note, save_ai_batch, clean_for_maimemo,
     get_file_hash, archive_prompt_file, log_progress_snapshots, sync_databases,
-    get_processed_ids_in_batch, get_unsynced_notes, mark_note_synced,
+    get_processed_ids_in_batch, get_unsynced_notes, get_local_word_note, mark_note_synced, set_note_sync_status,
 
     # 用户会话管理
     save_user_session, save_user_info_to_hub, save_user_credentials_to_hub, update_user_login_time,
 
     # 用户认证和权限
-    is_admin_username, get_user_by_username,
-
     # Hub 管理功能（保留供将来使用）
     update_user_stats, get_user_from_hub, list_hub_users, list_admin_logs,
     set_user_status,
@@ -46,6 +44,15 @@ from config import (
 from core.logger import setup_logger
 from core.log_config import get_full_config
 from core.log_archiver import auto_archive_logs
+
+
+def _disable_signal_wakeup_fd() -> None:
+    """关闭 wakeup fd，避免 Windows Ctrl+C 退出时打印信号唤醒噪音。"""
+    try:
+        if hasattr(signal, "set_wakeup_fd"):
+            signal.set_wakeup_fd(-1)
+    except Exception:
+        pass
 
 class StudyFlowManager:
     """墨墨背单词 AI 助记主流程管理器。"""
@@ -74,6 +81,10 @@ class StudyFlowManager:
         self.user_id = user_id
         self.logger.set_context(session_id=session_id)
 
+        self._menu_ui_lock = threading.Lock()
+        self._menu_active = False
+        self._menu_status_line = ""
+
         self.logger.info(
             f"启动墨墨背单词AI助记系统",
             environment=self.environment,
@@ -84,66 +95,103 @@ class StudyFlowManager:
 
         self.momo = MaiMemoAPI(MOMO_TOKEN)
         self.sync_queue = queue.Queue()
+        self.conflict_sync_queue = queue.Queue()
+        self._post_sync_thread = None
+        self._post_sync_result = None
+        self._startup_sync_thread = None
+        # 方案3：短期判重缓存（session + TTL）
+        self._session_processed_ids = set()
+        self._processed_cache = {}
+        self._processed_cache_ttl_seconds = int(os.getenv("PROCESSED_CACHE_TTL_SECONDS", "900"))
+        self._processed_cache_max_entries = int(os.getenv("PROCESSED_CACHE_MAX_ENTRIES", "50000"))
+        self._sync_duration_history = {
+            "用户数据库": [],
+            "中央 Hub 数据库": [],
+        }
+        self._sync_duration_history_limit = int(os.getenv("SYNC_DURATION_HISTORY_LIMIT", "12"))
         self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
         self.sync_worker_thread.start()
         self._sync_worker_stopped = False
+
+        init_db()
 
         # 断点续传（通过数据库状态恢复同步队列）
         unsynced = get_unsynced_notes()
         if unsynced:
             self.logger.info(f"💾 [Resumption] 发现 {len(unsynced)} 条遗留待同步笔记，正在载入队列...")
+            preview = [
+                {
+                    "voc_id": str(note.get("voc_id", "")),
+                    "spelling": note.get("spelling", ""),
+                    "content_origin": note.get("content_origin", ""),
+                    "sync_status": 0,
+                    "updated_at": note.get("updated_at", ""),
+                }
+                for note in unsynced[:10]
+            ]
+            self.logger.debug(
+                f"[Resumption] 待读取快照预览(最多10条): {json.dumps(preview, ensure_ascii=False)}",
+                module="main",
+            )
             for note in unsynced:
+                self.logger.debug(
+                    f"[Resumption] 入队 voc_id={note.get('voc_id')} spelling={note.get('spelling')} origin={note.get('content_origin')} status=0",
+                    module="main",
+                )
                 self._queue_maimemo_sync(
                     note['voc_id'], 
                     note['spelling'], 
                     clean_for_maimemo(note['basic_meanings']), 
                     ["雅思"] # 遗留同步默认打标为雅思
                 )
-
-        init_db()
-
-        self.hub_user = get_user_by_username(ACTIVE_USER)
-        self.is_admin = is_admin_username(ACTIVE_USER)
+        else:
+            self.logger.debug("[Resumption] 当前没有遗留待同步笔记", module="main")
 
         # 确保 Hub 逻辑有序初始化，防止 FOREIGN KEY 约束失败
         try:
             # 交互式处理 Hub 配置缺失
             current_force_cloud = FORCE_CLOUD_MODE
             if current_force_cloud and not is_hub_configured():
-                print("\n" + "!"*60)
-                print("⚠️  [配置缺失] 强制云端模式已开启，但未发现中央 Hub 数据库凭据。")
-                print("这通常是因为 .env 中缺少 TURSO_HUB_DB_URL 和 TURSO_HUB_AUTH_TOKEN。")
-                print("!"*60)
-                print("  1. 立即输入 Hub 配置 (保存到本会话)")
-                print("  2. 本次会话临时降级为本地模式")
-                print("  3. 退出并打印修复清单")
-                
-                h_choice = input("\n请选择处理方式 (1-3): ").strip()
+                self._ui_notice(
+                    "配置缺失",
+                    "强制云端模式已开启，但未发现中央 Hub 数据库凭据。\n"
+                    "通常是 .env 缺少 TURSO_HUB_DB_URL 和 TURSO_HUB_AUTH_TOKEN。\n\n"
+                    "1) 立即输入 Hub 配置 (仅本会话)\n"
+                    "2) 本次会话临时降级为本地模式\n"
+                    "3) 退出并查看修复清单",
+                    border_style="red",
+                )
+
+                h_choice = self._ask_text("请选择处理方式 (1-3)", default="1")
                 if h_choice == "1":
-                    hub_url = input("请输入 TURSO_HUB_DB_URL: ").strip()
-                    hub_token = getpass.getpass("请输入 TURSO_HUB_AUTH_TOKEN: ").strip()
+                    hub_url = self._ask_text("请输入 TURSO_HUB_DB_URL")
+                    hub_token = self._ask_secret("请输入 TURSO_HUB_AUTH_TOKEN")
                     if hub_url and hub_token:
                         os.environ['TURSO_HUB_DB_URL'] = hub_url
                         os.environ['TURSO_HUB_AUTH_TOKEN'] = hub_token
-                        print("✅ 已应用临时配置。")
+                        self._ui_print("✅ 已应用临时配置。", style="green")
                         
-                        save_ch = input("是否将此配置永久保存到 .env？(Y/N, 默认 N): ").strip().lower()
+                        save_ch = self._ask_text("是否将此配置永久保存到 .env？(Y/N, 默认 N)", default="N").lower()
                         if save_ch == 'y':
                             from core.config_wizard import ConfigWizard
                             wiz = ConfigWizard(PROFILES_DIR)
                             wiz._save_hub_config_to_global_env(hub_url, hub_token)
-                            print("✅ 配置已写入 .env 文件。")
+                            self._ui_print("✅ 配置已写入 .env 文件。", style="green")
                     else:
-                        print("❌ Hub 配置不完整，程序退出。")
-                        print("修复建议:")
-                        print("  1) 在 .env 中补全 TURSO_HUB_DB_URL 与 TURSO_HUB_AUTH_TOKEN")
-                        print("  2) 或临时选择选项 2 以本地模式运行")
+                        self._ui_notice(
+                            "配置不完整",
+                            "Hub 配置不完整，程序退出。\n\n"
+                            "修复建议:\n"
+                            "1) 在 .env 中补全 TURSO_HUB_DB_URL 与 TURSO_HUB_AUTH_TOKEN\n"
+                            "2) 或临时选择选项 2 以本地模式运行",
+                            border_style="red",
+                        )
                         raise SystemExit(1)
                 elif h_choice == "2":
                     os.environ['FORCE_CLOUD_MODE'] = 'False'
-                    print("✅ 已临时关闭强制模式（仅当前进程生效）。")
+                    self._ui_print("✅ 已临时关闭强制模式（仅当前进程生效）。", style="green")
                     
-                    save_ch = input("是否永久关闭强制模式（即：默认本地运行）？(Y/N, 默认 N): ").strip().lower()
+                    save_ch = self._ask_text("是否永久关闭强制模式（即默认本地运行）？(Y/N, 默认 N)", default="N").lower()
                     if save_ch == 'y':
                         try:
                             # 导入基本路径以寻找 .env
@@ -158,19 +206,30 @@ class StudyFlowManager:
                             lines.append('FORCE_CLOUD_MODE="False"')
                             with open(env_path, 'w', encoding='utf-8') as f:
                                 f.write('\n'.join(lines) + '\n')
-                            print("✅ 已将 FORCE_CLOUD_MODE=False 写入 .env 文件。")
+                            self._ui_print("✅ 已将 FORCE_CLOUD_MODE=False 写入 .env 文件。", style="green")
                         except Exception as ex:
-                            print(f"❌ 保存失败: {ex}")
+                            self._ui_print(f"❌ 保存失败: {ex}", style="red")
                 else:
-                    print("\n已退出。修复清单:")
-                    print("  - 在全局 .env 中配置 TURSO_HUB_DB_URL")
-                    print("  - 在全局 .env 中配置 TURSO_HUB_AUTH_TOKEN")
-                    print("  - 运行体检: python tools/preflight_check.py --user " + ACTIVE_USER)
+                    self._ui_notice(
+                        "已退出",
+                        "修复清单:\n"
+                        "- 在全局 .env 中配置 TURSO_HUB_DB_URL\n"
+                        "- 在全局 .env 中配置 TURSO_HUB_AUTH_TOKEN\n"
+                        f"- 运行体检: python tools/preflight_check.py --user {ACTIVE_USER}",
+                        border_style="yellow",
+                    )
                     raise SystemExit(1)
 
-            # 复用数据库连接以提高性能
-            from core.db_manager import _get_hub_conn
+            # 复用数据库连接以提高性能，并顺手读取当前用户角色，避免重复握手
+            from core.db_manager import _get_hub_conn, _row_to_dict
             hub_conn = _get_hub_conn()
+
+            hub_cur = hub_conn.cursor()
+            hub_cur.execute('SELECT * FROM users WHERE lower(username) = ?', (ACTIVE_USER.strip().lower(),))
+            existing_hub_row = hub_cur.fetchone()
+            self.hub_user = _row_to_dict(hub_cur, existing_hub_row) if existing_hub_row else None
+            existing_role = (self.hub_user or {}).get('role', '')
+            self.is_admin = ACTIVE_USER.strip().lower() == 'asher' or existing_role.lower() == 'admin'
 
             # 1. 优先确保用户信息存在（users 表是 parent）
             save_user_info_to_hub(
@@ -262,13 +321,6 @@ class StudyFlowManager:
             self.logger.info(f"📝 [Prompt] {p_type.capitalize()} 版本: {h}", module="main", function="__init__")
         
         self.prompt_version = self.prompt_hashes["main"]
-        self._post_sync_thread = None
-        self._startup_sync_thread = None
-        # 方案3：短期判重缓存（session + TTL）
-        self._session_processed_ids = set()
-        self._processed_cache = {}
-        self._processed_cache_ttl_seconds = int(os.getenv("PROCESSED_CACHE_TTL_SECONDS", "900"))
-        self._processed_cache_max_entries = int(os.getenv("PROCESSED_CACHE_MAX_ENTRIES", "50000"))
 
         # B. 初始化 AI 客户端
         if AI_PROVIDER == "mimo":
@@ -276,6 +328,7 @@ class StudyFlowManager:
             self.ai_client = MimoClient(MIMO_API_KEY)
             self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (小米 Mimo)")
         else:
+            from core.gemini_client import GeminiClient
             if not GEMINI_API_KEY: raise ValueError("GEMINI_API_KEY required")
             self.ai_client = GeminiClient(GEMINI_API_KEY)
             self.logger.info(f"🤖 AI 模型: {AI_PROVIDER} (Google Gemini)")
@@ -365,6 +418,50 @@ class StudyFlowManager:
             self._processed_cache.clear()
             self._session_processed_ids.clear()
 
+    def _canonical_sync_label(self, label: str) -> str:
+        text = str(label or "")
+        if "用户数据库" in text:
+            return "用户数据库"
+        if "中央 Hub" in text:
+            return "中央 Hub 数据库"
+        return ""
+
+    def _record_sync_duration(self, label: str, duration_ms: int, status: str = "ok") -> None:
+        canonical = self._canonical_sync_label(label)
+        if not canonical:
+            return
+        if duration_ms <= 0:
+            return
+
+        normalized_status = str(status or "ok").lower()
+        if normalized_status in {"error", "failed", "fail", "skipped"}:
+            return
+
+        bucket = self._sync_duration_history.get(canonical)
+        if bucket is None:
+            return
+        bucket.append(int(duration_ms))
+        overflow = len(bucket) - self._sync_duration_history_limit
+        if overflow > 0:
+            del bucket[0:overflow]
+
+    def _estimate_exit_sync_timeout_s(self, default_timeout_s: float) -> float:
+        def _p80(values):
+            if not values:
+                return 0
+            ordered = sorted(int(v) for v in values)
+            idx = max(0, int((len(ordered) - 1) * 0.8))
+            return ordered[idx]
+
+        user_p80 = _p80(self._sync_duration_history.get("用户数据库", []))
+        hub_p80 = _p80(self._sync_duration_history.get("中央 Hub 数据库", []))
+        if user_p80 <= 0 and hub_p80 <= 0:
+            return default_timeout_s
+
+        estimated_total_s = ((user_p80 + hub_p80) / 1000.0) * 1.2 + 1.0
+        bounded_timeout_s = max(default_timeout_s, min(45.0, estimated_total_s))
+        return round(bounded_timeout_s, 1)
+
     def _queue_maimemo_sync(self, voc_id, spell, interpretation, tags):
         if DRY_RUN:
             return
@@ -374,6 +471,13 @@ class StudyFlowManager:
             "interpretation": interpretation,
             "tags": list(tags or []),
         })
+
+    def _defer_maimemo_conflict(self, item, reason: str):
+        self.conflict_sync_queue.put(item)
+        self.logger.warning(
+            f"⚠️ {item.get('spell', item.get('voc_id', 'unknown'))} 已进入冲突队列: {reason}",
+            module="main",
+        )
 
     def _maimemo_sync_worker(self):
         while True:
@@ -387,19 +491,84 @@ class StudyFlowManager:
                 interpretation = item["interpretation"]
                 tags = item["tags"] or ["雅思"]
 
+                # 出队前二次校验当前数据库状态，避免启动快照过期。
+                current_note = get_local_word_note(voc_id)
+                if not current_note:
+                    self.logger.warning(f"⚠️ {spell} 当前数据库中已不存在，跳过同步", module="main")
+                    continue
+
+                current_status = int(current_note.get("sync_status", 0) or 0)
+                status_desc = {
+                    0: "待同步",
+                    1: "已同步（墨墨已创建释义与本地一致）",
+                    2: "冲突（墨墨已创建释义与本地不一致）",
+                }.get(current_status, "未知状态")
+                if current_status == 2:
+                    self._defer_maimemo_conflict(item, "当前状态已是冲突态")
+                    continue
+                if current_status != 0:
+                    self.logger.info(
+                        f"ℹ️ {spell} 当前sync_status={current_status}（{status_desc}），跳过重复同步",
+                        module="main",
+                    )
+                    continue
+
                 try:
-                    sync_success = self.momo.sync_interpretation(
+                    sync_result = self.momo.sync_interpretation(
                         voc_id,
                         interpretation,
                         tags=tags,
                         spell=spell,
                         force_create=True,
+                        local_reference=interpretation,
+                        return_details=True,
                     )
-                    if sync_success:
-                        self._mark_processed_with_cache(voc_id, spell)
-                        mark_note_synced(voc_id) # 物理数据库打标
+                    sync_status = 1
+                    if isinstance(sync_result, dict):
+                        sync_status = int(sync_result.get("sync_status", 0) or 0)
+                    elif sync_result:
+                        sync_status = 1
                     else:
-                        self.logger.error(f"❌ {spell} 后台同步至墨墨失败", module="main")
+                        sync_status = 0
+                    sync_reason = sync_result.get("reason", "") if isinstance(sync_result, dict) else ""
+
+                    if sync_status == 1:
+                        try:
+                            self._mark_processed_with_cache(voc_id, spell)
+                        except Exception as cache_error:
+                            self.logger.warning(f"⚠️ {spell} 已同步，但处理缓存更新失败: {cache_error}", module="main")
+                        try:
+                            ok = mark_note_synced(voc_id)  # 物理数据库打标，不再被缓存异常阻断
+                            if not ok:
+                                self.logger.warning(
+                                    f"⚠️ {spell} 数据库状态写回未命中：目标sync_status=1（已同步）",
+                                    module="main",
+                                )
+                        except Exception as sync_error:
+                            self.logger.warning(f"⚠️ {spell} 同步状态写回失败: {sync_error}", module="main")
+                    elif sync_status == 2:
+                        try:
+                            self._mark_processed_with_cache(voc_id, spell)
+                        except Exception as cache_error:
+                            self.logger.warning(f"⚠️ {spell} 冲突态已写回，但处理缓存更新失败: {cache_error}", module="main")
+                        try:
+                            ok = set_note_sync_status(voc_id, 2)
+                            if not ok:
+                                self.logger.warning(
+                                    f"⚠️ {spell} 数据库状态写回未命中：目标sync_status=2（冲突）",
+                                    module="main",
+                                )
+                        except Exception as sync_error:
+                            self.logger.warning(f"⚠️ {spell} 冲突状态写回失败: {sync_error}", module="main")
+                        self.logger.warning(f"⚠️ {spell} 云端释义与数据库内容不一致，已标记为冲突", module="main")
+                    else:
+                        if sync_reason:
+                            self.logger.warning(
+                                f"⚠️ {spell} 墨墨同步未完成: {sync_reason}",
+                                module="main",
+                            )
+                        else:
+                            self.logger.warning(f"⚠️ {spell} 墨墨同步未完成", module="main")
                 except Exception as e:
                     self.logger.error(f"❌ {spell} 后台同步异常: {e}", module="main")
             finally:
@@ -433,8 +602,9 @@ class StudyFlowManager:
             ch = msvcrt.getch()
             if ord(ch) == 27:
                 print("\n" + "!"*30)
-                self.logger.warning(" 检测到 Esc 键，正在中断并保存...")
+                print("检测到 Esc 键，正在中断并保存...")
                 print("!"*30)
+                self.logger.warning(" 检测到 Esc 键，正在中断并保存...")
                 raise KeyboardInterrupt
             return ch
         return None
@@ -451,6 +621,76 @@ class StudyFlowManager:
                 # 统一交给顶层异常处理，避免在被中断的终端句柄上二次输出导致 OSError。
                 raise KeyboardInterrupt
 
+    def _render_main_menu(self, today_count: int, future_count: int, status_line: str = ""):
+        print("\n" + "=" * 35)
+        print(f"👤 用户: {ACTIVE_USER} | 模式选择")
+        print("=" * 35)
+        print(f"  1. [今日任务] 处理今日待复习 ({today_count} 个)")
+        if today_count == 0:
+            print("     提示: 当前无今日待复习，可能需要先在墨墨 App 初始化计划")
+        print(f"  2. [未来计划] 处理未来 7 天待学 ({future_count} 个)")
+        print("  3. [智能迭代] 优化薄弱词助记 (基于数据反馈)")
+        print("  4. [同步&退出] 保存所有数据并安全退出")
+        print("-" * 35)
+        if status_line:
+            print(f"[状态] {status_line}")
+
+    def _ui_print(self, message: str, style: str = ""):
+        del style
+        print(str(message or ""))
+
+    def _ui_notice(self, title: str, message: str, border_style: str = "cyan"):
+        del border_style
+        print(f"\n[{title}]\n{message}")
+
+    def _ask_text(self, prompt_text: str, default: str = "") -> str:
+        if default:
+            raw = input(f"{prompt_text} (默认: {default}): ").strip()
+            return raw or default
+        return input(f"{prompt_text}: ").strip()
+
+    def _ask_secret(self, prompt_text: str) -> str:
+        return getpass.getpass(f"{prompt_text}: ").strip()
+
+    def _clear_screen(self):
+        return
+
+    def _set_menu_status_line(self, message: str):
+        """在菜单输入期间更新底部状态栏文本，不打断菜单区域。"""
+        with self._menu_ui_lock:
+            self._menu_status_line = str(message or "").strip()
+
+    def _consume_menu_status_line(self) -> str:
+        with self._menu_ui_lock:
+            text = self._menu_status_line
+            self._menu_status_line = ""
+            return text
+
+    def _is_menu_active(self) -> bool:
+        with self._menu_ui_lock:
+            return bool(self._menu_active)
+
+    def _set_menu_active(self, active: bool):
+        with self._menu_ui_lock:
+            self._menu_active = bool(active)
+
+    def _install_menu_log_buffering(self):
+        return
+
+    def _append_ui_log(self, level: str, message: str) -> None:
+        del level, message
+        return
+
+    def _should_buffer_log(self, level: str) -> bool:
+        del level
+        return False
+
+    def _flush_buffered_logs(self):
+        return
+
+    def _render_log_panel(self):
+        return
+
     def _render_sync_progress(self, label: str, progress: dict):
         """在 CLI 中渲染同步进度，不影响核心同步逻辑。"""
         current = int(progress.get("current", 0) or 0)
@@ -463,11 +703,12 @@ class StudyFlowManager:
             ratio = min(max(current / total, 0.0), 1.0)
             filled = int(width * ratio)
             bar = "#" * filled + "-" * (width - filled)
-            print(f"\r🔄 [{label}] [{bar}] {current}/{total} {message}", end="", flush=True)
+            text = f"🔄 [{label}] [{bar}] {current}/{total} {message}"
+            print(f"\r{text}", end="", flush=True)
             if stage in {"finalize", "error"} or current >= total:
                 print()
         else:
-            print(f"\n🔄 [{label}] {message}")
+            self._ui_print(f"🔄 [{label}] {message}", style="cyan")
 
     def _run_sync_with_progress(self, label: str, sync_func, dry_run: bool = False) -> dict:
         """前台同步时显示阶段进度；若函数不支持回调则自动降级。"""
@@ -492,12 +733,13 @@ class StudyFlowManager:
             result = sync_func(dry_run=False, progress_callback=_on_progress)
         except TypeError:
             # 兼容测试中的简化 mock 或旧签名
-            print(f"🔄 [{label}] 开始同步...")
+            self._ui_print(f"🔄 [{label}] 开始同步...", style="cyan")
             result = sync_func(dry_run=False)
-            print(f"✅ [{label}] 同步完成")
+            self._ui_print(f"✅ [{label}] 同步完成", style="green")
 
         duration = time.time() - start_time
         duration_ms = int(duration * 1000)
+        self._record_sync_duration(label, duration_ms, (result or {}).get("status", "ok"))
         self.logger.info(
             f"⏱️ [{label}] 同步耗时 {duration_ms}ms",
             duration=duration,
@@ -531,6 +773,7 @@ class StudyFlowManager:
 
         duration = time.time() - start_time
         duration_ms = int(duration * 1000)
+        self._record_sync_duration(label, duration_ms, (result or {}).get("status", "ok"))
         self.logger.info(
             f"⏱️ [{label}] 后台同步耗时 {duration_ms}ms",
             duration=duration,
@@ -551,20 +794,32 @@ class StudyFlowManager:
         sync_reason = stats.get('reason', '')
 
         if sync_status == 'skipped':
-            self.logger.warning(f"⚠️ 未执行云端一致性检查: {sync_reason}")
+            msg = f"⚠️ 未执行云端一致性检查: {sync_reason}"
+            if not interactive and self._is_menu_active():
+                self._set_menu_status_line(msg)
+            else:
+                self.logger.warning(msg)
             self.data_merged = False
             return
 
         if sync_status == 'error':
-            self.logger.warning(f"⚠️ 云端一致性检查失败: {sync_reason}")
+            msg = f"⚠️ 云端一致性检查失败: {sync_reason}"
+            if not interactive and self._is_menu_active():
+                self._set_menu_status_line(msg)
+            else:
+                self.logger.warning(msg)
             self.data_merged = False
             return
 
         if un_up > 0 or un_down > 0:
             self.data_merged = False
             if interactive:
-                print(f"\n[!] 发现同步差异: 云端有 {un_down} 条新数据，本地有 {un_up} 条待上传。")
-                ch = input("是否立即进行合并？(Y/N, 默认 Y): ").strip().lower()
+                self._ui_notice(
+                    "发现同步差异",
+                    f"云端有 {un_down} 条新数据，本地有 {un_up} 条待上传。",
+                    border_style="yellow",
+                )
+                ch = self._ask_text("是否立即进行合并？(Y/N, 默认 Y)", default="Y").lower()
                 if ch != 'n':
                     self.logger.info("🚩 正在同步数据库，请稍候...")
                     self._run_sync_with_progress("用户数据库", sync_databases, dry_run=False)
@@ -574,14 +829,20 @@ class StudyFlowManager:
                 else:
                     self.logger.warning("用户选择跳过同步，可能导致本地运行基于旧数据。")
             else:
-                self.logger.warning(
-                    f"⚠️ 后台一致性检查发现差异: 云端新增 {un_down} 条，本地待上传 {un_up} 条。"
-                    "可在菜单选择 4 执行同步。",
-                    module="main"
+                msg = (
+                    f"后台检查完成：云端新增 {un_down} 条，本地待上传 {un_up} 条。"
+                    "可在菜单选择 4 执行同步。"
                 )
+                if self._is_menu_active():
+                    self._set_menu_status_line(msg)
+                else:
+                    self.logger.warning(f"⚠️ {msg}", module="main")
             return
 
-        self.logger.info("✅ 云端与本地数据一致，无需同步。")
+        if not interactive and self._is_menu_active():
+            self._set_menu_status_line("后台检查完成：云端与本地数据一致。")
+        else:
+            self.logger.info("✅ 云端与本地数据一致，无需同步。")
         self.data_merged = True
 
     def run(self):
@@ -639,18 +900,22 @@ class StudyFlowManager:
                     "status": "error",
                     "reason": "missing-startup-sync-result",
                 }
-                self.logger.info(
-                    f"⏱️ 启动一致性检查后台完成，总耗时 {total_startup_check_ms}ms",
-                    duration=total_startup_check_ms / 1000,
-                    duration_ms=total_startup_check_ms,
-                    module="main",
-                    function="run",
-                )
+                if self._is_menu_active():
+                    self._set_menu_status_line(f"后台一致性检查完成，耗时 {total_startup_check_ms}ms")
+                else:
+                    self.logger.info(
+                        f"⏱️ 启动一致性检查后台完成，总耗时 {total_startup_check_ms}ms",
+                        duration=total_startup_check_ms / 1000,
+                        duration_ms=total_startup_check_ms,
+                        module="main",
+                        function="run",
+                    )
                 self._apply_startup_sync_result(stats, interactive=False)
 
             threading.Thread(target=_finalize_startup_check, daemon=True).start()
 
         while True:
+            self._set_menu_active(True)
             # 获取今日任务
             res_today = self.momo.get_today_items(limit=500)
             today_task = res_today.get("data", {}).get("today_items", []) if res_today else []
@@ -664,21 +929,12 @@ class StudyFlowManager:
             )
             future_task = res_future.get("data", {}).get("records", []) if res_future else []
 
-            print("\n" + "="*35)
-            print(f"👤 用户: {ACTIVE_USER} | 模式选择")
-            print("="*35)
-
-            # 今日任务入口始终显示，避免菜单序号在不同状态下跳变
-            print(f"  1. [今日任务] 处理今日待复习 ({len(today_task)} 个)")
-            if len(today_task) == 0:
-                print("     提示: 当前无今日待复习，可能需要先在墨墨 App 初始化计划")
-
-            print(f"  2. [未来计划] 处理未来 7 天待学 ({len(future_task)} 个)")
-            print(f"  3. [智能迭代] 优化薄弱词助记 (基于数据反馈)")
-            print(f"  4. [同步&退出] 保存所有数据并安全退出")
-            print("-" * 35)
+            status_line = self._consume_menu_status_line()
+            self._render_main_menu(len(today_task), len(future_task), status_line)
 
             choice = self._wait_for_choice(["1", "2", "3", "4"])
+            self._set_menu_active(False)
+            self._flush_buffered_logs()
             
             if choice == "1":
                 if not today_task:
@@ -688,9 +944,8 @@ class StudyFlowManager:
                 self._trigger_post_run_sync()
             elif choice == "2":
                 # 允许用户自定义预习天数
-                print("\n" + "-"*35)
                 try:
-                    days_input = input("请输入预习天数 (建议 1-14 天, 直接回车默认为 7): ").strip()
+                    days_input = self._ask_text("请输入预习天数 (建议 1-14 天, 回车默认为 7)", default="7")
                     if not days_input:
                         days = 7
                         selected_task = future_task # 复用初始获取的 7 天数据
@@ -709,7 +964,7 @@ class StudyFlowManager:
                     self._process_word_list(selected_task, f"未来 {days} 天计划")
                     self._trigger_post_run_sync()
                 except ValueError:
-                    print("❌ 输入无效，必须是正整数。回到主菜单。")
+                    self._ui_print("❌ 输入无效，必须是正整数。回到主菜单。", style="red")
             elif choice == "3":
                 im = IterationManager(self.ai_client, self.momo, self.logger)
                 im.run_iteration()
@@ -730,14 +985,50 @@ class StudyFlowManager:
         self.logger.info("🔁 正在后台将最新进度推送到云端...", module="main")
         def _sync_all_in_background():
             start_time = time.time()
+            overall_status = "success"
+            task_summaries = []
+
+            def _merge_status(next_status: str) -> None:
+                nonlocal overall_status
+                rank = {"success": 0, "partial": 1, "failed": 2}
+                if rank.get(str(next_status).lower(), 2) > rank.get(overall_status, 0):
+                    overall_status = str(next_status).lower()
+
             try:
-                self._run_sync_with_stage_logs("后台-用户数据库", sync_databases)
-                self._run_sync_with_stage_logs("后台-中央 Hub", sync_hub_databases)
+                user_result = self._run_sync_with_stage_logs("后台-用户数据库", sync_databases)
+                user_status = str((user_result or {}).get("status", "ok")).lower()
+                if user_status in {"error", "failed", "fail"}:
+                    _merge_status("failed")
+                    task_summaries.append("后台-用户数据库: failed")
+                elif user_status in {"timeout", "partial"}:
+                    _merge_status("partial")
+                    task_summaries.append("后台-用户数据库: partial")
+                else:
+                    task_summaries.append("后台-用户数据库: ok")
+
+                hub_result = self._run_sync_with_stage_logs("后台-中央 Hub", sync_hub_databases)
+                hub_status = str((hub_result or {}).get("status", "ok")).lower()
+                if hub_status in {"error", "failed", "fail"}:
+                    _merge_status("failed")
+                    task_summaries.append("后台-中央 Hub: failed")
+                elif hub_status in {"timeout", "partial"}:
+                    _merge_status("partial")
+                    task_summaries.append("后台-中央 Hub: partial")
+                else:
+                    task_summaries.append("后台-中央 Hub: ok")
+
                 # 后台同步后仅失效负缓存，避免重复查库且保证远端新增可见
-                self._invalidate_processed_cache(only_negative=True)
+                if overall_status == "success":
+                    self._invalidate_processed_cache(only_negative=True)
             except Exception as e:
+                _merge_status("failed")
+                task_summaries.append(f"后台同步失败: {e}")
                 self.logger.warning(f"后台同步失败: {e}", module="main")
             finally:
+                self._post_sync_result = {
+                    "overall_status": overall_status,
+                    "task_summaries": task_summaries,
+                }
                 duration = time.time() - start_time
                 duration_ms = int(duration * 1000)
                 self.logger.info(
@@ -829,11 +1120,23 @@ class StudyFlowManager:
                 if voc_id in cached_notes:
                     community_note, source_db = cached_notes[voc_id]
                     self.logger.info(f"  🏆 [Cache Hit] {spell} - {source_db}")
+                    if source_db == "当前数据库":
+                        content_origin = "current_db_reused"
+                        content_source_scope = "local"
+                    elif source_db == "云端数据库":
+                        content_origin = "community_reused"
+                        content_source_scope = "cloud"
+                    else:
+                        content_origin = "history_reused"
+                        content_source_scope = "local_history"
                     cached_words.append({
                         'voc_id': voc_id,
                         'spell': spell,
                         'community_note': community_note,
-                        'source_db': source_db
+                        'source_db': source_db,
+                        'content_origin': content_origin,
+                        'content_source_db': source_db,
+                        'content_source_scope': content_source_scope,
                     })
                 else:
                     pending_words.append(w)
@@ -846,7 +1149,11 @@ class StudyFlowManager:
                 notes_data = [{
                     'voc_id': item['voc_id'],
                     'payload': item['community_note'],
-                    'metadata': {}
+                    'metadata': {
+                        'content_origin': item['content_origin'],
+                        'content_source_db': item['content_source_db'],
+                        'content_source_scope': item['content_source_scope'],
+                    }
                 } for item in cached_words]
                 save_ai_word_notes_batch(notes_data)
 
@@ -900,6 +1207,13 @@ class StudyFlowManager:
                 self.logger.debug(
                     f"批次 {idx + 1} 入队 ({start_pos + len(batch)}/{total_pending}) | "
                     f"size={len(batch)} | workers={ai_workers}"
+                )
+                self.logger.debug(
+                    f"批次 {idx + 1} 调用 AI 生成 | words={','.join(batch_spells)}",
+                    module="main",
+                    batch_index=idx + 1,
+                    batch_size=len(batch),
+                    words=",".join(batch_spells),
                 )
                 start_ts = time.time()
                 fut = executor.submit(self.ai_client.generate_mnemonics, batch_spells)
@@ -1018,6 +1332,9 @@ class StudyFlowManager:
                 meta = {
                     "batch_id": batch_id,
                     "original_meanings": original_meanings,
+                    "content_origin": "ai_generated",
+                    "content_source_db": None,
+                    "content_source_scope": None,
                     "maimemo_context": {
                         "review_count": w.get("review_count"),
                         "short_term_familiarity": w.get("short_term_familiarity")
@@ -1085,6 +1402,8 @@ PowerShell 示例:
 
     args = parser.parse_args()
 
+    _disable_signal_wakeup_fd()
+
     # 移除可能会导致 stdin 阻塞的强制编码重配置
     manager = None
     try:
@@ -1111,24 +1430,21 @@ PowerShell 示例:
 
         manager.run()
     except KeyboardInterrupt:
-        # Ctrl+C 场景优先复用现有 logger，避免中断时临时导入触发额外噪声。
         if manager and getattr(manager, "logger", None):
             try:
                 manager.logger.info("用户手动退出", module="main")
             except Exception:
-                print("用户手动退出")
-        else:
-            print("用户手动退出")
+                pass
     except Exception as e:
         # 崩溃路径优先复用现有 logger，避免额外导入副作用。
         if manager and getattr(manager, "logger", None):
             try:
                 manager.logger.error(f"意外崩溃: {e}", exc_info=True, module="main")
             except Exception as log_error:
-                print(f"程序崩溃: {e}")
-                print(f"日志系统也出现错误: {log_error}")
+                print(f"程序崩溃: {e}", file=sys.stderr)
+                print(f"日志系统也出现错误: {log_error}", file=sys.stderr)
         else:
-            print(f"程序崩溃: {e}")
+            print(f"程序崩溃: {e}", file=sys.stderr)
     finally:
         if manager:
             try:
@@ -1146,51 +1462,139 @@ PowerShell 示例:
         try:
             logger = manager.logger if manager and getattr(manager, "logger", None) else None
             exit_sync_timeout_s = float(os.getenv("EXIT_SYNC_TIMEOUT_S", "8.0"))
+            if manager and hasattr(manager, "_estimate_exit_sync_timeout_s"):
+                adaptive_timeout_s = manager._estimate_exit_sync_timeout_s(exit_sync_timeout_s)
+                if adaptive_timeout_s != exit_sync_timeout_s and logger:
+                    logger.info(
+                        f"退出同步超时已按近期耗时动态调整为 {adaptive_timeout_s:.1f}s（基础值 {exit_sync_timeout_s:.1f}s）",
+                        module="main"
+                    )
+                exit_sync_timeout_s = adaptive_timeout_s
             if logger:
                 logger.info("正在执行退出前自动同步...", module="main")
-            else:
-                print("[INFO] 正在执行退出前自动同步...")
 
             deadline = time.time() + exit_sync_timeout_s
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = {
-                    "用户数据库": executor.submit(sync_databases, dry_run=False),
-                    "中央 Hub 数据库": executor.submit(sync_hub_databases, dry_run=False),
-                }
+            sync_state = {"overall_status": "success"}
+            status_rank = {"success": 0, "partial": 1, "failed": 2}
+            task_summaries = []
+            skip_explicit_sync = False
 
-                for label, future in futures.items():
+            def _merge_status(next_status: str) -> None:
+                current_status = sync_state["overall_status"]
+                if status_rank.get(next_status, 2) > status_rank.get(current_status, 0):
+                    sync_state["overall_status"] = next_status
+
+            def _run_exit_sync(label: str, sync_func, result_bucket: dict):
+                try:
+                    result_bucket["stats"] = sync_func(dry_run=False)
+                except Exception as sync_error:
+                    result_bucket["error"] = sync_error
+
+            sync_jobs = [
+                ("用户数据库", sync_databases),
+                ("中央 Hub 数据库", sync_hub_databases),
+            ]
+            sync_threads = []
+            sync_results = {}
+
+            existing_post_sync_thread = getattr(manager, "_post_sync_thread", None) if manager else None
+            if existing_post_sync_thread and existing_post_sync_thread.is_alive():
+                remaining = max(0.1, deadline - time.time())
+                if logger:
+                    logger.info("检测到后台同步任务仍在执行，优先复用并等待其完成...", module="main")
+                existing_post_sync_thread.join(timeout=remaining)
+                if existing_post_sync_thread.is_alive():
+                    _merge_status("partial")
+                    task_summaries.append("后台同步任务: timeout")
+                    skip_explicit_sync = True
+                    if logger:
+                        logger.warning(
+                            f"后台同步任务等待超时（总超时 {exit_sync_timeout_s:.1f}s），跳过重复发起退出同步。",
+                            module="main"
+                        )
+                else:
+                    post_sync_result = getattr(manager, "_post_sync_result", None) if manager else None
+                    if isinstance(post_sync_result, dict):
+                        reused_status = str(post_sync_result.get("overall_status", "success")).lower()
+                        if reused_status == "failed":
+                            _merge_status("failed")
+                        elif reused_status == "partial":
+                            _merge_status("partial")
+                        task_summaries.extend(post_sync_result.get("task_summaries", []))
+                    else:
+                        task_summaries.append("后台同步任务: reused-ok")
+                    skip_explicit_sync = True
+                    if logger:
+                        logger.info("后台同步任务已完成，跳过重复发起退出同步。", module="main")
+
+            if not skip_explicit_sync:
+                for label, sync_func in sync_jobs:
+                    bucket = {}
+                    sync_results[label] = bucket
+                    thread = threading.Thread(
+                        target=_run_exit_sync,
+                        args=(label, sync_func, bucket),
+                        daemon=True,
+                        name=f"exit-sync-{label}",
+                    )
+                    thread.start()
+                    sync_threads.append((label, thread, bucket))
+
+                for label, thread, bucket in sync_threads:
                     remaining = max(0.1, deadline - time.time())
-                    try:
-                        stats = future.result(timeout=remaining)
-                        if logger:
-                            logger.info(
-                                f"{label}同步完成: 上传 {stats.get('upload', 0)}, 下载 {stats.get('download', 0)}",
-                                duration_ms=stats.get('duration_ms'),
-                                module="main",
-                            )
-                        else:
-                            print(f"[INFO] {label}同步完成: 上传 {stats.get('upload', 0)}, 下载 {stats.get('download', 0)}")
-                    except FuturesTimeoutError:
+                    thread.join(timeout=remaining)
+
+                    if thread.is_alive():
                         msg = f"{label}同步超时，已跳过等待（总超时 {exit_sync_timeout_s:.1f}s）"
                         if logger:
                             logger.warning(msg, module="main")
-                        else:
-                            print(f"[WARN] {msg}")
-                    except Exception as sync_error:
+                        _merge_status("partial")
+                        task_summaries.append(f"{label}: timeout")
+                        continue
+
+                    sync_error = bucket.get("error")
+                    if sync_error is not None:
                         msg = f"{label}同步失败: {sync_error}"
                         if logger:
                             logger.warning(msg, module="main")
-                        else:
-                            print(f"[WARN] {msg}")
+                        _merge_status("failed")
+                        task_summaries.append(f"{label}: failed")
+                        continue
 
-            print("\n✅ 数据已自动同步到云端。")
+                    stats = bucket.get("stats") or {}
+                    sync_status = str(stats.get("status", "ok")).lower()
+                    if sync_status in {"error", "failed", "fail"}:
+                        _merge_status("failed")
+                        task_summaries.append(f"{label}: failed")
+                    elif sync_status in {"timeout", "partial"}:
+                        _merge_status("partial")
+                        task_summaries.append(f"{label}: partial")
+                    else:
+                        task_summaries.append(f"{label}: ok")
+                    if logger:
+                        logger.info(
+                            f"{label}同步完成: 上传 {stats.get('upload', 0)}, 下载 {stats.get('download', 0)}",
+                            duration_ms=stats.get('duration_ms'),
+                            module="main",
+                        )
+
+            if logger:
+                overall_status = sync_state["overall_status"]
+                if overall_status == "success":
+                    logger.info("数据已自动同步到云端。", module="main")
+                elif overall_status == "partial":
+                    logger.warning("已触发退出同步，但存在未完成任务；下次启动将继续补偿同步。", module="main")
+                else:
+                    logger.warning("退出同步未完成，请稍后手动执行同步或下次启动自动补偿。", module="main")
+
+                if task_summaries:
+                    logger.info(f"退出同步摘要: {'; '.join(task_summaries)}", module="main")
         except Exception as e:
             if manager and getattr(manager, "logger", None):
                 try:
                     manager.logger.warning(f"退出时自动同步失败: {e}", module="main")
                 except Exception:
-                    print(f"\n⚠️  自动同步失败: {e}")
-            else:
-                print(f"\n⚠️  自动同步失败: {e}")
+                    pass
 
-        print("\n程序已安全退出。")
+        if logger:
+            logger.info("程序已安全退出。", module="main")

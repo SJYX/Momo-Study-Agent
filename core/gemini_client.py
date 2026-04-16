@@ -15,6 +15,15 @@ class GeminiClient:
         self.prompt_file = prompt_file or PROMPT_FILE
         self.model_name = model_name or GEMINI_MODEL
 
+    def close(self):
+        """统一释放底层 HTTP 资源。"""
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
     def _load_instruction(self) -> str:
         if not os.path.exists(self.prompt_file):
             return "你是一个高效的单词助记助手，请分析给定的单词。"

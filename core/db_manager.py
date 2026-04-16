@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64
+import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64, threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Tuple, List, Any, Callable
 import requests
@@ -48,6 +48,8 @@ _mgmt_token_validation_cache = {"expire_at": 0.0, "valid": None, "reason": ""}
 _HUB_INIT_STATE_TTL_SECONDS = int(os.getenv("HUB_INIT_STATE_TTL_SECONDS", "600"))
 _HUB_SCHEMA_VERSION = os.getenv("HUB_SCHEMA_VERSION", "1")
 _hub_init_state_cache = {"expire_at": 0.0, "state": None}
+_throttled_log_state = {}
+_throttled_log_lock = threading.Lock()
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 def _hash_fingerprint(raw: str) -> str:
@@ -213,6 +215,20 @@ def _debug_log(msg, start_time=None, level="DEBUG", module="db_manager"):
     except Exception:
         # 如果日志失败，忽略错误，避免影响主流程
         pass
+
+
+def _debug_log_throttled(key: str, msg: str, interval_seconds: float = 30.0, start_time=None, level="DEBUG", module="db_manager"):
+    """按 key 对高频日志进行限频，减少重复刷屏。"""
+    now = time.time()
+    should_log = False
+    with _throttled_log_lock:
+        last_ts = float(_throttled_log_state.get(key, 0.0) or 0.0)
+        if now - last_ts >= float(interval_seconds):
+            _throttled_log_state[key] = now
+            should_log = True
+
+    if should_log:
+        _debug_log(msg, start_time=start_time, level=level, module=module)
 
 def _read_profile_cloud_config(profile_env_path: str) -> Optional[Dict[str, str]]:
     """Read TURSO DB URL/token from a profile env file without mutating process env."""
@@ -673,7 +689,11 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> A
         last_error = None
         for attempt in range(max_retries):
             try:
-                _debug_log(f"尝试连接云端数据库 (第 {attempt + 1}/{max_retries} 次)")
+                _debug_log_throttled(
+                    key=f"cloud-connect-attempt:{'test' if is_test else 'main'}",
+                    msg=f"尝试连接云端数据库 (第 {attempt + 1}/{max_retries} 次)",
+                    interval_seconds=30.0,
+                )
                 return _get_cloud_conn(url, token)
             except Exception as e:
                 last_error = e
@@ -718,7 +738,7 @@ def _create_tables(cur, skip_migrations=False):
     """
     # 创建表（如果不存在）
     cur.execute('CREATE TABLE IF NOT EXISTS processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
-    cur.execute('CREATE TABLE IF NOT EXISTS ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, ielts_focus TEXT, collocations TEXT, traps TEXT, synonyms TEXT, discrimination TEXT, example_sentences TEXT, memory_aid TEXT, word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, sync_status INTEGER DEFAULT 0, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cur.execute('CREATE TABLE IF NOT EXISTS ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, ielts_focus TEXT, collocations TEXT, traps TEXT, synonyms TEXT, discrimination TEXT, example_sentences TEXT, memory_aid TEXT, word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, content_origin TEXT, content_source_db TEXT, content_source_scope TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, sync_status INTEGER DEFAULT 0, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     cur.execute('CREATE TABLE IF NOT EXISTS ai_word_iterations (id INTEGER PRIMARY KEY AUTOINCREMENT, voc_id TEXT NOT NULL, spelling TEXT, stage TEXT, it_level INTEGER, score REAL, justification TEXT, tags TEXT, refined_content TEXT, candidate_notes TEXT, raw_response TEXT, maimemo_context TEXT, batch_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(voc_id) REFERENCES ai_word_notes(voc_id))')
     cur.execute('CREATE TABLE IF NOT EXISTS word_progress_history (id INTEGER PRIMARY KEY AUTOINCREMENT, voc_id TEXT, familiarity_short REAL, familiarity_long REAL, review_count INTEGER, it_level INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     # 添加联合唯一约束，避免历史记录冗余同步
@@ -738,6 +758,9 @@ def _create_tables(cur, skip_migrations=False):
         ('ai_word_notes', 'batch_id',           'TEXT'),
         ('ai_word_notes', 'original_meanings',  'TEXT'),
         ('ai_word_notes', 'maimemo_context',    'TEXT'),
+        ('ai_word_notes', 'content_origin',     'TEXT'),
+        ('ai_word_notes', 'content_source_db',  'TEXT'),
+        ('ai_word_notes', 'content_source_scope','TEXT'),
         ('ai_word_notes', 'raw_full_text',      'TEXT'),
         ('ai_word_notes', 'word_ratings',       'TEXT'),
         ('ai_word_notes', 'sync_status',        'INTEGER DEFAULT 0'),
@@ -782,6 +805,12 @@ def _create_tables(cur, skip_migrations=False):
     try:
         cur.execute("UPDATE ai_word_notes SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
         cur.execute("UPDATE processed_words SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
+
+        # 为历史笔记补齐来源字段：
+        # - 有 batch_id 的旧记录，默认视为历史 AI 生成
+        # - 没有任何来源线索的旧记录，标记为 legacy_unknown
+        cur.execute("UPDATE ai_word_notes SET content_origin = 'ai_generated', content_source_scope = 'ai_batch' WHERE content_origin IS NULL AND batch_id IS NOT NULL")
+        cur.execute("UPDATE ai_word_notes SET content_origin = 'legacy_unknown', content_source_scope = 'legacy' WHERE content_origin IS NULL AND batch_id IS NULL")
     except: pass
 
 @log_performance(lambda: ContextLogger(logging.getLogger(__name__)))
@@ -919,8 +948,11 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata:
     original_meanings = metadata.get('original_meanings') if metadata else None
     if not original_meanings:
         original_meanings = payload.get('original_meanings')
-    args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, 0, get_timestamp_with_tz())
-    sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    content_origin = (metadata.get('content_origin') if metadata else None) or payload.get('content_origin') or 'ai_generated'
+    content_source_db = (metadata.get('content_source_db') if metadata else None) or payload.get('content_source_db')
+    content_source_scope = (metadata.get('content_source_scope') if metadata else None) or payload.get('content_source_scope')
+    args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, content_origin, content_source_db, content_source_scope, 0, get_timestamp_with_tz())
+    sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, content_source_scope, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
     def _do_sql(cn):
         cur = cn.cursor(); cur.execute(sql, args)
@@ -974,7 +1006,7 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
             need_close = True
 
         cur = target_conn.cursor()
-        sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, content_source_scope, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
         batch_args = []
         for data in notes_data:
@@ -991,7 +1023,22 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
             original_meanings = metadata.get('original_meanings') if metadata else None
             if not original_meanings:
                 original_meanings = payload.get('original_meanings')
-            args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, 0, get_timestamp_with_tz())
+            content_origin = (metadata.get('content_origin') if metadata else None) or payload.get('content_origin') or 'ai_generated'
+            content_source_db = (metadata.get('content_source_db') if metadata else None) or payload.get('content_source_db')
+            content_source_scope = (metadata.get('content_source_scope') if metadata else None) or payload.get('content_source_scope')
+            
+            # 根据 content_origin 决定初始同步状态
+            # - ai_generated: 需要同步 (sync_status=0)
+            # - 其他: 已从云端/历史查到，无须当前用户同步 (sync_status=1)
+            if content_origin == 'ai_generated':
+                initial_sync_status = 0
+            elif content_origin in ('community_reused', 'current_db_reused', 'history_reused'):
+                initial_sync_status = 1  # 这些内容已在云端，标记为已同步
+            else:
+                # legacy_unknown 或其他未知来源，保守处理为待同步
+                initial_sync_status = 0
+            
+            args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, content_origin, content_source_db, content_source_scope, initial_sync_status, get_timestamp_with_tz())
             batch_args.append(args)
 
         cur.executemany(sql, batch_args)
@@ -1073,40 +1120,124 @@ def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, meta
         _debug_log(f"保存迭代历史失败: {e}")
         return False
 
-def mark_note_synced(voc_id: str, db_path: str = None) -> bool:
+def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> bool:
     """
-    标记指定单词笔记为已同步（sync_status = 1）
+    更新指定单词笔记的同步状态。
+
+    sync_status 约定：
+    - 0: 云端未检出自己的释义
+    - 1: 云端释义与数据库内容一致
+    - 2: 云端已存在自己的释义，但内容与数据库不一致
     
-    Args:
-        voc_id: 单词 ID
-        db_path: 数据库路径（可选）
-    
-    Returns:
-        是否标记成功
+    在双库模式（云端+本地缓存）下，确保两库同步。
     """
+    def _status_text(value: int) -> str:
+        mapping = {
+            0: "待同步（未检出墨墨已创建释义）",
+            1: "已同步（墨墨已创建释义与本地一致）",
+            2: "冲突（墨墨已创建释义与本地不一致）",
+        }
+        return mapping.get(int(value), "未知状态")
+
+    target_status = int(sync_status)
+    target_status_text = _status_text(target_status)
+
+    def _update_local_only(target_path: str) -> bool:
+        try:
+            local_conn = _get_local_conn(target_path)
+            local_cur = local_conn.cursor()
+            local_cur.execute(
+                'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?',
+                (target_status, get_timestamp_with_tz(), str(voc_id))
+            )
+            local_conn.commit()
+            updated = local_cur.rowcount
+            local_conn.close()
+            if updated > 0:
+                _debug_log(
+                    f"本地回退写入成功: sync_status={target_status}（{target_status_text}）"
+                )
+                return True
+            _debug_log(
+                f"本地回退写入未命中记录: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）",
+                level="WARNING",
+            )
+            return False
+        except Exception as local_error:
+            _debug_log(
+                f"本地回退写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={local_error}"
+            )
+            return False
+
     try:
         path = db_path or DB_PATH
         conn = _get_conn(path)
         cur = conn.cursor()
-        
+
         cur.execute(
-            'UPDATE ai_word_notes SET sync_status = 1, updated_at = ? WHERE voc_id = ?',
-            (get_timestamp_with_tz(), str(voc_id))
+            'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?',
+            (target_status, get_timestamp_with_tz(), str(voc_id))
         )
-        
+
         conn.commit()
+        updated = cur.rowcount
+        
+        # 如果是云端连接，同时更新本地缓存库，确保双库一致
+        if _is_cloud_connection(conn):
+            try:
+                local_conn = _get_local_conn(path)
+                local_cur = local_conn.cursor()
+                local_cur.execute(
+                    'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?',
+                    (target_status, get_timestamp_with_tz(), str(voc_id))
+                )
+                local_conn.commit()
+                local_conn.close()
+                _debug_log(
+                    f"本地缓存库写入成功: sync_status={target_status}（{target_status_text}）"
+                )
+            except Exception as local_sync_error:
+                _debug_log(
+                    f"本地缓存库写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={local_sync_error}"
+                )
+        
         conn.close()
-        
-        _debug_log(f"笔记已标记为已同步: {voc_id}")
+
+        if updated <= 0:
+            _debug_log(
+                f"主库写入未命中记录: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）",
+                level="WARNING",
+            )
+            return False
+
+        _debug_log(
+            f"主库写入成功: sync_status={target_status}（{target_status_text}）"
+        )
         return True
-        
+
     except Exception as e:
-        _debug_log(f"标记笔记为已同步失败: {e}")
-        return False
+        _debug_log(
+            f"主库写入失败，准备回退本地: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={e}"
+        )
+        # resumption 依赖本地队列状态；云端异常时回退更新本地，避免重复续传。
+        return _update_local_only(db_path or DB_PATH)
+
+
+def mark_note_synced(voc_id: str, db_path: str = None) -> bool:
+    """标记指定单词笔记为已同步（sync_status = 1）"""
+    return set_note_sync_status(voc_id, 1, db_path=db_path)
+
+
+def mark_note_sync_conflict(voc_id: str, db_path: str = None) -> bool:
+    """标记指定单词笔记为冲突状态（sync_status = 2）"""
+    return set_note_sync_status(voc_id, 2, db_path=db_path)
 
 def get_unsynced_notes(db_path: str = None) -> list:
     """
-    获取所有未同步的笔记（sync_status = 0）
+    获取所有未同步的笔记（sync_status = 0 AND content_origin = 'ai_generated'）
+    
+    仅返回当前用户需要同步的笔记。对于 co_origin 笔记（社区/历史/多库查询命中），
+    已在初始保存时标记为 sync_status=1，不再进入此队列。
     
     Args:
         db_path: 数据库路径（可选）
@@ -1116,16 +1247,17 @@ def get_unsynced_notes(db_path: str = None) -> list:
     """
     try:
         path = db_path or DB_PATH
-        conn = _get_conn(path)
+        # 断点续传只需要读取本地队列状态，避免在云端模式下误走远程连接。
+        conn = _get_local_conn(path)
         cur = conn.cursor()
         
         cur.execute(
             '''SELECT voc_id, spelling, basic_meanings, ielts_focus, collocations, 
                       traps, synonyms, discrimination, example_sentences, memory_aid, 
                       word_ratings, raw_full_text, batch_id, original_meanings, 
-                      maimemo_context, it_level, updated_at
+                      maimemo_context, it_level, updated_at, content_origin
                FROM ai_word_notes 
-               WHERE sync_status = 0 
+               WHERE sync_status = 0 AND content_origin = 'ai_generated'
                ORDER BY updated_at ASC'''
         )
         
@@ -1135,7 +1267,7 @@ def get_unsynced_notes(db_path: str = None) -> list:
         # 将行转换为字典列表
         result = [_row_to_dict(cur, row) for row in rows]
         
-        _debug_log(f"获取未同步笔记完成: {len(result)} 条")
+        _debug_log(f"获取未同步笔记完成: {len(result)} 条 (仅 ai_generated)")
         return result
         
     except Exception as e:
@@ -1144,6 +1276,16 @@ def get_unsynced_notes(db_path: str = None) -> list:
 
 def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
     c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),)); r = cur.fetchone(); c.close(); return _row_to_dict(cur, r) if r else None
+
+
+def get_local_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
+    """仅从本地数据库读取单词笔记，避免热路径触发云端连接。"""
+    c = _get_local_conn(db_path or DB_PATH)
+    cur = c.cursor()
+    cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
+    r = cur.fetchone()
+    c.close()
+    return _row_to_dict(cur, r) if r else None
 
 def _matches_ai_generation_context(note_row: Dict[str, Any], ai_provider: Optional[str] = None, prompt_version: Optional[str] = None) -> bool:
     """判断笔记是否与当前 AI 生成上下文一致。"""
@@ -2375,11 +2517,16 @@ def get_user_from_hub(user_id: str) -> Optional[dict]:
 def sync_hub_databases(
     dry_run: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """同步中央 Hub 数据库（本地与云端双向同步）"""
-    stats = {'upload': 0, 'download': 0}
+    stats = {'upload': 0, 'download': 0, 'status': 'ok', 'reason': ''}
     sync_start = time.time()
     if not TURSO_HUB_DB_URL or not TURSO_HUB_AUTH_TOKEN or not HAS_LIBSQL:
+        stats['status'] = 'skipped'
+        if not TURSO_HUB_DB_URL or not TURSO_HUB_AUTH_TOKEN:
+            stats['reason'] = 'missing-hub-cloud-credentials'
+        else:
+            stats['reason'] = 'libsql-unavailable'
         _emit_sync_progress(progress_callback, 'skipped', 0, 0, '跳过 Hub 同步: 云端凭据或 libsql 不可用', status='skipped')
         return stats
     
@@ -2506,6 +2653,8 @@ def sync_hub_databases(
 
         step += 1
 
+        table_errors: List[str] = []
+
         for table_name, primary_key in sync_targets:
             try:
                 table_started_at = time.time()
@@ -2526,19 +2675,36 @@ def sync_hub_databases(
                     duration_ms=table_elapsed_ms,
                 )
             except Exception as table_error:
-                _debug_log(f"Hub 表同步跳过: {table_name} -> {table_error}")
+                error_kind = type(table_error).__name__
+                error_text = f"{table_name}:{error_kind}:{table_error}"
+                table_errors.append(error_text)
+                _debug_log(f"Hub 表同步跳过: {table_name} -> [{error_kind}] {table_error}")
                 _emit_sync_progress(
                     progress_callback,
                     'table-error',
                     step,
                     total_steps,
-                    f"Hub {table_name} 跳过: {table_error}",
+                    f"Hub {table_name} 跳过: [{error_kind}] {table_error}",
                     table=table_name,
-                    status='error',
+                    status='partial',
                 )
             step += 1
 
-        _emit_sync_progress(progress_callback, 'finalize', total_steps, total_steps, '完成 Hub 同步', upload=stats['upload'], download=stats['download'])
+        if table_errors and stats['status'] == 'ok':
+            stats['status'] = 'partial'
+            stats['reason'] = '; '.join(table_errors[:3])
+
+        _emit_sync_progress(
+            progress_callback,
+            'finalize',
+            total_steps,
+            total_steps,
+            '完成 Hub 同步',
+            upload=stats['upload'],
+            download=stats['download'],
+            status=stats['status'],
+            reason=stats['reason'],
+        )
         
         total_elapsed_ms = int((time.time() - sync_start) * 1000)
         stats['duration_ms'] = total_elapsed_ms
@@ -2546,6 +2712,8 @@ def sync_hub_databases(
         return stats
     except Exception as e:
         _debug_log(f"Hub 同步失败: {e}")
+        stats['status'] = 'error'
+        stats['reason'] = str(e)
         _emit_sync_progress(progress_callback, 'error', 0, 0, f"Hub 同步失败: {e}", status='error', reason=str(e))
         return stats
     finally:
@@ -2565,6 +2733,20 @@ def _sync_hub_table(cloud_conn, local_conn, table_name: str, primary_key: str, d
     cloud_cur = cloud_conn.cursor()
     local_cur = local_conn.cursor()
 
+    def _extract_pair(cursor_obj, row_obj):
+        if row_obj is None:
+            return None, None
+        if isinstance(row_obj, (tuple, list)) and len(row_obj) >= 2:
+            return row_obj[0], row_obj[1]
+        try:
+            return row_obj[0], row_obj[1]
+        except Exception:
+            row_dict = _row_to_dict(cursor_obj, row_obj)
+            values = list(row_dict.values())
+            if len(values) >= 2:
+                return values[0], values[1]
+            raise ValueError(f"unexpected metadata row format for table {table_name}: {row_obj}")
+
     ts_col_map = {
         'admin_logs': 'timestamp',
         'user_sync_history': 'timestamp',
@@ -2576,20 +2758,27 @@ def _sync_hub_table(cloud_conn, local_conn, table_name: str, primary_key: str, d
     # 1. 快速路径检测
     try:
         cloud_cur.execute(f'SELECT COUNT(*), MAX({ts_col}) FROM {table_name}')
-        c_count, c_max_ts = cloud_cur.fetchone()
+        c_count, c_max_ts = _extract_pair(cloud_cur, cloud_cur.fetchone())
         local_cur.execute(f'SELECT COUNT(*), MAX({ts_col}) FROM {table_name}')
-        l_count, l_max_ts = local_cur.fetchone()
+        l_count, l_max_ts = _extract_pair(local_cur, local_cur.fetchone())
         
         if c_count == l_count and str(c_max_ts) == str(l_max_ts) and c_max_ts is not None:
             return 0, 0
-    except: pass
+    except Exception:
+        pass
 
     # 2. 元数据拉取
     cloud_cur.execute(f'SELECT {primary_key}, {ts_col} FROM {table_name}')
-    cloud_meta = {r[0]: r[1] for r in cloud_cur.fetchall()}
+    cloud_meta = {}
+    for r in cloud_cur.fetchall():
+        key, ts = _extract_pair(cloud_cur, r)
+        cloud_meta[key] = ts
     
     local_cur.execute(f'SELECT {primary_key}, {ts_col} FROM {table_name}')
-    local_meta = {r[0]: r[1] for r in local_cur.fetchall()}
+    local_meta = {}
+    for r in local_cur.fetchall():
+        key, ts = _extract_pair(local_cur, r)
+        local_meta[key] = ts
 
     def _clean_ts(ts):
         if not ts: return "0000-00-00" # 给空值一个极小的时间戳

@@ -1,185 +1,152 @@
-# AI_CONTEXT.md — Momo Study Agent 上下文速查
+AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 
-> **AI 执行规范唯一来源。** 每次新对话开始时，请先 `@` 引用本文件。
+[系统定位]
+你是本项目的高级 Python 协作工程师。任何代码改动前，先读本文件并遵守其中的架构契约。
+本文件是 AI 执行规则的唯一事实来源（Single Source of Truth）。
 
----
+## 0. 新成员先读（3 分钟）
 
-## 项目概述
+如果你是第一次接触本仓库，请按这个顺序理解系统：
 
-**Momo Study Agent** 是一个将"墨墨背单词"开放数据与 AI 大模型（Gemini/Mimo）深度结合的自动化英语学习系统。
+1. `main.py`：主流程编排，负责菜单、任务分发、退出收尾。
+2. `core/db_manager.py`：唯一 SQL 写入入口，承接本地持久化和同步状态机。
+3. `core/maimemo_api.py`：墨墨 API 封装与限流控制。
+4. `docs/dev/AUTO_SYNC.md`：同步链路、前后台边界、退出策略。
 
-### 核心功能
-- **多用户支持**：独立配置和数据隔离，支持一键切换用户
-- **AI 助记生成**：支持 Gemini 和 Xiaomi Mimo 模型，生成结构化助记笔记
-- **墨墨 API 同步**：自动同步释义、助记、学习计划到墨墨 App
-- **智能迭代**：基于多维度评分的薄弱词筛选和优化
-- **云端同步**：Turso 云端数据库 + 本地 SQLite 双轨同步
+目标不是先记住所有细节，而是先抓住三件事：
 
-### 技术架构
-- **前端**：命令行界面 (CLI)，支持 Windows/Linux/macOS
-- **后端**：Python 3.12+，异步日志系统，结构化 JSON 输出
-- **数据库**：本地 SQLite + Turso 云端双轨持久化
-- **AI 接口**：Google Gemini / Xiaomi Mimo (OpenAI 兼容)
+- 主线程只做“快路径”，网络和重活在后台。
+- 数据先落本地再异步上云，任何时刻都要可恢复。
+- Hub 库与个人库严格隔离，不混用职责和数据。
 
----
+## 1. 核心架构与边界
 
-## 模块速查表
+Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 OpenAPI 与 LLM（Gemini/Mimo）。
 
-| 文件 | 职责（一行） |
-|------|------------|
-| `main.py` | 主菜单编排器，持有 StudyFlowManager，处理 ESC 中断 |
-| `config.py` | 路径定义 + 多用户 Profile 加载，所有配置从这里取 |
-| `core/maimemo_api.py` | 墨墨 OpenAPI 封装（释义/助记/例句/云词本/学习数据） |
-| `core/db_manager.py` | SQLite + Turso 双轨持久化，所有数据库操作走这里 |
-| `core/iteration_manager.py` | 薄弱词识别→AI 重炼→推送云词本 的闭环引擎 |
-| `core/weak_word_filter.py` | 薄弱词筛选系统（多维度评分、动态阈值、分层筛选） |
-| `core/gemini_client.py` | Google Gemini 客户端，暴露 `generate_mnemonics` 接口 |
-| `core/mimo_client.py` | 小米 Mimo 客户端，与 Gemini 提供相同接口 |
-| `core/logger.py` | 企业级日志系统（JSON 落文件，可读文本到控制台） |
-| `core/log_archiver.py` | 日志自动压缩归档 |
-| `core/profile_manager.py` | 用户 Profile 目录扫描与选择菜单 |
-| `core/config_wizard.py` | 新用户引导向导，含 Token/API Key 联网验证与用户信息记录 |
-| `docs/prompts/gem_prompt.md` | 主 AI 生成 Prompt（版本指纹自动归档） |
-| `docs/prompts/score_prompt.md` | 迭代打分 Prompt |
-| `docs/prompts/refine_prompt.md` | 强力重炼 Prompt |
-| `scripts/init_hub.py` | 中央 Hub 数据库初始化工具（表结构 + 管理员创建） |
+- 主线程（UI）必须保持高响应，仅做读取缓存、调度线程池、入队。
+- 持久化采用双轨：SQLite（本地优先）+ Turso（云端备份）。
+- 所有网络写入与云端同步都应在后台线程执行。
+- 无网或缺少云端配置时，系统必须可纯本地运行。
 
----
+## 2. 模块职责图（Module Map）
 
-## 执行规则分级（Vibe Coding）
+改动前先确认模块归属，避免越层实现。
 
-### MUST（违反即为 Bug）
+- 入口层：`main.py`
+  - 职责：流程编排、用户交互、线程池分发、同步收尾。
+- 持久层：`core/db_manager.py`
+  - 职责：唯一 SQL 写入入口；维护 `sync_status`；处理 SQLite/Turso 双轨行为。
+- API 层：`core/maimemo_api.py`
+  - 职责：墨墨 OpenAPI 封装；频控、重试、超时和错误归一。
+- LLM 层：`core/*_client.py`
+  - 职责：模型调用、结果清洗、结构化输出。
+- 业务引擎：`core/iteration_manager.py`
+  - 职责：重炼/选优链路与薄弱词迭代。
+- 基建层：`config.py`, `core/logger.py`
+  - 职责：多用户隔离、配置装载、结构化日志。
 
-1. 运行时日志必须走 logger；核心业务模块禁止用 `print()` 代替日志（交互式 CLI 提示允许 `print()/input()`）
-2. 禁止 `conn.row_factory = sqlite3.Row`（Turso 不支持）；统一使用 `_row_to_dict(cursor, row)`
-3. 新增数据库字段只在 `db_manager._create_tables()` 中添加，并用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 兼容旧库
-4. 新增 AI 提供商必须实现 `generate_mnemonics(words, prompt)` 与 `generate_with_instruction(prompt, instruction)`，并在 `main.py` 路由注册
-5. 用户数据隔离必须通过 `ACTIVE_USER`，禁止硬编码用户名
-6. 用户名身份语义不区分大小写：所有身份比较与 user_id 生成应基于 `username.strip().lower()`
-7. Prompt 路径必须从 `config.PROMPT_FILE / SCORE_PROMPT_FILE / REFINE_PROMPT_FILE` 读取
-8. 时间字段必须使用含时区的 ISO 8601，调用 `db_manager.get_timestamp_with_tz()`
-9. 禁止提交真实凭证；终端输出必须脱敏
-10. 首次配置流程保持“先保存后校验”，并通过 `tools/preflight_check.py` 统一体检
-11. 薄弱词筛选必须使用 `WeakWordFilter`，不能退化为单阈值筛选
-12. 任何影响行为/配置/接口/流程/目录结构的代码改动，必须同轮同步文档
-13. 文档更新顺序固定：先本文件（规则层）→ 再专项文档（如 `AUTO_SYNC.md` / `LOGGING.md`）→ 最后 `README.md`
-14. 同步回调与显示分层必须保持：
-       - 同步函数可接受 `progress_callback: Callable[[Dict[str, Any]], None]`
-       - 前台同步由 `main.py` 的 `_run_sync_with_progress()` 显示进度
-       - 后台同步由 `_run_sync_with_stage_logs()` 记录阶段日志，不输出进度条
-       - `db_manager` 同步函数内部禁止 `print()` 进度
-15. compat 为迁移过渡层：
-       - 历史 shim 放 `compat/`（如 `compat.gemini_client` / `compat.maimemo_api`）
-       - 业务代码只从 `core/` 导入
-       - 测试/实验脚本在迁移期可从 `compat/` 导入
-16. 输入环节捕获 `KeyboardInterrupt` / `EOFError` 时必须向上抛出，由顶层统一收尾；禁止底层 `print()+sys.exit()`
-17. 文档示例中的函数签名、参数、路径必须与当前代码一致
-18. 行为已变更但文档未同步，视为未完成实现
-19. AI 客户端 JSON 契约：必须强制要求模型直接返回 JSON 数组（`[...]`），严禁包裹在 `{"results": [...]}` 等对象结构中，且必须移除 Markdown 代码块标记（```json）后解析。
-20. Maimemo API 同步原则（API 减负）：在生产环境下应优先使用“快路径”，即通过 `force_create=True` 直接尝试 POST 而非先 GET 检查；对于“释义已存在”错误应视为成功，以减少云端 RTT 往返。
-21. 线程安全防护：所有涉及全局状态、频控计数或网络 Session 的 API 封装类，必须具备内部 `threading.Lock()` 机制，确保多线程下状态一致性。
-22. 批量优先原则：在处理列表数据（如 AI 生成结果）时，必须优先使用 `save_ai_word_notes_batch` 等批量接口，严禁在热路径循环中调用单条写入函数。
-23. 同步闭环原则（物理打标）：异步同步任务必须通过数据库状态进行闭环管理。后台线程同步成功后，必须立即调用 `mark_note_synced` 更新 `sync_status = 1`。
-24. 断点续传要求：所有具备后台同步能力的 Manager 类，在初始化时必须包含从数据库层面恢复（Resumption）未完成任务的逻辑，确保系统在意外中断后能自动收敛。
+## 3. MUST 级架构契约（违反即视为严重问题）
 
-### SHOULD（强建议，默认遵循）
+### 3.1 数据库与并发
 
-1. 在变更说明中附“受影响文档清单”，方便 review 快速核对
-2. 对前台/后台行为差异（同步、日志、重试）必须成对描述，避免只写单一路径
-3. 新增规范时优先给“可复制模板”，减少 AI 解释误差
-4. Hub 初始化应优先命中持久化状态缓存窗口，避免每次启动重复做云端 schema 校验；仅在指纹或 schema 版本变化时回补
+1. Hub 与个人库严格隔离。
+    - `TURSO_HUB_DB_URL` 仅用于中央管理/鉴权/统计。
+    - `TURSO_DB_URL` 仅用于个人学习数据。
+    - 禁止凭据落入个人库，禁止学习记录落入 Hub。
+2. 禁用 `row_factory` 依赖。
+    - Turso（libsql）不支持 `sqlite3.Row` 语义。
+    - 查询结果统一走 `_row_to_dict(cursor, row)`。
+3. SQLite 连接必须具备并发兜底。
+    - `sqlite3.connect(..., timeout=20.0)`。
+    - 执行 `PRAGMA journal_mode=WAL`。
+4. 批量写入优先。
+    - 禁止在循环中逐条 `INSERT`。
+    - 使用 `save_ai_word_notes_batch` 等批量接口。
+5. 同步状态机不可破坏。
+    - 入队前必须先落库并标记 `sync_status=0`。
+    - 后台同步成功后标记 `sync_status=1`。
+    - 启动时必须恢复未同步数据（`sync_status=0`）。
+6. Schema 变更必须兼容旧库。
+    - 在 `_create_tables()` 中维护字段。
+    - 使用 `ALTER TABLE ... ADD COLUMN` 做平滑升级。
 
-### NICE-TO-HAVE（可选增强）
+### 3.2 LLM 与生成
 
-1. 对复杂流程补一段“失败路径”说明（例如同步失败时的降级与收尾）
-2. 对高风险改动补一条“为什么不采用替代方案”
+1. Prompt 不得硬编码在 Python 长字符串中。
+    - 必须放在 `docs/prompts/*.md` 并由配置路径读取。
+2. 生成结果契约为 JSON 数组。
+    - 目标格式：`[...]`。
+    - 禁止包装为 `{ "results": [...] }`。
+3. 解析前必须做 Markdown 清洗。
+    - 去掉 ```json 等围栏。
+    - 使用 `json_repair.loads()` 处理破损 JSON。
+4. 客户端必须复用连接。
+    - 在 `__init__` 中初始化 `requests.Session()`。
 
-## 变更影响矩阵（最小同步集）
+### 3.3 业务与同步
 
-| 代码改动类型 | 必须同步文档 |
-|---|---|
-| 同步逻辑/同步展示改动 | `docs/dev/AUTO_SYNC.md`、`docs/architecture/LOG_SYSTEM.md`、`README.md` |
-| 规则或开发约束改动 | `docs/dev/AI_CONTEXT.md`、`docs/dev/CONTRIBUTING.md` |
-| 目录结构/导入路径改动 | `README.md`、`docs/DOCUMENT_INDEX.md`、相关专项文档 |
-| 新手流程/体检流程改动 | `docs/dev/QUICK_START.md`、`docs/dev/NEW_USER_ZERO_CREDENTIAL_PLAN.md` |
+1. 薄弱词筛选必须走 `WeakWordFilter` 多维策略，禁止退化为单阈值 if。
+2. 首次向导遵循“先保存后校验”，云端连通性检查放在 `tools/preflight_check.py`。
+3. `maimemo_api.py` 频控逻辑必须有 `threading.Lock()` 保护。
+4. 墨墨写入支持 `force_create=True` 快路径；“释义已存在”按成功处理。
+5. 所有外部网络请求必须显式 `timeout`（通常 6-12 秒）。
 
-## 提交前最小检查清单
+### 3.4 安全与通用规范
 
-1. 规则是否仍与代码一致（尤其是同步、异常处理、导入约束）
-2. 文档示例签名是否与真实函数一致
-3. 文档里的路径和文件名是否真实存在
-4. 前台与后台行为差异是否都已记录
-5. CHANGELOG 是否记录了本轮重要文档策略变化
+1. 用户身份语义统一为 `username.strip().lower()`。
+2. 业务逻辑禁用 `print()`，统一 `self.logger.info/warning/error`。
+3. 时间戳统一使用带时区 ISO 8601（`get_timestamp_with_tz()`）。
 
-## 反模式（禁止写法）
+## 4. 反模式（发现即停）
 
-1. 在 `db_manager` 同步函数里直接 `print()` 进度
-2. 在输入函数底层捕获中断后直接 `print()+sys.exit()`
-3. 新业务代码从 `compat/` 导入
-4. 改了接口签名但不更新文档示例
+- 把内存队列当可靠存储，不做 `sync_status` 落盘。
+- 在代码里硬编码大段 Prompt，而非外置到文档文件。
+- 在底层函数捕获异常后直接 `sys.exit()`，导致上层无法收尾。
+- 在底层网络/DB 层输出用户进度 `print("正在同步...")`，而非事件或日志。
 
----
+## 5. 核心数据流与线程边界
 
-## 关键架构决策（已否定的方向）
-
-| 否定方案 | 采用方案 | 原因 |
-|---------|---------|------|
-| `AdvanceStudy` API 强推复习队列 | **云词本 (Notepad) 隔离** | 用户明确要求不打乱每日复习节奏 |
-| 纯云端 Turso | **本地 SQLite + Turso 双轨** | 网络抖动时本地继续工作，启动不依赖云端 |
-| 逐条 API 请求同步 | **批量/缓存复用** | 减少重复 AI 调用，但仍可能产生云端查询延迟 |
-| `get_today_items` 验证 Token | **`get_study_progress` 验证** | 新用户未开课时 today_items 为空会误判 Token 无效 |
-| 纯云端中央 Hub | **Turso + 本地 SQLite 回退** | 允许在没有云端凭据时通过本地 Hub.db 进行用户管理与验证 |
-
----
-
-## 数据流
+严禁在主线程边界上执行阻塞型网络同步。
 
 ```
-用户 → main.py Menu
-         ↓
-  MaimemoAPI.get_today_items()
-         ↓
-  db_manager.is_processed() 过滤
-         ↓
-  AI Client (Gemini / Mimo) 批量生成
-         ↓
-  db_manager.save_ai_word_note()
-         ↓
-  MaimemoAPI.sync_interpretation() / create_note()
-         ↓
-  db_manager.sync_databases()  ← 本地 ↔ Turso 双向同步
+[主线程]
+任务选择 -> 获取词项 -> 本地过滤 -> AI 并发处理
+            -> 批量落库(sync_status=0) -> 入同步队列
+
+================= 异步边界 =================
+
+[后台守护线程]
+队列消费 -> 墨墨同步(force_create=True) -> 标记 sync_status=1
+
+[退出阶段]
+有界等待后台收尾，超时则放行退出（不无限阻塞）
 ```
 
----
+## 6. 文档与交付契约
 
-## 当前状态维护策略
+代码变更必须形成文档闭环。
 
-- 本文件聚焦“稳定约束与执行规则”，不承载频繁变化的实施细节。
-- 最新状态、阶段性落地结果与文档演进，请以 `docs/CHANGELOG.md` 为准。
-- 若某功能状态影响规则判断，应先更新规则，再在 CHANGELOG 记录状态变化。
+### 6.1 变更影响矩阵
 
----
+- 同步逻辑、异步队列、并发策略
+  - 必查：`docs/dev/AUTO_SYNC.md`、`README.md`
+- 数据库字段、环境变量、用户隔离机制
+  - 必查：`docs/dev/QUICK_START.md`、`README.md`
+- 系统级规则、反模式、新模块边界
+  - 必查：`docs/dev/AI_CONTEXT.md`
 
-## 日志查阅
+### 6.2 提交前检查
 
-```bash
-# 查看实时日志（JSON 格式）
-cat logs/Asher.log
+- 是否违反 MUST 规则（尤其是 Prompt 外置、Hub/个人库隔离）
+- 是否补齐了受影响文档
+- 是否使用结构化日志而非 `print()`
+- 数据库改动是否具备向后兼容迁移
 
-# 筛选错误
-grep "ERROR" logs/Asher.log
+## 7. 协作语气与执行期望
 
-# 筛选特定模块
-grep '"module": "maimemo_api"' logs/Asher.log
-```
+在保证规则强度的前提下，协作方式保持清晰、克制、可执行：
 
-```powershell
-# Windows PowerShell 查看日志
-Get-Content logs/Asher.log
-
-# 筛选错误
-Get-Content logs/Asher.log | Select-String "ERROR"
-
-# 筛选特定模块
-Get-Content logs/Asher.log | Select-String '"module": "maimemo_api"'
-```
+- 先给结论，再给证据（文件与函数级定位）。
+- 优先最小改动，避免“顺手重构”带来额外风险。
+- 对新成员友好：术语统一、路径可追踪、避免只讲抽象原则。
+- 如遇规则冲突，以本文件 MUST 条款优先，再回溯到实现和测试。

@@ -29,20 +29,28 @@ def test_get_today_items_success(mock_api, mocker):
 def test_sync_interpretation_create(mock_api, mocker):
     """
     测试同步释义逻辑：
-    场景：查询发现不存在旧释义 -> 执行创建操作。
+    场景：创建成功后，云端内容与本地一致。
     """
-    # 模拟 list_interpretations 返回空列表
+    # 模拟首次查询返回空列表
     mock_list_res = mocker.Mock()
     mock_list_res.status_code = 200
     mock_list_res.json.return_value = {"success": True, "data": {"interpretations": []}}
-    
+
     # 模拟 create_interpretation 返回成功
     mock_create_res = mocker.Mock()
     mock_create_res.status_code = 200
     mock_create_res.json.return_value = {"success": True}
+
+    # 模拟创建后核验到一致释义
+    mock_verify_res = mocker.Mock()
+    mock_verify_res.status_code = 200
+    mock_verify_res.json.return_value = {
+        "success": True,
+        "data": {"interpretations": [{"interpretation": "New Meaning"}]}
+    }
     
     # 设置 mock 行为
-    mocker.patch("requests.request", side_effect=[mock_list_res, mock_create_res])
+    mocker.patch("requests.request", side_effect=[mock_list_res, mock_create_res, mock_verify_res])
     
     success = mock_api.sync_interpretation("voc_123", "New Meaning")
     assert success is True
@@ -50,26 +58,43 @@ def test_sync_interpretation_create(mock_api, mocker):
 def test_sync_interpretation_update(mock_api, mocker):
     """
     测试同步释义逻辑：
-    场景：查询发现已存在旧释义 -> 执行更新操作。
+    场景：远端已存在一致释义，直接视为同步成功。
     """
     # 模拟 list_interpretations 返回包含 1 条旧数据
     mock_list_res = mocker.Mock()
     mock_list_res.status_code = 200
     mock_list_res.json.return_value = {
         "success": True, 
-        "data": {"interpretations": [{"id": "intp_99"}]}
+        "data": {"interpretations": [{"id": "intp_99", "interpretation": "Updated Meaning"}]}
     }
     
-    # 模拟 update_interpretation 返回成功
-    mock_update_res = mocker.Mock()
-    mock_update_res.status_code = 200
-    mock_update_res.json.return_value = {"success": True}
-    
     # 设置 mock 行为
-    mocker.patch("requests.request", side_effect=[mock_list_res, mock_update_res])
+    mocker.patch("requests.request", return_value=mock_list_res)
     
-    success = mock_api.sync_interpretation("voc_123", "Updated Meaning")
+    success = mock_api.sync_interpretation("voc_123", "Updated Meaning", force_create=False)
     assert success is True
+
+
+def test_sync_interpretation_conflict_returns_status(mock_api, mocker):
+    """测试云端释义与本地不一致时返回冲突态。"""
+    mock_list_res = mocker.Mock()
+    mock_list_res.status_code = 200
+    mock_list_res.json.return_value = {
+        "success": True,
+        "data": {"interpretations": [{"id": "intp_99", "interpretation": "Different Meaning"}]}
+    }
+
+    mocker.patch("requests.request", return_value=mock_list_res)
+
+    result = mock_api.sync_interpretation(
+        "voc_123",
+        "Expected Meaning",
+        force_create=False,
+        return_details=True,
+    )
+
+    assert result["sync_status"] == 2
+    assert result["success"] is False
 
 def test_create_note_includes_tags(mock_api, mocker):
     """测试助记创建时是否携带 tags。"""
