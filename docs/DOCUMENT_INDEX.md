@@ -31,6 +31,8 @@
 | [DECISIONS.md](dev/DECISIONS.md) | 已否定方案记录 |
 | [CONTRIBUTING.md](dev/CONTRIBUTING.md) | 开发规约、代码规范 |
 | [NEW_USER_ZERO_CREDENTIAL_PLAN.md](dev/NEW_USER_ZERO_CREDENTIAL_PLAN.md) | 零凭证新用户上手入口（已归档） |
+| [PHASE_3_SYNC_OPTIMIZATION.md](dev/PHASE_3_SYNC_OPTIMIZATION.md) | Embedded Replicas 同步引擎优化记录 |
+| [PHASE_4_TESTING_VALIDATION.md](dev/PHASE_4_TESTING_VALIDATION.md) | 迁移后全量测试与上线验证报告 |
 
 ## 🗂️ 历史归档
 
@@ -89,4 +91,4 @@
 
 ---
 
-*文档更新时间：2026-04-14*
+*文档更新时间：2026-04-17*

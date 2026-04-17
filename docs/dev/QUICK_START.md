@@ -17,6 +17,20 @@
 - 运行 preflight 工具确认缺失项。
 - 先跑单元测试，再改流程文档或交互。
 
+## 最短可执行路径
+
+```bash
+pip install -r requirements.txt
+python tools/preflight_check.py --user <username>
+python -m pytest tests/ -v --tb=short -m "not slow"
+python main.py
+```
+
+说明：
+
+- 默认测试命令不依赖覆盖率插件，可直接在精简环境执行。
+- 若要验证同步链路行为，优先阅读 [AUTO_SYNC.md](AUTO_SYNC.md) 再做流程改动。
+
 ## 适用范围
 
 这个页面只做导航，不替代具体实现文档。

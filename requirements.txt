@@ -4,5 +4,5 @@ python-dotenv
 pytest
 pytest-mock
 json-repair
-libsql-client
+libsql
 PyYAML

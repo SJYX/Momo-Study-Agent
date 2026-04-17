@@ -14,7 +14,7 @@ TURSO_TEST_AUTH_TOKEN = os.getenv('TURSO_TEST_AUTH_TOKEN')
 TURSO_TEST_DB_HOSTNAME = os.getenv('TURSO_TEST_DB_HOSTNAME')
 
 try:
-    import libsql_client
+    import libsql
     HAS_LIBSQL = True
 except ImportError:
     HAS_LIBSQL = False
@@ -518,151 +518,245 @@ def clean_for_maimemo(text: str) -> str:
     text = re.sub(r'`(.+?)`', r'\1', text)
     return text.strip()
 
-def _get_local_conn(db_path: str = None) -> sqlite3.Connection:
-    path = db_path or DB_PATH
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = sqlite3.connect(path, timeout=20.0)  # 增加超时时间以解决多线程死锁
-    conn.row_factory = sqlite3.Row
-    # 启用WAL模式以提高并发性能
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    return conn
+def _is_sqlite_malformed_error(error: Exception) -> bool:
+    """判断是否为本地 SQLite 文件损坏。"""
+    msg = str(error or "").lower()
+    return (
+        "database disk image is malformed" in msg
+        or "file is not a database" in msg
+        or "malformed" in msg
+    )
 
 
-class _LibsqlCompatCursor:
-    """将 libsql_client 的同步结果包装成 sqlite3 风格接口。"""
-
-    def __init__(self, client):
-        self._client = client
-        self._result = None
-        self.description = None
-
-    def execute(self, sql, params=()):
-        self._result = self._client.execute(sql, params)
-        self.description = [(col, None, None, None, None, None, None) for col in (self._result.columns or [])]
-        return self
-
-    def executemany(self, sql, seq_of_params):
-        last_result = None
-        for params in seq_of_params:
-            last_result = self._client.execute(sql, params)
-        self._result = last_result
-        self.description = [(col, None, None, None, None, None, None) for col in (self._result.columns or [])] if self._result else None
-        return self
-
-    def fetchone(self):
-        rows = self.fetchall()
-        return rows[0] if rows else None
-
-    def fetchall(self):
-        if not self._result:
-            return []
-        return list(self._result.rows or [])
-
-    @property
-    def lastrowid(self):
-        if not self._result:
+def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional[str]:
+    """备份损坏的本地数据库文件，保留现场以便后续排查。"""
+    try:
+        abs_path = os.path.abspath(db_path)
+        if not os.path.exists(abs_path):
             return None
-        return self._result.last_insert_rowid
 
-    def close(self):
-        return None
+        day_tag = datetime.now(timezone.utc).strftime("%Y%m%d")
+        backup_path = f"{abs_path}.er-broken-{day_tag}.bak"
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
+        if os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except Exception:
+                pass
 
-class _LibsqlCompatConnection:
-    """提供 sqlite3 兼容的连接对象。"""
+        moved = False
+        last_error = None
+        for attempt in range(3):
+            try:
+                shutil.move(abs_path, backup_path)
+                moved = True
+                break
+            except OSError as move_error:
+                last_error = move_error
+                winerror = getattr(move_error, "winerror", None)
+                if winerror == 32 or "being used by another process" in str(move_error).lower():
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+                raise
 
-    def __init__(self, client):
-        self._client = client
-        self.row_factory = None
-
-    def cursor(self):
-        return _LibsqlCompatCursor(self._client)
-
-    def commit(self):
-        return None
-
-    def close(self):
-        if hasattr(self._client, 'close'):
-            self._client.close()
-
-
-def _get_cloud_conn(url: str, token: str):
-    raw = (url or '').strip()
-    if not raw:
-        raise ValueError('cloud url is empty')
-
-    # Some environments/proxies break websocket handshake (505).
-    # Try multiple endpoint schemes to maximize compatibility.
-    host = raw
-    if '://' in raw:
-        host = raw.split('://', 1)[1].split('/', 1)[0]
-
-    candidates: List[str] = []
-    if raw.startswith('libsql://'):
-        candidates = [f'libsql://{host}', f'https://{host}', f'wss://{host}/']
-    elif raw.startswith('https://') or raw.startswith('http://'):
-        scheme_host = f'https://{host}' if raw.startswith('http') else raw
-        candidates = [scheme_host, f'libsql://{host}', f'wss://{host}/']
-    elif raw.startswith('wss://') or raw.startswith('ws://'):
-        candidates = [f'wss://{host}/', f'libsql://{host}', f'https://{host}']
-    else:
-        candidates = [f'libsql://{host}', f'https://{host}', f'wss://{host}/']
-
-    seen = set()
-    ordered_candidates = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            ordered_candidates.append(c)
-
-    errors = []
-    for candidate in ordered_candidates:
-        client = None
-        try:
-            client = libsql_client.create_client_sync(candidate, auth_token=token)
-            # Probe once so bad handshakes fail here, not in later business logic.
-            client.execute('SELECT 1')
-            return _LibsqlCompatConnection(client)
-        except Exception as e:
-            errors.append(f'{candidate} -> {e}')
-            if client and hasattr(client, 'close'):
+        if not moved:
+            try:
+                shutil.copy2(abs_path, backup_path)
+                removed_source = False
                 try:
-                    client.close()
+                    os.remove(abs_path)
+                    removed_source = True
+                except Exception:
+                    _debug_log(
+                        f"备份损坏数据库后无法删除源文件（可能仍被占用）: {abs_path}",
+                        level="WARNING",
+                    )
+                if not removed_source:
+                    return None
+            except Exception as copy_error:
+                if last_error:
+                    _debug_log(f"备份损坏数据库失败: {last_error}", level="WARNING")
+                _debug_log(f"备份损坏数据库失败: {copy_error}", level="WARNING")
+                return None
+
+        # 清理 SQLite 与 Embedded Replica 元数据侧文件，确保下次按全新副本启动。
+        for ext in ("-wal", "-shm", "-info"):
+            sidecar = abs_path + ext
+            if os.path.exists(sidecar):
+                try:
+                    os.remove(sidecar)
                 except Exception:
                     pass
 
-    raise RuntimeError('all cloud connection attempts failed: ' + ' | '.join(errors))
+        _debug_log(f"{warning_message}: {backup_path}", level="WARNING")
+        return backup_path
+    except Exception as backup_error:
+        _debug_log(f"备份损坏数据库失败: {backup_error}", level="WARNING")
+        return None
 
-def _is_cloud_connection(conn: Any) -> bool:
-    """判断连接是否为 libsql 云端连接（避免依赖 __str__ 输出格式）。"""
+
+def _get_local_conn(db_path: str = None) -> sqlite3.Connection:
+    path = db_path or DB_PATH
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+
+    def _open_local_connection() -> sqlite3.Connection:
+        conn = sqlite3.connect(path, timeout=20.0)  # 增加超时时间以解决多线程死锁
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        return conn
+
     try:
-        return conn.__class__.__name__ == '_LibsqlCompatConnection'
-    except Exception:
-        return False
+        return _open_local_connection()
+    except (sqlite3.DatabaseError, sqlite3.OperationalError) as error:
+        if not _is_sqlite_malformed_error(error):
+            raise
+
+        backup_path = _backup_broken_database_file(path, "检测到本地数据库损坏，已备份本地数据库")
+        if not backup_path:
+            raise
+
+        if HAS_LIBSQL and TURSO_DB_URL and TURSO_AUTH_TOKEN:
+            try:
+                _debug_log(f"本地数据库损坏后，尝试通过云端副本重建: {path}", level="WARNING")
+                return _get_conn(path, allow_local_fallback=False)
+            except Exception as recovery_error:
+                _debug_log(f"通过云端副本重建本地数据库失败，改为重新初始化空库: {recovery_error}", level="WARNING")
+
+        conn = _open_local_connection()
+        try:
+            _create_tables(conn.cursor())
+            conn.commit()
+        except Exception as init_error:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise RuntimeError(f"本地数据库重建失败: {init_error}")
+        return conn
+
 
 def _normalize_turso_url(hostname: str) -> str:
-    """Normalize Turso endpoint to libsql://host form expected by libsql client."""
+    """Normalize Turso endpoint to sync_url format expected by libsql."""
     if not hostname:
         return ''
     raw = hostname.strip()
-    if raw.startswith('libsql://'):
+    # libsql.connect() 的 sync_url 参数接受标准 URL 格式
+    if raw.startswith('libsql://') or raw.startswith('https://') or raw.startswith('wss://'):
         return raw
-    if raw.startswith('wss://') or raw.startswith('ws://') or raw.startswith('https://') or raw.startswith('http://'):
-        parsed = urlparse(raw)
-        host = parsed.netloc or parsed.path
-        return f'libsql://{host}'
+    # 如果是纯主机名，构造成 libsql:// URL
+    if '.' in raw or raw == 'localhost':
+        return f'libsql://{raw}'
+    # 默认添加 libsql:// scheme
     return f'libsql://{raw}'
 
-def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> Any:
-    """获取数据库连接（优先云端 Turso，无配置则回退本地 SQLite）
+
+def _is_replica_metadata_missing_error(error: Exception) -> bool:
+    """判断是否为 Embedded Replica 本地状态损坏（db 存在但 metadata 缺失）。"""
+    msg = str(error or "").lower()
+    return "db file exists but metadata file does not" in msg or (
+        "local state is incorrect" in msg and "metadata" in msg
+    )
+
+
+def _backup_broken_replica_file(db_path: str) -> Optional[str]:
+    """备份损坏的本地副本文件，便于后续自动重建。"""
+    return _backup_broken_database_file(db_path, "检测到本地副本损坏，已备份本地副本")
+
+
+def _get_cloud_lookup_replica_path(cloud_url: str) -> str:
+    """为跨库云端补查生成独立副本路径，避免不同云库共享同一本地副本文件。"""
+    lookup_dir = os.path.join(DATA_DIR, "profiles", ".cloud_lookup_replicas")
+    os.makedirs(lookup_dir, exist_ok=True)
+    fp = _hash_fingerprint((cloud_url or "").strip())
+    return os.path.join(lookup_dir, f"lookup_{fp}.db")
+
+
+def _get_cloud_conn(url: str, token: str, db_path: str = None):
+    """获取 Embedded Replica 连接 (兼容接口)
+    
+    Args:
+        url: Turso 数据库 URL
+        token: 认证令牌
+        db_path: 本地数据库文件路径（如不提供，使用默认路径）
+    
+    Returns:
+        libsql.Connection 对象（兼容 sqlite3 接口）
+    """
+    if not url or not token:
+        raise ValueError('Turso URL and token are required')
+    
+    local_path = db_path or DB_PATH
+    
+    conn = None
+    try:
+        conn = libsql.connect(
+            local_path,
+            sync_url=url,
+            auth_token=token
+        )
+
+        # 首次连接时立即同步
+        if hasattr(conn, 'sync'):
+            conn.sync()
+
+        return conn
+
+    except Exception as e:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+            backup_path = _backup_broken_replica_file(local_path)
+            if backup_path:
+                try:
+                    repaired_conn = libsql.connect(
+                        local_path,
+                        sync_url=url,
+                        auth_token=token
+                    )
+                    if hasattr(repaired_conn, 'sync'):
+                        repaired_conn.sync()
+                    _debug_log(f"Embedded Replica 已自动修复并重建: {local_path}", level="WARNING")
+                    return repaired_conn
+                except Exception as repair_error:
+                    raise RuntimeError(f"Embedded Replica 自动修复失败: {repair_error}")
+
+        raise RuntimeError(f"Embedded Replica 连接失败: {e}")
+
+
+def _is_cloud_connection(conn: Any) -> bool:
+    """检查连接是否为 Embedded Replica 连接（而不是纯本地 SQLite）
+    
+    在 Embedded Replicas 模式下，cloud 连接是具有 sync() 方法的 libsql.Connection
+    """
+    try:
+        # 检查是否有 sync() 方法（这是 Embedded Replica 连接的标志）
+        return hasattr(conn, 'sync') and callable(getattr(conn, 'sync'))
+    except Exception:
+        return False
+
+
+def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0, allow_local_fallback: bool = True) -> Any:
+    """获取数据库连接 - Embedded Replicas 模式
+    
+    Embedded Replicas 在客户端维持本地 SQLite 副本，与远程 Turso 主库保持同步。
+    - 读操作：直接从本地 SQLite 文件读取（微秒级延迟）
+    - 写操作：自动转发到远程主库，成功后自动更新本地副本
+    - 离线模式：如未配置云端凭据，退化为纯本地 SQLite
 
     Args:
         db_path: 数据库路径
-        max_retries: 最大重试次数（默认 3 次）
+        max_retries: 最大重试次数（默认 3 次，仅用于首次连接）
         retry_delay: 每次重试的延迟秒数（默认 1.0 秒）
+    
+    Returns:
+        libsql.Connection 对象（兼容 sqlite3 接口）或 sqlite3.Connection 对象
     """
-    # 如果 db_path 为 None，使用默认路径
     if db_path is None:
         db_path = DB_PATH
 
@@ -682,26 +776,49 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> A
     if get_force_cloud_mode() and not url:
         raise RuntimeError("强制云端模式已启用，但未配置 TURSO_DB_URL 或 TURSO_DB_HOSTNAME")
 
-    # 判断是否为主数据库（需要连接云端）
     is_main_db = target_abs == main_abs
 
+    # 优先使用 Embedded Replicas 模式（若配置了云端凭据）
     if (is_main_db or is_test) and url and token and HAS_LIBSQL:
         last_error = None
         for attempt in range(max_retries):
             try:
                 _debug_log_throttled(
-                    key=f"cloud-connect-attempt:{'test' if is_test else 'main'}",
-                    msg=f"尝试连接云端数据库 (第 {attempt + 1}/{max_retries} 次)",
+                    key=f"libsql-connect-attempt:{'test' if is_test else 'main'}",
+                    msg=f"Embedded Replicas 首次连接 (第 {attempt + 1}/{max_retries} 次)",
                     interval_seconds=30.0,
                 )
-                return _get_cloud_conn(url, token)
+                
+                # ✅ 创建 Embedded Replica 连接
+                conn = libsql.connect(
+                    db_path,           # 本地 SQLite 文件路径
+                    sync_url=url,      # 远程 Turso 主库 URL
+                    auth_token=token   # 认证令牌
+                )
+                
+                # 首次连接时立即同步一次，确保本地数据最新
+                if hasattr(conn, 'sync'):
+                    conn.sync()
+                    _debug_log(f"Embedded Replica 连接完成并同步: {db_path} ↔ {url[:50]}...")
+                
+                return conn
+                
             except Exception as e:
+                if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                    backup_path = _backup_broken_replica_file(db_path)
+                    if backup_path:
+                        _debug_log(
+                            f"Embedded Replica 本地状态损坏，已备份并重试连接: {backup_path}",
+                            level="WARNING",
+                        )
+                        last_error = e
+                        continue
                 last_error = e
-                if attempt < max_retries - 1:  # 不是最后一次尝试
-                    _debug_log(f"云端连接失败 (尝试 {attempt + 1})，{retry_delay} 秒后重试: {e}")
+                if attempt < max_retries - 1:
+                    _debug_log(f"Embedded Replica 连接失败 (尝试 {attempt + 1})，{retry_delay} 秒后重试: {e}")
                     time.sleep(retry_delay)
                 else:
-                    _debug_log(f"云端连接失败 (已尝试 {max_retries} 次)，回退本地: {e}")
+                    _debug_log(f"Embedded Replica 连接失败 (已尝试 {max_retries} 次)，回退本地: {e}")
 
         # 若主配置连接失败，尝试通过 Turso 管理 API 发现当前用户目标库并重连
         if not is_test:
@@ -711,21 +828,31 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> A
                     if preferred_db_name not in source_label:
                         continue
                     _debug_log(f"尝试 API 发现的用户库连接: {source_label}")
-                    return _get_cloud_conn(candidate_url, candidate_token)
-            except Exception as fallback_error:
-                _debug_log(f"API 发现用户库重连失败: {fallback_error}")
+                    try:
+                        conn = libsql.connect(
+                            db_path,
+                            sync_url=candidate_url,
+                            auth_token=candidate_token
+                        )
+                        if hasattr(conn, 'sync'):
+                            conn.sync()
+                        return conn
+                    except Exception as fallback_error:
+                        _debug_log(f"API 发现的库连接失败: {fallback_error}")
+                        continue
+            except Exception as api_error:
+                _debug_log(f"API 发现用户库过程失败: {api_error}")
 
         if get_force_cloud_mode():
-            # 强制模式下，连接失败直接抛出异常
             raise RuntimeError(f"强制云端模式连接失败 (已尝试 {max_retries} 次): {last_error}")
 
-    # 非强制模式或测试模式下允许回退本地
-    if not get_force_cloud_mode() or is_test:
-        _debug_log(f"回退到本地数据库: {db_path}")
+    # 无云端配置时回退本地纯 SQLite
+    if allow_local_fallback and (not get_force_cloud_mode() or is_test):
+        _debug_log(f"使用本地 SQLite 模式: {db_path}")
         return _get_local_conn(db_path)
 
-    # 强制模式下如果到这里说明配置有问题
     raise RuntimeError("强制云端模式已启用，但无法连接到云端数据库")
+
 
 def _create_tables(cur, skip_migrations=False):
     """
@@ -818,20 +945,21 @@ def init_db(db_path: str = None):
     """初始化数据库，确保本地和云端 schema 一致。"""
     path = db_path or DB_PATH
     start_time = time.time()
+    
+    is_test = 'test_' in os.path.basename(path)
+    url = TURSO_TEST_DB_URL if is_test else TURSO_DB_URL
+    token = TURSO_TEST_AUTH_TOKEN if is_test else TURSO_AUTH_TOKEN
+    
+    if not url:
+        hostname = TURSO_TEST_DB_HOSTNAME if is_test else TURSO_DB_HOSTNAME
+        if hostname:
+            url = _normalize_turso_url(hostname)
+            
+    is_cloud_configured = bool(HAS_LIBSQL and url and token)
 
-    # 1. 首先确保本地数据库 schema 是最新的
-    try:
-        lc = _get_local_conn(path)
-        lcur = lc.cursor()
-        _create_tables(lcur)
-        lc.commit()
-        lc.close()
-        _debug_log("本地数据库初始化/迁移完成", start_time)
-    except Exception as e:
-        _debug_log(f"本地数据库初始化失败: {e}", start_time)
-
-    # 2. 如果配置了云端，尝试初始化云端（跳过耗时的迁移操作）
-    if HAS_LIBSQL and TURSO_DB_URL and TURSO_AUTH_TOKEN:
+    if is_cloud_configured:
+        # 云端同步模式：绝对不能直接用 pure sqlite3 (如 _get_local_conn) 创建文件，
+        # 否则会导致 libsql metadata 缺失报错 (local state is incorrect)
         try:
             main_fp = _main_db_fingerprint(path)
             # 检查是否已经初始化过（通过本地标记文件）
@@ -839,21 +967,20 @@ def init_db(db_path: str = None):
                 _debug_log("云端数据库已初始化（通过标记文件），跳过检查")
             else:
                 cloud_start = time.time()
-                cc = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
+                cc = _get_cloud_conn(url, token, db_path=path)
                 _debug_log("云端数据库连接完成", cloud_start)
 
                 ccur = cc.cursor()
-
-                # 检查表是否已存在（避免重复执行耗时的 CREATE TABLE 操作）
                 check_start = time.time()
                 table_exists = _check_table_exists(ccur, "processed_words", "main", cache_scope=main_fp)
                 _debug_log(f"表存在检查完成 (存在: {table_exists})", check_start)
 
+                create_start = time.time()
+                # 即使主表已存在，也要执行 schema 校验/补齐，避免新增列缺失（如 content_origin）。
+                _create_tables(ccur, skip_migrations=True)
                 if table_exists:
-                    _debug_log("云端数据库表已存在，跳过初始化")
+                    _debug_log("云端数据库 schema 校验与补齐完成（跳过数据回填）", create_start)
                 else:
-                    create_start = time.time()
-                    _create_tables(ccur, skip_migrations=True)  # 跳过迁移操作，提高启动速度
                     _debug_log("云端数据库存储初始化完成（跳过迁移）", create_start)
 
                 # 标记数据库已初始化
@@ -861,7 +988,18 @@ def init_db(db_path: str = None):
                 cc.commit()
                 cc.close()
         except Exception as e:
-            _debug_log(f"云端数据库初始化失败 (可能网络不通): {e}")
+            _debug_log(f"云端数据库初始化失败 (可能网络不通或凭据过期): {e}", start_time)
+    else:
+        # 纯本地模式
+        try:
+            lc = _get_local_conn(path)
+            lcur = lc.cursor()
+            _create_tables(lcur)
+            lc.commit()
+            lc.close()
+            _debug_log("本地数据库初始化/迁移完成", start_time)
+        except Exception as e:
+            _debug_log(f"本地数据库初始化失败: {e}", start_time)
 
     # 3. 确保 Hub 数据库表结构完整
     hub_start = time.time()
@@ -884,33 +1022,29 @@ def is_processed(voc_id: str, db_path: str = None) -> bool:
     res = cur.fetchone() is not None; c.close(); return res
 
 def mark_processed(voc_id: str, spelling: str, db_path: str = None, conn: Any = None):
-    """支持连接复用的标记处理函数"""
+    """支持连接复用的标记处理函数
+    
+    使用 Embedded Replicas 连接时，一次写入自动同步本地+云端，无需显式双写。
+    """
     def _do_sql(cn):
         cur = cn.cursor()
-        cur.execute('INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, ?)', (str(voc_id), spelling, get_timestamp_with_tz()))
-        if not conn: cn.commit(); cn.close()
+        cur.execute('INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, ?)', 
+                    (str(voc_id), spelling, get_timestamp_with_tz()))
+        if not conn: 
+            cn.commit()
+            cn.close()
 
     if conn:
+        # 连接复用场景，直接使用外部连接
         _do_sql(conn)
     else:
+        # 独立连接场景，使用 Embedded Replica 连接
         path = db_path or DB_PATH
-        # 优先写入云端
         try:
-            cloud_conn = _get_conn(path)
-            if _is_cloud_connection(cloud_conn):
-                _do_sql(cloud_conn)
-                # 同步到本地缓存
-                try:
-                    _do_sql(_get_local_conn(path))
-                except Exception as local_sync_error:
-                    _debug_log(f"mark_processed 本地缓存同步失败: {local_sync_error}")
-            else:
-                # 本地连接，写入本地
-                _do_sql(cloud_conn)
-        except Exception as cloud_write_error:
-            _debug_log(f"mark_processed 云端写入失败，回退本地: {cloud_write_error}")
-            # 云端失败，写入本地
-            _do_sql(_get_local_conn(path))
+            c = _get_conn(path)
+            _do_sql(c)
+        except Exception as e:
+            _debug_log(f"mark_processed 写入失败: {e}")
 
 def log_progress_snapshots(words: List[dict], db_path: str = None):
     if not words: return 0
@@ -937,10 +1071,11 @@ def log_progress_snapshots(words: List[dict], db_path: str = None):
 
 @log_performance(lambda: ContextLogger(logging.getLogger(__name__)))
 def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata: dict = None, conn: Any = None):
-    """支持连接复用的笔记保存函数"""
+    """支持连接复用的笔记保存函数
+    
+    使用 Embedded Replicas 连接时，一次写入自动同步本地+云端，无需显式双写。
+    """
     s = payload.get('spelling', '')
-    # raw_full_text 应为该词条自身原始 AI 输出的 JSON 字符串（由客户端设置）；
-    # fallback 时序列化整个 payload（去掉 raw_full_text 自身，避免循环）以保留完整信息
     _raw_candidate = {k: v for k, v in payload.items() if k != 'raw_full_text'}
     t = payload.get('raw_full_text') or json.dumps(_raw_candidate, ensure_ascii=False)
     m_ctx = json.dumps(metadata.get('maimemo_context', {}), ensure_ascii=False) if metadata and metadata.get('maimemo_context') else None
@@ -955,30 +1090,23 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata:
     sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, content_source_scope, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
     def _do_sql(cn):
-        cur = cn.cursor(); cur.execute(sql, args)
-        if not conn: cn.commit(); cn.close()
+        cur = cn.cursor()
+        cur.execute(sql, args)
+        if not conn: 
+            cn.commit()
+            cn.close()
 
     if conn:
+        # 连接复用场景，直接使用外部连接
         _do_sql(conn)
     else:
+        # 独立连接场景，使用 Embedded Replica 连接
         path = db_path or DB_PATH
-        # 优先写入云端
         try:
-            cloud_conn = _get_conn(path)
-            if _is_cloud_connection(cloud_conn):
-                _do_sql(cloud_conn)
-                # 同步到本地缓存
-                try:
-                    _do_sql(_get_local_conn(path))
-                except Exception as local_sync_error:
-                    _debug_log(f"save_ai_word_note 本地缓存同步失败: {local_sync_error}")
-            else:
-                # 本地连接，写入本地
-                _do_sql(cloud_conn)
-        except Exception as cloud_write_error:
-            _debug_log(f"save_ai_word_note 云端写入失败，回退本地: {cloud_write_error}")
-            # 云端失败，写入本地
-            _do_sql(_get_local_conn(path))
+            c = _get_conn(path)
+            _do_sql(c)
+        except Exception as e:
+            _debug_log(f"save_ai_word_note 写入失败: {e}")
 
 
 def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = None, conn: Any = None) -> bool:
@@ -1055,7 +1183,10 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
         return False
 
 def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, metadata: dict = None, conn: Any = None) -> bool:
-    """保存单次迭代结果到独立历史表。"""
+    """保存单次迭代结果到独立历史表
+    
+    使用 Embedded Replicas 连接时，一次写入自动同步本地+云端，无需显式双写。
+    """
     if not voc_id:
         return False
 
@@ -1098,22 +1229,17 @@ def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, meta
                 cn.close()
 
         if conn:
+            # 连接复用场景，直接使用外部连接
             _do_sql(conn)
         else:
+            # 独立连接场景，使用 Embedded Replica 连接
             path = db_path or DB_PATH
             try:
-                cloud_conn = _get_conn(path)
-                if _is_cloud_connection(cloud_conn):
-                    _do_sql(cloud_conn)
-                    try:
-                        _do_sql(_get_local_conn(path))
-                    except Exception as local_sync_error:
-                        _debug_log(f"save_ai_word_iteration 本地缓存同步失败: {local_sync_error}")
-                else:
-                    _do_sql(cloud_conn)
-            except Exception as cloud_write_error:
-                _debug_log(f"save_ai_word_iteration 云端写入失败，回退本地: {cloud_write_error}")
-                _do_sql(_get_local_conn(path))
+                c = _get_conn(path)
+                _do_sql(c)
+            except Exception as e:
+                _debug_log(f"save_ai_word_iteration 写入失败: {e}")
+                return False
 
         return True
     except Exception as e:
@@ -1121,15 +1247,14 @@ def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, meta
         return False
 
 def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> bool:
-    """
-    更新指定单词笔记的同步状态。
+    """更新指定单词笔记的同步状态
+    
+    使用 Embedded Replicas 连接时，一次写入自动同步本地+云端，无需显式双写。
 
     sync_status 约定：
     - 0: 云端未检出自己的释义
     - 1: 云端释义与数据库内容一致
     - 2: 云端已存在自己的释义，但内容与数据库不一致
-    
-    在双库模式（云端+本地缓存）下，确保两库同步。
     """
     def _status_text(value: int) -> str:
         mapping = {
@@ -1142,96 +1267,37 @@ def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> 
     target_status = int(sync_status)
     target_status_text = _status_text(target_status)
 
-    def _format_error(error_obj: Exception) -> str:
-        err_type = type(error_obj).__name__
-        err_detail = repr(error_obj)
-        if isinstance(error_obj, KeyError) and str(error_obj).strip("'\"") == "result":
-            return f"{err_type}: {err_detail}（可能是云端驱动返回结构异常，未包含 result 字段）"
-        return f"{err_type}: {err_detail}"
-
-    def _update_local_only(target_path: str) -> bool:
-        try:
-            local_conn = _get_local_conn(target_path)
-            local_cur = local_conn.cursor()
-            local_cur.execute(
-                'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?',
-                (target_status, get_timestamp_with_tz(), str(voc_id))
-            )
-            local_conn.commit()
-            updated = local_cur.rowcount
-            local_conn.close()
-            if updated > 0:
-                _debug_log(
-                    f"本地回退写入成功: sync_status={target_status}（{target_status_text}）"
-                )
-                return True
-            _debug_log(
-                f"本地回退写入未命中记录: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）",
-                level="WARNING",
-            )
-            return False
-        except Exception as local_error:
-            _debug_log(
-                f"本地回退写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={_format_error(local_error)}"
-            )
-            return False
-
     try:
         path = db_path or DB_PATH
-        conn = _get_conn(path)
-        cur = conn.cursor()
+        c = _get_conn(path)  # Embedded Replica 连接（如有云端配置）
+        cur = c.cursor()
 
         cur.execute(
             'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?',
             (target_status, get_timestamp_with_tz(), str(voc_id))
         )
 
-        conn.commit()
+        c.commit()
         updated = cur.rowcount
-        
-        # 如果是云端连接，同时更新本地缓存库，确保双库一致
-        if _is_cloud_connection(conn):
-            try:
-                local_conn = _get_local_conn(path)
-                local_cur = local_conn.cursor()
-                local_cur.execute(
-                    'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?',
-                    (target_status, get_timestamp_with_tz(), str(voc_id))
-                )
-                local_conn.commit()
-                local_conn.close()
-                _debug_log(
-                    f"本地缓存库写入成功: sync_status={target_status}（{target_status_text}）"
-                )
-            except Exception as local_sync_error:
-                _debug_log(
-                    f"本地缓存库写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={_format_error(local_sync_error)}"
-                )
-        
-        conn.close()
+        c.close()
 
         if updated <= 0:
             _debug_log(
-                f"主库写入未命中记录: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）",
+                f"写入未命中记录: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）",
                 level="WARNING",
             )
             return False
 
         _debug_log(
-            f"主库写入成功: sync_status={target_status}（{target_status_text}）"
+            f"写入成功: sync_status={target_status}（{target_status_text}）"
         )
         return True
 
     except Exception as e:
         _debug_log(
-            f"主库写入失败，准备回退本地: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={_format_error(e)}"
+            f"写入失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）, error={e}"
         )
-        # resumption 依赖本地队列状态；云端异常时回退更新本地，避免重复续传。
-        fallback_ok = _update_local_only(db_path or DB_PATH)
-        _debug_log(
-            f"主库失败后的本地回退结果: voc_id={voc_id}, sync_status={target_status}, fallback={'success' if fallback_ok else 'failed'}"
-        )
-        return fallback_ok
+        return False
 
 
 def mark_note_synced(voc_id: str, db_path: str = None) -> bool:
@@ -1268,7 +1334,8 @@ def get_unsynced_notes(db_path: str = None) -> list:
                       word_ratings, raw_full_text, batch_id, original_meanings, 
                       maimemo_context, it_level, updated_at, content_origin
                FROM ai_word_notes 
-               WHERE sync_status = 0 AND content_origin = 'ai_generated'
+               WHERE sync_status = 0 
+                 AND (content_origin IS NULL OR content_origin = 'ai_generated')
                ORDER BY updated_at ASC'''
         )
         
@@ -1331,7 +1398,7 @@ def find_word_in_community(voc_id: str, ai_provider: str = None, prompt_version:
     # 1. 优先查询云端数据库
     if TURSO_DB_URL and TURSO_AUTH_TOKEN and HAS_LIBSQL:
         try:
-            cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
+            cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN, db_path=DB_PATH)
             cloud_cur = cloud_conn.cursor()
             cloud_cur.execute(
                 '''
@@ -1503,7 +1570,11 @@ def find_words_in_community_batch(
                 break
             cloud_conn = None
             try:
-                cloud_conn = _get_cloud_conn(cloud_url, cloud_token)
+                cloud_conn = _get_cloud_conn(
+                    cloud_url,
+                    cloud_token,
+                    db_path=_get_cloud_lookup_replica_path(cloud_url),
+                )
                 cloud_cur = cloud_conn.cursor()
 
                 placeholders = ','.join(['?'] * len(remaining_ids))
@@ -1602,19 +1673,40 @@ def _emit_sync_progress(progress_callback, stage: str, current: int, total: int,
     except Exception:
         pass
 
+
+def _is_cloud_connection_unavailable_error(error: Exception) -> bool:
+    """判断是否为云端连接不可用或被强制云端模式拦截的错误。"""
+    msg = str(error or "").lower()
+    return (
+        "强制云端模式已启用" in str(error or "")
+        or "cannot connect to the cloud" in msg
+        or "unable to connect" in msg
+        or "failed to connect" in msg
+        or "cloud" in msg and "unavailable" in msg
+    )
+
 @log_performance(lambda: ContextLogger(logging.getLogger(__name__)))
 def sync_databases(
     db_path: str = None,
     dry_run: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, int]:
-    """
-    双向同步云端和本地数据库，确保数据一致性。
-    支持 dry_run 模式，仅返回需要上传和下载的记录数。
-    返回格式: {'upload': X, 'download': Y, 'status': 'ok|skipped|error', 'reason': str}
+    """数据库同步 - Embedded Replicas 版本
+    
+    Embedded Replicas 使用 libsql 内置的 conn.sync() 方法自动同步本地副本和远程主库。
+    
+    Args:
+        db_path: 数据库路径
+        dry_run: 干运行模式（检查但不提交）
+        progress_callback: 进度回调函数
+    
+    Returns:
+        同步统计信息 {'upload': 0, 'download': 0, 'status': 'ok|skipped|error', ...}
     """
     path = db_path or DB_PATH
     stats = {'upload': 0, 'download': 0, 'status': 'ok', 'reason': ''}
+    
+    # 纯本地模式时跳过同步
     if not TURSO_DB_URL or not TURSO_AUTH_TOKEN or not HAS_LIBSQL:
         stats['status'] = 'skipped'
         if not TURSO_DB_URL or not TURSO_AUTH_TOKEN:
@@ -1626,64 +1718,55 @@ def sync_databases(
         return stats
     
     sync_start = time.time()
-    if not dry_run: _debug_log("开始数据库同步...")
-    cloud_conn = None
-    local_conn = None
+    if not dry_run: 
+        _debug_log("开始数据库同步（Embedded Replicas）...")
     
     try:
-        sync_targets = [
-            ('ai_word_notes', 'voc_id', _sync_table),
-            ('processed_words', 'voc_id', _sync_table),
-            ('word_progress_history', None, _sync_progress_history),
-            ('ai_batches', 'batch_id', _sync_table),
-            ('system_config', 'key', _sync_table),
-        ]
-        total_steps = len(sync_targets) + 2
-        step = 1
-        _emit_sync_progress(progress_callback, 'connect', step, total_steps, '连接本地和云端数据库')
-
-        # 获取连接
-        cloud_conn = _get_cloud_conn(TURSO_DB_URL, TURSO_AUTH_TOKEN)
-        local_conn = _get_local_conn(path)
+        _emit_sync_progress(progress_callback, 'connect', 1, 2, '连接 Embedded Replica 数据库')
         
-        # 注意：libsql 不支持 sqlite3.Row row_factory，选择器内部会用 cursor.description 手动转 dict
-        local_conn.row_factory = sqlite3.Row  # 本地 sqlite3 支持
+        # 获取 Embedded Replica 连接（本地+云端自动同步）
+        try:
+            conn = _get_conn(path)
+        except Exception as conn_error:
+            if _is_cloud_connection_unavailable_error(conn_error):
+                stats['status'] = 'skipped'
+                stats['reason'] = 'cloud-unavailable'
+                _emit_sync_progress(progress_callback, 'skipped', 0, 0, f"跳过同步: {conn_error}", status='skipped', reason=stats['reason'])
+                return stats
+            raise
         
-        cloud_cur = cloud_conn.cursor()
-        local_cur = local_conn.cursor()
-
-        step += 1
-        for table_name, primary_key, sync_fn in sync_targets:
-            table_started_at = time.time()
-            _emit_sync_progress(progress_callback, 'table', step, total_steps, f"同步表 {table_name}", table=table_name)
-            if primary_key:
-                u, d = sync_fn(cloud_conn, local_conn, table_name, primary_key, dry_run)
-            else:
-                u, d = sync_fn(cloud_conn, local_conn, dry_run)
-            stats['upload'] += u
-            stats['download'] += d
-            table_elapsed_ms = int((time.time() - table_started_at) * 1000)
-            _emit_sync_progress(
-                progress_callback,
-                'table-done',
-                step,
-                total_steps,
-                f"{table_name}: 上传 {u}, 下载 {d}",
-                table=table_name,
-                upload=u,
-                download=d,
-                duration_ms=table_elapsed_ms,
-            )
-            step += 1
+        # 检查是否为 Embedded Replica 连接（有 sync() 方法）
+        if not hasattr(conn, 'sync'):
+            # 纯本地连接，无需同步
+            stats['status'] = 'skipped'
+            stats['reason'] = 'local-only-connection'
+            _emit_sync_progress(progress_callback, 'done', 1, 2, '本地模式，无需同步', status='skipped')
+            return stats
+        
+        _emit_sync_progress(progress_callback, 'sync', 1, 2, '执行帧级增量同步...')
         
         if not dry_run:
-            cloud_conn.commit()
-            local_conn.commit()
-        _emit_sync_progress(progress_callback, 'finalize', total_steps, total_steps, '提交并关闭连接', upload=stats['upload'], download=stats['download'])
+            # 执行同步：Turso 在服务器端跟踪每个副本的同步点位，
+            # 每次 sync() 只传输客户端未见过的新帧，实现高效的增量同步
+            sync_result = conn.sync()
+            _debug_log(f"同步完成: {sync_result}")
+            
+            # 为了兼容原有的统计信息格式，这里返回一个通用的"已同步"标记
+            # 在真实应用中，可以通过其他方式计算精确的上传/下载行数
+            # 这里使用一个简单的启发式方法：如果 sync() 没有异常，认为已同步
+            stats['upload'] = 0  # Embedded Replicas 自动处理，不需要显式统计
+            stats['download'] = 0
+            stats['frames_synced'] = getattr(sync_result, 'frames_synced', 0) if sync_result else 0
+        
+        _emit_sync_progress(progress_callback, 'done', 2, 2, '同步完成', upload=0, download=0)
         
         total_time = int((time.time() - sync_start) * 1000)
         stats['duration_ms'] = total_time
-        if not dry_run: _debug_log(f"数据库同步完成 | 总耗时: {total_time}ms")
+        stats['status'] = 'ok'
+        
+        if not dry_run:
+            _debug_log(f"数据库同步完成 | 总耗时: {total_time}ms")
+        
         return stats
         
     except Exception as e:
@@ -1692,17 +1775,6 @@ def sync_databases(
         stats['reason'] = str(e)
         _emit_sync_progress(progress_callback, 'error', 0, 0, f"同步失败: {e}", status='error', reason=str(e))
         return stats
-    finally:
-        if cloud_conn:
-            try:
-                cloud_conn.close()
-            except Exception:
-                pass
-        if local_conn:
-            try:
-                local_conn.close()
-            except Exception:
-                pass
 
 def _row_to_dict(cursor, row) -> dict:
     """将任意 row 对象（sqlite3.Row 或 libsql tuple）安全转换为 dict。"""
@@ -1724,168 +1796,6 @@ def _row_to_dict(cursor, row) -> dict:
         # libsql 返回 tuple，用 cursor.description 获取列名
         cols = [d[0] for d in cursor.description]
         return dict(zip(cols, row))
-
-def _sync_table(cloud_conn, local_conn, table_name: str, primary_key: str, dry_run: bool = False):
-    """优化后的轻量化同步：元数据优先 + 按需拉取"""
-    cloud_cur = cloud_conn.cursor()
-    local_cur = local_conn.cursor()
-    
-    # 自动识别时间戳列
-    ts_col = 'updated_at'
-    if table_name == 'ai_batches': ts_col = 'created_at'
-    if table_name == 'admin_logs': ts_col = 'timestamp'
-
-    # 1. 快速路径检测 (Fast Path)
-    try:
-        cloud_cur.execute(f'SELECT COUNT(*), MAX({ts_col}) FROM {table_name}')
-        c_count, c_max_ts = cloud_cur.fetchone()
-        local_cur.execute(f'SELECT COUNT(*), MAX({ts_col}) FROM {table_name}')
-        l_count, l_max_ts = local_cur.fetchone()
-        
-        if c_count == l_count and str(c_max_ts) == str(l_max_ts):
-            if not dry_run: _debug_log(f"  {table_name}: 数据一致，跳过对比")
-            return 0, 0
-    except Exception as e:
-        _debug_log(f"  {table_name}: 快速路径检测异常，执行全量对比: {e}")
-
-    # 2. 元数据拉取 (只拉取 ID 和 时间戳)
-    cloud_cur.execute(f'SELECT {primary_key}, {ts_col} FROM {table_name}')
-    cloud_meta = {r[0]: r[1] for r in cloud_cur.fetchall()}
-    
-    local_cur.execute(f'SELECT {primary_key}, {ts_col} FROM {table_name}')
-    local_meta = {r[0]: r[1] for r in local_cur.fetchall()}
-
-    def _clean_ts(ts):
-        if not ts: return ""
-        return str(ts).split('.')[0].replace('T', ' ')
-
-    keys_to_upload = []
-    keys_to_download = []
-
-    for k, l_ts in local_meta.items():
-        c_ts = cloud_meta.get(k)
-        if not c_ts or _clean_ts(l_ts) > _clean_ts(c_ts):
-            keys_to_upload.append(k)
-            
-    for k, c_ts in cloud_meta.items():
-        l_ts = local_meta.get(k)
-        if not l_ts or _clean_ts(c_ts) > _clean_ts(l_ts):
-            keys_to_download.append(k)
-
-    if not dry_run: _debug_log(f"  {table_name}: 需上传 {len(keys_to_upload)}, 需下载 {len(keys_to_download)}")
-    if dry_run: return len(keys_to_upload), len(keys_to_download)
-
-    # 3. 按需批量拉取并写入
-    def _fetch_and_apply(src_conn, src_cur, dest_conn, dest_cur, keys, action_name):
-        if not keys: return 0
-        total_count = 0
-        CHUNK_SIZE = 50
-
-        # 获取目标表的列定义
-        dest_cur.execute(f"PRAGMA table_info({table_name})")
-        dest_cols = {row[1] for row in dest_cur.fetchall()}
-
-        for i in range(0, len(keys), CHUNK_SIZE):
-            chunk_keys = keys[i:i + CHUNK_SIZE]
-            placeholders = ', '.join(['?'] * len(chunk_keys))
-            src_cur.execute(f'SELECT * FROM {table_name} WHERE {primary_key} IN ({placeholders})', chunk_keys)
-            rows = src_cur.fetchall()
-
-            if not rows: continue
-
-            data = [_row_to_dict(src_cur, row) for row in rows]
-
-            # 只选择目标表中存在的列
-            valid_cols = [col for col in data[0].keys() if col in dest_cols]
-            if not valid_cols:
-                continue
-
-            cols = ', '.join(valid_cols)
-            vals = ', '.join(['?'] * len(valid_cols))
-            sql = f'INSERT OR REPLACE INTO {table_name} ({cols}) VALUES ({vals})'
-
-            # 只选择有效列的值
-            valid_data = [tuple(r[col] for col in valid_cols) for r in data]
-            dest_cur.executemany(sql, valid_data)
-            dest_conn.commit()
-            total_count += len(data)
-            if len(keys) > CHUNK_SIZE:
-                _debug_log(f"  {table_name} {action_name} 进度: {total_count}/{len(keys)}")
-
-        return total_count
-
-    up = _fetch_and_apply(local_conn, local_cur, cloud_conn, cloud_cur, keys_to_upload, "上传")
-    down = _fetch_and_apply(cloud_conn, cloud_cur, local_conn, local_cur, keys_to_download, "下载")
-    
-    return up, down
-
-
-def _sync_progress_history(cloud_conn, local_conn, dry_run=False):
-    """重构后的大表同步逻辑：基于最后更新时间戳的增量同步"""
-    cloud_cur = cloud_conn.cursor()
-    local_cur = local_conn.cursor()
-    
-    # 1. 快速路径：对齐计数和最大时间戳
-    try:
-        cloud_cur.execute('SELECT COUNT(*), MAX(created_at) FROM word_progress_history')
-        c_count, c_max_ts = cloud_cur.fetchone()
-        local_cur.execute('SELECT COUNT(*), MAX(created_at) FROM word_progress_history')
-        l_count, l_max_ts = local_cur.fetchone()
-        
-        if c_count == l_count and str(c_max_ts) == str(l_max_ts) and c_max_ts is not None:
-            return 0, 0
-    except: pass
-
-    # 2. 增量同步逻辑
-    to_upload = []
-    to_download = []
-    
-    # 本地 -> 云端 (上传最新)
-    if l_max_ts and (not c_max_ts or str(l_max_ts) > str(c_max_ts)):
-        limit_ts = str(c_max_ts) if c_max_ts else '0000-00-00'
-        local_cur.execute('SELECT * FROM word_progress_history WHERE created_at > ?', (limit_ts,))
-        for r in local_cur.fetchall():
-            d = _row_to_dict(local_cur, r)
-            to_upload.append({k: v for k, v in d.items() if k != 'id'})
-            
-    # 云端 -> 本地 (下载最新)
-    if c_max_ts and (not l_max_ts or str(c_max_ts) > str(l_max_ts)):
-        limit_ts = str(l_max_ts) if l_max_ts else '0000-00-00'
-        cloud_cur.execute('SELECT * FROM word_progress_history WHERE created_at > ?', (limit_ts,))
-        for r in cloud_cur.fetchall():
-            d = _row_to_dict(cloud_cur, r)
-            to_download.append({k: v for k, v in d.items() if k != 'id'})
-
-    if dry_run: return len(to_upload), len(to_download)
-
-    def _apply_history(conn, cur, data, name):
-        if not data: return 0
-
-        # 获取目标表的列定义
-        cur.execute("PRAGMA table_info(word_progress_history)")
-        dest_cols = {row[1] for row in cur.fetchall()}
-
-        # 只选择目标表中存在的列
-        valid_cols = [col for col in data[0].keys() if col in dest_cols]
-        if not valid_cols:
-            return 0
-
-        cols = ', '.join(valid_cols)
-        vals = ', '.join(['?'] * len(valid_cols))
-        params = [tuple(r[col] for col in valid_cols) for r in data]
-
-        try:
-            # INSERT OR IGNORE 配合唯一约束
-            cur.executemany(f'INSERT OR IGNORE INTO word_progress_history ({cols}) VALUES ({vals})', params)
-            conn.commit()
-            _debug_log(f"  word_progress_history {name} 完成: {len(data)} 条")
-        except Exception as e:
-            _debug_log(f"  word_progress_history {name} 失败: {e}")
-        return len(data)
-
-    u = _apply_history(cloud_conn, cloud_cur, to_upload, "上传")
-    d = _apply_history(local_conn, local_cur, to_download, "下载")
-    return (u, d)
 
 
 # ============================================================================
@@ -1914,7 +1824,7 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         for attempt in range(max_retries):
             try:
                 _debug_log(f"尝试连接云端 Hub (第 {attempt + 1}/{max_retries} 次)")
-                return _get_cloud_conn(TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN)
+                return _get_cloud_conn(TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, db_path=HUB_DB_PATH)
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:  # 不是最后一次尝试
@@ -1930,13 +1840,52 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
     # 非强制模式下，无配置或失败时回退到本地
     if not get_force_cloud_mode():
         _debug_log("回退到本地 Hub 数据库")
-        os.makedirs(os.path.dirname(os.path.abspath(HUB_DB_PATH)), exist_ok=True)
-        conn = sqlite3.connect(HUB_DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return _get_hub_local_conn()
 
     # 强制模式下如果到这里说明配置有问题
     raise RuntimeError("强制云端模式已启用，但无法连接到云端 Hub 数据库")
+
+
+def _get_hub_local_conn() -> sqlite3.Connection:
+    """获取 Hub 本地连接，并在损坏时执行与用户库同等级的自愈。"""
+    path = HUB_DB_PATH
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+
+    def _open_local_connection() -> sqlite3.Connection:
+        conn = sqlite3.connect(path, timeout=20.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        return conn
+
+    try:
+        return _open_local_connection()
+    except (sqlite3.DatabaseError, sqlite3.OperationalError) as error:
+        if not _is_sqlite_malformed_error(error):
+            raise
+
+        backup_path = _backup_broken_database_file(path, "检测到 Hub 本地数据库损坏，已备份本地数据库")
+        if not backup_path:
+            raise
+
+        if HAS_LIBSQL and TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN:
+            try:
+                _debug_log(f"Hub 本地数据库损坏后，尝试通过云端副本重建: {path}", level="WARNING")
+                return _get_cloud_conn(TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, db_path=path)
+            except Exception as recovery_error:
+                _debug_log(f"通过云端副本重建 Hub 本地数据库失败，改为重新初始化空库: {recovery_error}", level="WARNING")
+
+        conn = _open_local_connection()
+        try:
+            _init_hub_schema(conn)
+            conn.commit()
+        except Exception as init_error:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise RuntimeError(f"Hub 本地数据库重建失败: {init_error}")
+        return conn
 
 def init_users_hub_tables() -> bool:
     """初始化中央用户 Hub 数据库的6个表"""
@@ -2529,9 +2478,21 @@ def sync_hub_databases(
     dry_run: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
-    """同步中央 Hub 数据库（本地与云端双向同步）"""
+    """同步中央 Hub 数据库 - Embedded Replicas 版本
+    
+    使用 Embedded Replicas 的 conn.sync() 方法实现高效的增量同步。
+    
+    Args:
+        dry_run: 干运行模式（检查但不提交）
+        progress_callback: 进度回调函数
+    
+    Returns:
+        同步统计信息 {'upload': 0, 'download': 0, 'status': 'ok|skipped|error', ...}
+    """
     stats = {'upload': 0, 'download': 0, 'status': 'ok', 'reason': ''}
     sync_start = time.time()
+    
+    # 检查 Hub 凭据
     if not TURSO_HUB_DB_URL or not TURSO_HUB_AUTH_TOKEN or not HAS_LIBSQL:
         stats['status'] = 'skipped'
         if not TURSO_HUB_DB_URL or not TURSO_HUB_AUTH_TOKEN:
@@ -2542,303 +2503,161 @@ def sync_hub_databases(
         return stats
     
     _curr_logger = get_logger()
-    if not dry_run: _curr_logger.debug("正在同步中央 Hub 数据库...", module="db_manager")
-    cloud_conn = None
-    local_conn = None
+    if not dry_run:
+        _curr_logger.debug("正在同步中央 Hub 数据库（Embedded Replicas）...", module="db_manager")
     
     try:
-        cloud_conn = _get_cloud_conn(TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN)
-        local_conn = sqlite3.connect(HUB_DB_PATH)
-        local_conn.row_factory = sqlite3.Row
-
-        # 先确保本地 Hub schema 完整，避免同步时出现 no such table
-        local_cur = local_conn.cursor()
-        local_cur.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                created_at TEXT NOT NULL,
-                first_login_at TEXT,
-                last_login_at TEXT,
-                status TEXT DEFAULT 'active',
-                role TEXT DEFAULT 'user',
-                notes TEXT,
-                updated_at TEXT
-            )
-        ''')
-        local_cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_auth (
-                user_id TEXT PRIMARY KEY,
-                password_hash TEXT,
-                auth_type TEXT DEFAULT 'local',
-                failed_attempts INTEGER DEFAULT 0,
-                last_failed_at TEXT,
-                last_password_change TEXT,
-                must_change_password INTEGER DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        ''')
-        local_cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_sync_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                sync_type TEXT NOT NULL,
-                source TEXT,
-                target TEXT,
-                record_count INTEGER,
-                sync_status TEXT,
-                error_msg TEXT,
-                timestamp TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        ''')
-        local_cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_stats (
-                user_id TEXT PRIMARY KEY,
-                total_words_processed INTEGER DEFAULT 0,
-                total_ai_calls INTEGER DEFAULT 0,
-                total_prompt_tokens INTEGER DEFAULT 0,
-                total_completion_tokens INTEGER DEFAULT 0,
-                total_sync_count INTEGER DEFAULT 0,
-                last_activity_at TEXT,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        ''')
-        local_cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                session_id TEXT UNIQUE NOT NULL,
-                client_info TEXT NOT NULL,
-                ip_address TEXT NOT NULL,
-                login_at TEXT NOT NULL,
-                logout_at TEXT,
-                last_activity_at TEXT,
-                session_status TEXT DEFAULT 'active',
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        ''')
-        local_cur.execute('''
-            CREATE TABLE IF NOT EXISTS admin_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                action_type TEXT NOT NULL,
-                action_detail TEXT,
-                admin_username TEXT,
-                target_user_id TEXT,
-                timestamp TEXT NOT NULL,
-                result TEXT DEFAULT 'success'
-            )
-        ''')
-        local_cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_credentials (
-                user_id TEXT PRIMARY KEY,
-                turso_db_url_enc TEXT,
-                turso_auth_token_enc TEXT,
-                momo_token_enc TEXT,
-                mimo_api_key_enc TEXT,
-                gemini_api_key_enc TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        ''')
-        local_conn.commit()
+        _emit_sync_progress(progress_callback, 'connect', 1, 2, '连接 Hub Embedded Replica 数据库')
         
-        sync_targets = [
-            ('users', 'user_id'),
-            ('user_stats', 'user_id'),
-            ('user_auth', 'user_id'),
-            ('user_sessions', 'session_id'),
-            ('user_sync_history', 'id'),
-            ('admin_logs', 'id'),
-            ('user_credentials', 'user_id'),
-        ]
-
-        total_steps = len(sync_targets) + 2
-        step = 1
-        _emit_sync_progress(progress_callback, 'connect', step, total_steps, '连接 Hub 本地和云端数据库')
-
-        step += 1
-
-        table_errors: List[str] = []
-
-        for table_name, primary_key in sync_targets:
-            try:
-                table_started_at = time.time()
-                _emit_sync_progress(progress_callback, 'table', step, total_steps, f"同步 Hub 表 {table_name}", table=table_name)
-                u, d = _sync_hub_table(cloud_conn, local_conn, table_name, primary_key, dry_run)
-                stats['upload'] += u
-                stats['download'] += d
-                table_elapsed_ms = int((time.time() - table_started_at) * 1000)
-                _emit_sync_progress(
-                    progress_callback,
-                    'table-done',
-                    step,
-                    total_steps,
-                    f"Hub {table_name}: 上传 {u}, 下载 {d}",
-                    table=table_name,
-                    upload=u,
-                    download=d,
-                    duration_ms=table_elapsed_ms,
-                )
-            except Exception as table_error:
-                error_kind = type(table_error).__name__
-                error_text = f"{table_name}:{error_kind}:{table_error}"
-                table_errors.append(error_text)
-                _debug_log(f"Hub 表同步跳过: {table_name} -> [{error_kind}] {table_error}")
-                _emit_sync_progress(
-                    progress_callback,
-                    'table-error',
-                    step,
-                    total_steps,
-                    f"Hub {table_name} 跳过: [{error_kind}] {table_error}",
-                    table=table_name,
-                    status='partial',
-                )
-            step += 1
-
-        if table_errors and stats['status'] == 'ok':
-            stats['status'] = 'partial'
-            stats['reason'] = '; '.join(table_errors[:3])
-
-        _emit_sync_progress(
-            progress_callback,
-            'finalize',
-            total_steps,
-            total_steps,
-            '完成 Hub 同步',
-            upload=stats['upload'],
-            download=stats['download'],
-            status=stats['status'],
-            reason=stats['reason'],
-        )
+        # 初始化本地 Hub 表结构（确保表存在）
+        try:
+            local_hub_conn = _get_hub_local_conn()
+            _init_hub_schema(local_hub_conn)
+            local_hub_conn.close()
+        except Exception as e:
+            _debug_log(f"Hub 本地表初始化警告（非致命）: {e}")
         
-        total_elapsed_ms = int((time.time() - sync_start) * 1000)
-        stats['duration_ms'] = total_elapsed_ms
-        if not dry_run: _curr_logger.debug(f"Hub 同步完成: 上传 {stats['upload']}, 下载 {stats['download']} | 耗时 {total_elapsed_ms}ms", module="db_manager")
+        # 获取 Hub 的 Embedded Replica 连接
+        try:
+            hub_conn = _get_hub_conn()
+        except Exception as conn_error:
+            if _is_cloud_connection_unavailable_error(conn_error):
+                stats['status'] = 'skipped'
+                stats['reason'] = 'cloud-unavailable'
+                _emit_sync_progress(progress_callback, 'skipped', 0, 0, f"跳过 Hub 同步: {conn_error}", status='skipped', reason=stats['reason'])
+                return stats
+            raise
+        
+        # 检查是否为 Embedded Replica 连接（有 sync() 方法）
+        if not hasattr(hub_conn, 'sync'):
+            # 纯本地 Hub 连接，无需同步
+            stats['status'] = 'skipped'
+            stats['reason'] = 'local-only-hub-connection'
+            _emit_sync_progress(progress_callback, 'done', 1, 2, 'Hub 本地模式，无需同步', status='skipped')
+            return stats
+        
+        _emit_sync_progress(progress_callback, 'sync', 1, 2, '执行 Hub 帧级增量同步...')
+        
+        if not dry_run:
+            # 执行 Hub 同步
+            sync_result = hub_conn.sync()
+            _debug_log(f"Hub 同步完成: {sync_result}")
+            stats['frames_synced'] = getattr(sync_result, 'frames_synced', 0) if sync_result else 0
+        
+        _emit_sync_progress(progress_callback, 'done', 2, 2, 'Hub 同步完成', upload=0, download=0)
+        
+        total_time = int((time.time() - sync_start) * 1000)
+        stats['duration_ms'] = total_time
+        stats['status'] = 'ok'
+        
+        if not dry_run:
+            _curr_logger.debug(f"Hub 同步完成 | 耗时 {total_time}ms", module="db_manager")
+        
         return stats
+        
     except Exception as e:
         _debug_log(f"Hub 同步失败: {e}")
         stats['status'] = 'error'
         stats['reason'] = str(e)
         _emit_sync_progress(progress_callback, 'error', 0, 0, f"Hub 同步失败: {e}", status='error', reason=str(e))
         return stats
-    finally:
-        if cloud_conn:
-            try:
-                cloud_conn.close()
-            except Exception:
-                pass
-        if local_conn:
-            try:
-                local_conn.close()
-            except Exception:
-                pass
 
-def _sync_hub_table(cloud_conn, local_conn, table_name: str, primary_key: str, dry_run: bool = False):
-    """优化后的 Hub 同步：处理空时间戳并采用轻量化模式"""
-    cloud_cur = cloud_conn.cursor()
-    local_cur = local_conn.cursor()
 
-    def _extract_pair(cursor_obj, row_obj):
-        if row_obj is None:
-            return None, None
-        if isinstance(row_obj, (tuple, list)) and len(row_obj) >= 2:
-            return row_obj[0], row_obj[1]
-        try:
-            return row_obj[0], row_obj[1]
-        except Exception:
-            row_dict = _row_to_dict(cursor_obj, row_obj)
-            values = list(row_dict.values())
-            if len(values) >= 2:
-                return values[0], values[1]
-            raise ValueError(f"unexpected metadata row format for table {table_name}: {row_obj}")
-
-    ts_col_map = {
-        'admin_logs': 'timestamp',
-        'user_sync_history': 'timestamp',
-        'user_sessions': 'last_activity_at',
-        'users': 'last_login_at',
-    }
-    ts_col = ts_col_map.get(table_name, 'updated_at')
-
-    # 1. 快速路径检测
-    try:
-        cloud_cur.execute(f'SELECT COUNT(*), MAX({ts_col}) FROM {table_name}')
-        c_count, c_max_ts = _extract_pair(cloud_cur, cloud_cur.fetchone())
-        local_cur.execute(f'SELECT COUNT(*), MAX({ts_col}) FROM {table_name}')
-        l_count, l_max_ts = _extract_pair(local_cur, local_cur.fetchone())
-        
-        if c_count == l_count and str(c_max_ts) == str(l_max_ts) and c_max_ts is not None:
-            return 0, 0
-    except Exception:
-        pass
-
-    # 2. 元数据拉取
-    cloud_cur.execute(f'SELECT {primary_key}, {ts_col} FROM {table_name}')
-    cloud_meta = {}
-    for r in cloud_cur.fetchall():
-        key, ts = _extract_pair(cloud_cur, r)
-        cloud_meta[key] = ts
-    
-    local_cur.execute(f'SELECT {primary_key}, {ts_col} FROM {table_name}')
-    local_meta = {}
-    for r in local_cur.fetchall():
-        key, ts = _extract_pair(local_cur, r)
-        local_meta[key] = ts
-
-    def _clean_ts(ts):
-        if not ts: return "0000-00-00" # 给空值一个极小的时间戳
-        return str(ts).split('.')[0].replace('T', ' ')
-
-    keys_to_upload = []
-    keys_to_download = []
-
-    for k, l_ts in local_meta.items():
-        c_ts = cloud_meta.get(k)
-        # 如果云端没有，或者本地更亲（包括本地有时间戳而云端没有的情况）
-        if k not in cloud_meta or _clean_ts(l_ts) > _clean_ts(c_ts):
-            keys_to_upload.append(k)
-            
-    for k, c_ts in cloud_meta.items():
-        l_ts = local_meta.get(k)
-        if k not in local_meta or _clean_ts(c_ts) > _clean_ts(l_ts):
-            keys_to_download.append(k)
-
-    # Hub 中 users 以云端为权威，避免本地脏记录反向覆盖并导致同步失败
-    if table_name == 'users':
-        keys_to_upload = []
-
-    if dry_run: return len(keys_to_upload), len(keys_to_download)
-
-    # 3. 按需拉取并应用
-    def _fetch_and_apply_hub(src_conn, src_cur, dest_conn, dest_cur, keys, action_name):
-        if not keys: return 0
-        total_count = 0
-        CHUNK_SIZE = 40
-        for i in range(0, len(keys), CHUNK_SIZE):
-            chunk_keys = keys[i:i + CHUNK_SIZE]
-            placeholders = ', '.join(['?'] * len(chunk_keys))
-            src_cur.execute(f'SELECT * FROM {table_name} WHERE {primary_key} IN ({placeholders})', chunk_keys)
-            rows = src_cur.fetchall()
-            if not rows: continue
-            
-            data = [_row_to_dict(src_cur, r) for r in rows]
-            cols = ', '.join(data[0].keys())
-            vals = ', '.join(['?'] * len(data[0]))
-            sql = f'INSERT OR REPLACE INTO {table_name} ({cols}) VALUES ({vals})'
-            
-            dest_cur.executemany(sql, [tuple(r.values()) for r in data])
-            dest_conn.commit()
-            total_count += len(data)
-        return total_count
-
-    up = _fetch_and_apply_hub(local_conn, local_cur, cloud_conn, cloud_cur, keys_to_upload, "上传")
-    down = _fetch_and_apply_hub(cloud_conn, cloud_cur, local_conn, local_cur, keys_to_download, "下载")
-
-    return up, down
+def _init_hub_schema(conn: sqlite3.Connection):
+    """初始化 Hub 本地表结构"""
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL,
+            first_login_at TEXT,
+            last_login_at TEXT,
+            status TEXT DEFAULT 'active',
+            role TEXT DEFAULT 'user',
+            notes TEXT,
+            updated_at TEXT
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_auth (
+            user_id TEXT PRIMARY KEY,
+            password_hash TEXT,
+            auth_type TEXT DEFAULT 'local',
+            failed_attempts INTEGER DEFAULT 0,
+            last_failed_at TEXT,
+            last_password_change TEXT,
+            must_change_password INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_sync_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            sync_type TEXT NOT NULL,
+            source TEXT,
+            target TEXT,
+            record_count INTEGER,
+            sync_status TEXT,
+            error_msg TEXT,
+            timestamp TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_stats (
+            user_id TEXT PRIMARY KEY,
+            total_words_processed INTEGER DEFAULT 0,
+            total_ai_calls INTEGER DEFAULT 0,
+            total_prompt_tokens INTEGER DEFAULT 0,
+            total_completion_tokens INTEGER DEFAULT 0,
+            total_sync_count INTEGER DEFAULT 0,
+            last_activity_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            session_id TEXT UNIQUE NOT NULL,
+            client_info TEXT NOT NULL,
+            ip_address TEXT NOT NULL,
+            login_at TEXT NOT NULL,
+            logout_at TEXT,
+            last_activity_at TEXT,
+            session_status TEXT DEFAULT 'active',
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS admin_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action_type TEXT NOT NULL,
+            action_detail TEXT,
+            admin_username TEXT,
+            target_user_id TEXT,
+            timestamp TEXT NOT NULL,
+            result TEXT DEFAULT 'success'
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_credentials (
+            user_id TEXT PRIMARY KEY,
+            turso_db_url_enc TEXT,
+            turso_auth_token_enc TEXT,
+            momo_token_enc TEXT,
+            mimo_api_key_enc TEXT,
+            gemini_api_key_enc TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
+        )
+    ''')
+    conn.commit()
 

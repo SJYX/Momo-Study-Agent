@@ -2,6 +2,19 @@
 
 记录 Momo Study Agent 项目文档的变更历史。
 
+## 2026-04-17
+
+### Embedded Replicas 迁移收口（Phase 3/4）
+- 同步文档与实现对齐：`sync_databases()` / `sync_hub_databases()` 均采用 `conn.sync()`，旧手工同步辅助函数已移除。
+- 更新 `docs/dev/AUTO_SYNC.md` 的进度事件阶段枚举为 `connect|sync|done|error|skipped`，并修正后台日志示例。
+- 更新 `README.md`，补充当前同步架构与默认回归测试命令。
+- 更新 `docs/dev/QUICK_START.md`，补充最短可执行路径（安装、preflight、测试、运行）。
+- 更新 `docs/DOCUMENT_INDEX.md`，纳入 Phase 3/4 文档并刷新时间戳。
+
+### 阶段交付状态对齐
+- `docs/dev/EMBEDDED_REPLICAS_PHASE_0_2_COMPLETION.md` 中的“Phase 3/4 可选”改为“已完成”。
+- 增加与 `docs/dev/PHASE_3_SYNC_OPTIMIZATION.md`、`docs/dev/PHASE_4_TESTING_VALIDATION.md` 的交叉引用，形成迁移文档闭环。
+
 ## 2026-04-14
 
 ### CLI 帮助信息增强

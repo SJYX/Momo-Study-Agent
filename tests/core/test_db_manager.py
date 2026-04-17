@@ -243,7 +243,7 @@ def test_find_words_in_community_batch_queries_cloud_for_local_misses(temp_db, m
         def close(self):
             pass
 
-    monkeypatch.setattr(db_manager, "_get_cloud_conn", lambda url, token: FakeCloudConn())
+    monkeypatch.setattr(db_manager, "_get_cloud_conn", lambda url, token, db_path=None: FakeCloudConn())
 
     results = find_words_in_community_batch(
         [local_voc_id, cloud_voc_id],
@@ -416,3 +416,350 @@ def test_set_note_sync_status_dual_db_sync(temp_db):
     final_status = cur.fetchone()[0]
     assert final_status == 2, f"最终状态应为 2，实际为 {final_status}"
     conn.close()
+
+
+def test_get_cloud_conn_self_heals_when_metadata_missing(tmp_path, monkeypatch):
+    """当本地副本 metadata 丢失时，应自动备份旧 db 并重建连接。"""
+    db_path = tmp_path / "replica_main.db"
+    db_path.write_text("stale-db", encoding="utf-8")
+
+    call_state = {"count": 0}
+
+    class FakeConn:
+        def __init__(self, fail_sync=False):
+            self.fail_sync = fail_sync
+            self.closed = False
+
+        def sync(self):
+            if self.fail_sync:
+                raise RuntimeError("local state is incorrect, db file exists but metadata file does not")
+
+        def close(self):
+            self.closed = True
+
+    def fake_connect(local_path, sync_url=None, auth_token=None):
+        assert str(local_path) == str(db_path)
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            return FakeConn(fail_sync=True)
+        return FakeConn(fail_sync=False)
+
+    monkeypatch.setattr(db_manager.libsql, "connect", fake_connect)
+
+    conn = db_manager._get_cloud_conn("libsql://example", "token", db_path=str(db_path))
+    assert conn is not None
+    assert call_state["count"] == 2
+
+    backups = list(tmp_path.glob("replica_main.db.er-broken-*.bak"))
+    assert len(backups) == 1, "应创建损坏副本备份文件"
+
+
+def test_get_cloud_conn_self_heals_when_malformed(tmp_path, monkeypatch):
+    """当本地副本 malformed 时，应自动备份并重建连接。"""
+    db_path = tmp_path / "replica_malformed.db"
+    db_path.write_text("stale-db", encoding="utf-8")
+
+    call_state = {"count": 0}
+
+    class FakeConn:
+        def __init__(self, fail_sync=False):
+            self.fail_sync = fail_sync
+
+        def sync(self):
+            if self.fail_sync:
+                raise RuntimeError("database disk image is malformed")
+
+        def close(self):
+            pass
+
+    def fake_connect(local_path, sync_url=None, auth_token=None):
+        assert str(local_path) == str(db_path)
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            return FakeConn(fail_sync=True)
+        return FakeConn(fail_sync=False)
+
+    monkeypatch.setattr(db_manager.libsql, "connect", fake_connect)
+
+    conn = db_manager._get_cloud_conn("libsql://example", "token", db_path=str(db_path))
+    assert conn is not None
+    assert call_state["count"] == 2
+
+    backups = list(tmp_path.glob("replica_malformed.db.er-broken-*.bak"))
+    assert len(backups) == 1
+
+
+def test_backup_broken_replica_file_removes_sidecars(tmp_path):
+    """备份损坏副本时应清理 wal/shm/info 残留，避免后续重建污染。"""
+    base = tmp_path / "local.db"
+    base.write_text("x", encoding="utf-8")
+    (tmp_path / "local.db-wal").write_text("wal", encoding="utf-8")
+    (tmp_path / "local.db-shm").write_text("shm", encoding="utf-8")
+    (tmp_path / "local.db-info").write_text("info", encoding="utf-8")
+
+    backup_path = db_manager._backup_broken_replica_file(str(base))
+    assert backup_path is not None
+    assert not base.exists()
+    assert not (tmp_path / "local.db-wal").exists()
+    assert not (tmp_path / "local.db-shm").exists()
+    assert not (tmp_path / "local.db-info").exists()
+    assert os.path.exists(backup_path)
+
+
+def test_backup_broken_replica_file_returns_none_when_source_still_locked(tmp_path, monkeypatch):
+    """copy 兜底后若源文件仍无法删除，不应误判为备份成功。"""
+    base = tmp_path / "locked.db"
+    base.write_text("x", encoding="utf-8")
+
+    def fake_move(src, dst):
+        raise OSError("rename across boundary")
+
+    monkeypatch.setattr(db_manager.shutil, "move", fake_move)
+
+    original_remove = os.remove
+
+    def fake_remove(path):
+        if str(path) == str(base):
+            raise OSError("file is locked")
+        return original_remove(path)
+
+    monkeypatch.setattr(db_manager.os, "remove", fake_remove)
+
+    backup_path = db_manager._backup_broken_replica_file(str(base))
+    assert backup_path is None
+    assert base.exists()
+
+
+def test_backup_broken_replica_file_reuses_daily_filename(tmp_path):
+    """同一天重复备份时应复用同一个备份文件，避免无限堆积。"""
+    base = tmp_path / "local.db"
+    base.write_text("first", encoding="utf-8")
+
+    first_backup = db_manager._backup_broken_replica_file(str(base))
+    assert first_backup is not None
+
+    base.write_text("second", encoding="utf-8")
+    second_backup = db_manager._backup_broken_replica_file(str(base))
+
+    assert second_backup == first_backup
+    backups = list(tmp_path.glob("local.db.er-broken-*.bak"))
+    assert len(backups) == 1
+
+
+def test_get_hub_conn_passes_hub_db_path_to_cloud_conn(monkeypatch):
+    """Hub 云端连接必须绑定 HUB_DB_PATH，避免与主库副本路径混用。"""
+    monkeypatch.setattr(db_manager, "HAS_LIBSQL", True)
+    monkeypatch.setattr(db_manager, "TURSO_HUB_DB_URL", "libsql://hub")
+    monkeypatch.setattr(db_manager, "TURSO_HUB_AUTH_TOKEN", "hub-token")
+
+    captured = {}
+
+    def fake_get_cloud_conn(url, token, db_path=None):
+        captured["url"] = url
+        captured["token"] = token
+        captured["db_path"] = db_path
+        return object()
+
+    monkeypatch.setattr(db_manager, "_get_cloud_conn", fake_get_cloud_conn)
+    monkeypatch.setattr("config.get_force_cloud_mode", lambda: False)
+
+    conn = db_manager._get_hub_conn(max_retries=1)
+    assert conn is not None
+    assert captured["url"] == "libsql://hub"
+    assert captured["token"] == "hub-token"
+    assert captured["db_path"] == db_manager.HUB_DB_PATH
+
+
+def test_get_hub_conn_local_fallback_recovers_from_malformed(tmp_path, monkeypatch):
+    """Hub 回退本地时遇到坏库，应自动备份并重建可用本地库。"""
+    hub_db = tmp_path / "hub.db"
+    hub_db.write_text("corrupt", encoding="utf-8")
+
+    monkeypatch.setattr(db_manager, "HUB_DB_PATH", str(hub_db))
+    monkeypatch.setattr(db_manager, "HAS_LIBSQL", False)
+    monkeypatch.setattr(db_manager, "TURSO_HUB_DB_URL", None)
+    monkeypatch.setattr(db_manager, "TURSO_HUB_AUTH_TOKEN", None)
+    monkeypatch.setattr("config.get_force_cloud_mode", lambda: False)
+
+    original_connect = sqlite3.connect
+    call_state = {"count": 0}
+
+    def fake_connect(path, timeout=20.0):
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return original_connect(path, timeout=timeout)
+
+    monkeypatch.setattr(db_manager.sqlite3, "connect", fake_connect)
+
+    conn = db_manager._get_hub_conn(max_retries=1)
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+
+    assert cur.fetchone() is not None
+    assert call_state["count"] == 2
+    assert list(tmp_path.glob("hub.db.er-broken-*.bak"))
+    conn.close()
+
+
+def test_cloud_lookup_replica_path_is_stable_and_isolated(monkeypatch, tmp_path):
+    """跨库补查副本路径应按 cloud_url 隔离，且同 URL 稳定复用。"""
+    monkeypatch.setattr(db_manager, "DATA_DIR", str(tmp_path))
+
+    p1 = db_manager._get_cloud_lookup_replica_path("libsql://a.example")
+    p2 = db_manager._get_cloud_lookup_replica_path("libsql://a.example")
+    p3 = db_manager._get_cloud_lookup_replica_path("libsql://b.example")
+
+    assert p1 == p2
+    assert p1 != p3
+    assert ".cloud_lookup_replicas" in p1
+
+
+def test_find_words_batch_cloud_lookup_passes_isolated_db_path(temp_db, monkeypatch):
+    """批量云端补查应传入隔离副本路径，避免复用主库副本文件。"""
+    monkeypatch.setattr(db_manager, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_manager, "TURSO_DB_URL", "libsql://main")
+    monkeypatch.setattr(db_manager, "TURSO_AUTH_TOKEN", "main-token")
+    monkeypatch.setattr(db_manager, "HAS_LIBSQL", True)
+    monkeypatch.setattr(db_manager, "_collect_cloud_lookup_targets", lambda: [("libsql://other", "other-token", "云端数据库")])
+
+    captured = {}
+
+    class FakeCloudCursor:
+        def __init__(self):
+            self.description = [("voc_id",), ("spelling",), ("basic_meanings",), ("batch_ai_provider",), ("batch_prompt_version",), ("batch_id",)]
+
+        def execute(self, sql, params):
+            return self
+
+        def fetchall(self):
+            return []
+
+    class FakeCloudConn:
+        def cursor(self):
+            return FakeCloudCursor()
+
+        def close(self):
+            pass
+
+    def fake_get_cloud_conn(url, token, db_path=None):
+        captured["url"] = url
+        captured["token"] = token
+        captured["db_path"] = db_path
+        return FakeCloudConn()
+
+    monkeypatch.setattr(db_manager, "_get_cloud_conn", fake_get_cloud_conn)
+
+    db_manager.find_words_in_community_batch(
+        ["not_found_1"],
+        skip_cloud=False,
+        ai_provider="gemini",
+        prompt_version="prompt-v1",
+    )
+
+    assert captured["url"] == "libsql://other"
+    assert captured["token"] == "other-token"
+    assert captured["db_path"] is not None
+    assert ".cloud_lookup_replicas" in captured["db_path"]
+
+
+def test_get_local_conn_recovers_from_malformed_database(tmp_path, monkeypatch):
+    """本地 SQLite 损坏时应自动备份并重新初始化可用数据库。"""
+    broken_db = tmp_path / "broken.db"
+    broken_db.write_text("corrupt", encoding="utf-8")
+
+    original_connect = sqlite3.connect
+    call_state = {"count": 0}
+
+    def fake_connect(path, timeout=20.0):
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return original_connect(path, timeout=timeout)
+
+    monkeypatch.setattr(db_manager.sqlite3, "connect", fake_connect)
+    monkeypatch.setattr(db_manager, "HAS_LIBSQL", False)
+
+    conn = db_manager._get_local_conn(str(broken_db))
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_word_notes'")
+
+    assert cur.fetchone() is not None
+    assert call_state["count"] == 2
+    assert list(tmp_path.glob("broken.db.er-broken-*.bak"))
+    conn.close()
+
+
+def test_sync_databases_skips_when_cloud_unavailable(monkeypatch):
+    """云端不可用时，用户库同步应返回 skipped 而不是抛错。"""
+    monkeypatch.setattr(db_manager, "TURSO_DB_URL", "libsql://example")
+    monkeypatch.setattr(db_manager, "TURSO_AUTH_TOKEN", "token")
+    monkeypatch.setattr(db_manager, "HAS_LIBSQL", True)
+
+    def fake_get_conn(*args, **kwargs):
+        raise RuntimeError("强制云端模式已启用，但无法连接到云端数据库")
+
+    monkeypatch.setattr(db_manager, "_get_conn", fake_get_conn)
+
+    stats = db_manager.sync_databases(dry_run=True)
+    assert stats["status"] == "skipped"
+    assert stats["reason"] == "cloud-unavailable"
+
+
+def test_sync_hub_databases_skips_when_cloud_unavailable(monkeypatch):
+    """云端不可用时，Hub 同步应返回 skipped 而不是抛错。"""
+    monkeypatch.setattr(db_manager, "TURSO_HUB_DB_URL", "libsql://hub")
+    monkeypatch.setattr(db_manager, "TURSO_HUB_AUTH_TOKEN", "hub-token")
+    monkeypatch.setattr(db_manager, "HAS_LIBSQL", True)
+
+    def fake_get_hub_conn(*args, **kwargs):
+        raise RuntimeError("强制云端模式已启用，但无法连接到云端 Hub 数据库")
+
+    monkeypatch.setattr(db_manager, "_get_hub_conn", fake_get_hub_conn)
+
+    stats = db_manager.sync_hub_databases(dry_run=True)
+    assert stats["status"] == "skipped"
+    assert stats["reason"] == "cloud-unavailable"
+
+
+def test_init_db_applies_cloud_schema_even_when_table_exists(tmp_path, monkeypatch):
+    """主库云端表已存在时，仍应补齐新增列（如 content_origin）。"""
+    local_db = tmp_path / "local_main.db"
+    cloud_db = tmp_path / "cloud_main.db"
+
+    cloud_conn = sqlite3.connect(cloud_db)
+    cloud_cur = cloud_conn.cursor()
+    cloud_cur.execute(
+        "CREATE TABLE processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT)"
+    )
+    cloud_cur.execute(
+        "CREATE TABLE ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT)"
+    )
+    cloud_conn.commit()
+    cloud_conn.close()
+
+    monkeypatch.setattr(db_manager, "HAS_LIBSQL", True)
+    monkeypatch.setattr(db_manager, "TURSO_DB_URL", "libsql://main")
+    monkeypatch.setattr(db_manager, "TURSO_AUTH_TOKEN", "token")
+    monkeypatch.setattr(db_manager, "TURSO_HUB_DB_URL", None)
+    monkeypatch.setattr(db_manager, "TURSO_HUB_AUTH_TOKEN", None)
+    monkeypatch.setattr(db_manager, "_is_db_initialized", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(db_manager, "_mark_db_initialized", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(db_manager, "_check_table_exists", lambda *_args, **_kwargs: True)
+
+    def fake_get_cloud_conn(url, token, db_path=None):
+        conn = sqlite3.connect(cloud_db)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    monkeypatch.setattr(db_manager, "_get_cloud_conn", fake_get_cloud_conn)
+
+    db_manager.init_db(str(local_db))
+
+    verify_conn = sqlite3.connect(cloud_db)
+    verify_cur = verify_conn.cursor()
+    verify_cur.execute("PRAGMA table_info(ai_word_notes)")
+    cols = [row[1] for row in verify_cur.fetchall()]
+    verify_conn.close()
+
+    assert "content_origin" in cols

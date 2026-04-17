@@ -192,7 +192,7 @@ TURSO_HUB_AUTH_TOKEN = os.getenv('TURSO_HUB_AUTH_TOKEN')
 # 全局 Turso 管理配置（用于创建用户数据库）
 TURSO_MGMT_TOKEN = os.getenv('TURSO_MGMT_TOKEN')
 TURSO_ORG_SLUG = os.getenv('TURSO_ORG_SLUG')
-TURSO_GROUP = os.getenv('TURSO_GROUP', 'default')
+TURSO_GROUP = os.getenv('TURSO_GROUP', '123')
 # 本地回退路径
 HUB_DB_PATH = os.path.join(DATA_DIR, "momo-users-hub.db")
 

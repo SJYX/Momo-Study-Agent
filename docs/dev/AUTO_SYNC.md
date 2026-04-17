@@ -2,7 +2,7 @@
 
 ## 概述
 
-系统在主流程关键节点自动触发双向同步，保证本地 SQLite 与 Turso 云端尽快收敛。
+系统在主流程关键节点自动触发同步，当前基于 Embedded Replicas 的 `conn.sync()` 完成帧级增量收敛。
 
 ## 同步触发点
 
@@ -52,7 +52,7 @@ def sync_hub_databases(
 
 回调 payload 至少包含：
 
-- `stage`: `connect|table|table-done|finalize|error|skipped|table-error`
+- `stage`: `connect|sync|done|error|skipped`
 - `current`
 - `total`
 - `message`
@@ -82,7 +82,7 @@ def _run_sync_with_progress(self, label: str, sync_func, dry_run: bool = False) 
 ```python
 def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
     def _on_progress(payload: dict):
-        if payload.get("stage") in {"error", "table-error"}:
+        if payload.get("stage") == "error":
             self.logger.warning(f"[{label}] {payload.get('message', '')}", module="main")
         else:
             self.logger.info(f"[{label}] {payload.get('message', '')}", module="main")
@@ -142,8 +142,6 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 
 - 当墨墨返回 `interpretation_create_limitation` 且未核验到远端已存在释义时，任务保持 `sync_status = 0`，避免误标成功
 - 当核验到远端已存在释义但文本与本地不一致时，记录会进入 `sync_status = 2`
-
-该机制用于在网络抖动、重试或异常中断时保留"待同步"队列，避免漏传。
 
 该机制用于在网络抖动、重试或异常中断时保留“待同步”队列，避免漏传。
 

@@ -174,7 +174,7 @@ class ConfigWizard:
         # 开源模式：仅从管理令牌读取（禁止回退到 TURSO_AUTH_TOKEN）
         mgmt_token = os.getenv('TURSO_MGMT_TOKEN')
         org_slug = os.getenv('TURSO_ORG_SLUG')
-        group = os.getenv('TURSO_GROUP') or 'default'
+        group = os.getenv('TURSO_GROUP') or '123'
         
         if not mgmt_token or not org_slug:
             print("  ❌ 缺少关键配置 (TURSO_MGMT_TOKEN 或 TURSO_ORG_SLUG)，无法自动创建。")
@@ -187,7 +187,7 @@ class ConfigWizard:
         self._write_profile_env(username, env_data)
         print(f'  ✅ {username} 的云资源已就绪。')
 
-    def _create_turso_database(self, organization_slug: str, database_name: str, auth_token: str, group: str = 'default') -> dict:
+    def _create_turso_database(self, organization_slug: str, database_name: str, auth_token: str, group: str = '123') -> dict:
         if not auth_token:
             raise ValueError('缺少 TURSO_MGMT_TOKEN，无法调用组织级数据库创建接口。')
 
@@ -442,7 +442,7 @@ class ConfigWizard:
         existing_db_token = existing_profile.get('TURSO_AUTH_TOKEN')
         mgmt_token = os.getenv('TURSO_MGMT_TOKEN')
         org_slug = os.getenv('TURSO_ORG_SLUG')
-        group = os.getenv('TURSO_GROUP') or 'default'
+        group = os.getenv('TURSO_GROUP') or '123'
 
         if existing_db_url and existing_db_token:
             print(f"\n  ✅ 检测到现有 Turso 数据库配置，直接复用，不再创建。")

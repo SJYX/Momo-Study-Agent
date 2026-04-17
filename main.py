@@ -109,8 +109,7 @@ class StudyFlowManager:
             "中央 Hub 数据库": [],
         }
         self._sync_duration_history_limit = int(os.getenv("SYNC_DURATION_HISTORY_LIMIT", "12"))
-        self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
-        self.sync_worker_thread.start()
+        self.sync_worker_thread = None
         self._sync_worker_stopped = False
 
         init_db()
@@ -146,6 +145,9 @@ class StudyFlowManager:
                 )
         else:
             self.logger.debug("[Resumption] 当前没有遗留待同步笔记", module="main")
+
+        self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
+        self.sync_worker_thread.start()
 
         # 确保 Hub 逻辑有序初始化，防止 FOREIGN KEY 约束失败
         try:
@@ -492,10 +494,24 @@ class StudyFlowManager:
                 tags = item["tags"] or ["雅思"]
 
                 # 出队前二次校验当前数据库状态，避免启动快照过期。
-                current_note = get_local_word_note(voc_id)
+                current_note = None
+                try:
+                    current_note = get_local_word_note(voc_id)
+                except Exception as local_read_error:
+                    self.logger.warning(
+                        f"⚠️ {spell} 本地数据库读取失败，尝试云端/主连接重试: {local_read_error}",
+                        module="main",
+                    )
+
                 if not current_note:
                     # 本地未命中时再查一次主连接（可能是云端连接），避免误判。
-                    current_note = get_word_note(voc_id)
+                    try:
+                        current_note = get_word_note(voc_id)
+                    except Exception as fallback_read_error:
+                        self.logger.warning(
+                            f"⚠️ {spell} 主连接读取失败，本次同步跳过: {fallback_read_error}",
+                            module="main",
+                        )
                 if not current_note:
                     self.logger.warning(
                         f"⚠️ {spell} 未在数据库中检索到记录（可能尚未落库或已删除），本次跳过同步",

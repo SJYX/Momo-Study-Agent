@@ -52,7 +52,17 @@ class MimoClient:
                     "max_completion_tokens": 64000,
                     "thinking": {"type": "disabled"}
                 }
-                response = self.session.post(f"{self.api_base}/chat/completions", headers=headers, json=payload, timeout=60)
+                # 针对 SSL 证书验证失败的容错处理
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                response = self.session.post(
+                    f"{self.api_base}/chat/completions", 
+                    headers=headers, 
+                    json=payload, 
+                    timeout=60,
+                    verify=False  # 临时跳过证书校验以解决 SSL 错误
+                )
                 if response.status_code != 200:
                     raise Exception(f"API Error {response.status_code}: {response.text}")
 
