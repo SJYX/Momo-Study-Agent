@@ -9,7 +9,7 @@ import json
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple
-from core.db_manager import _get_conn, DB_PATH, _row_to_dict
+from core.db_manager import _get_read_conn, DB_PATH, _row_to_dict
 
 
 class WeakWordFilter:
@@ -116,7 +116,7 @@ class WeakWordFilter:
 
     def _get_user_stats(self) -> Dict:
         """获取用户统计信息"""
-        conn = _get_conn(DB_PATH)
+        conn = _get_read_conn(DB_PATH)
         cur = conn.cursor()
 
         # 获取平均熟悉度
@@ -169,7 +169,7 @@ class WeakWordFilter:
             min_score: 最低薄弱分数
             limit: 最大返回数量
         """
-        conn = _get_conn(DB_PATH)
+        conn = _get_read_conn(DB_PATH)
         cur = conn.cursor()
 
         try:
@@ -222,7 +222,7 @@ class WeakWordFilter:
                 'potential': List[Dict]  # 潜在薄弱词
             }
         """
-        conn = _get_conn(DB_PATH)
+        conn = _get_read_conn(DB_PATH)
         cur = conn.cursor()
 
         try:

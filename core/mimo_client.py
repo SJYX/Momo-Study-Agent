@@ -15,6 +15,8 @@ class MimoClient:
         self.model_name = model_name or MIMO_MODEL
         self.api_base = MIMO_API_BASE
         self.prompt_file = prompt_file or PROMPT_FILE
+        self.connect_timeout_s = float(os.getenv("MIMO_CONNECT_TIMEOUT_S", "10"))
+        self.read_timeout_s = float(os.getenv("MIMO_READ_TIMEOUT_S", "60"))
         self.session = requests.Session()
 
         if not self.api_key:
@@ -38,6 +40,7 @@ class MimoClient:
         last_error_type = ""
         for attempt in range(1, MAX_RETRIES + 1):
             try:
+                started_at = time.time()
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json"
@@ -55,12 +58,21 @@ class MimoClient:
                 # 针对 SSL 证书验证失败的容错处理
                 import urllib3
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+                try:
+                    from core.logger import get_logger
+                    get_logger().debug(
+                        f"Mimo 请求开始: model={self.model_name}, attempt={attempt}/{MAX_RETRIES}, connect_timeout={self.connect_timeout_s}s, read_timeout={self.read_timeout_s}s",
+                        module="mimo_client",
+                    )
+                except Exception:
+                    pass
                 
                 response = self.session.post(
                     f"{self.api_base}/chat/completions", 
                     headers=headers, 
                     json=payload, 
-                    timeout=60,
+                    timeout=(self.connect_timeout_s, self.read_timeout_s),
                     verify=False  # 临时跳过证书校验以解决 SSL 错误
                 )
                 if response.status_code != 200:
@@ -77,6 +89,14 @@ class MimoClient:
                     "completion_tokens": usage.get('completion_tokens', 0),
                     "total_tokens": usage.get('total_tokens', 0)
                 }
+                try:
+                    from core.logger import get_logger
+                    get_logger().debug(
+                        f"Mimo 请求成功: attempt={attempt}/{MAX_RETRIES}, latency_ms={int((time.time()-started_at)*1000)}",
+                        module="mimo_client",
+                    )
+                except Exception:
+                    pass
                 return text, metadata
             except Exception as e:
                 last_error = str(e)

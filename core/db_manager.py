@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64, threading
+import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64, threading, queue
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Tuple, List, Any, Callable
 import requests
@@ -51,6 +51,252 @@ _hub_init_state_cache = {"expire_at": 0.0, "state": None}
 _throttled_log_state = {}
 _throttled_log_lock = threading.Lock()
 UTC_PLUS_8 = timezone(timedelta(hours=8))
+
+# ============ 高并发处理：读写分离 + 线程隔离 ============
+# 指令 1: 读操作使用 ThreadLocal 存储，确保每个线程的专属读连接
+_thread_local_read_conns = threading.local()  # ThreadLocal 读连接存储
+
+# 指令 2: 写操作通过后台守护线程序列化，使用队列进行高并发缓冲
+_write_queue = queue.Queue(maxsize=10000)  # 写入队列，最多缓存 10000 条
+_writer_daemon_thread = None  # 后台写线程句柄
+_writer_daemon_stop_event = threading.Event()  # 停止信号
+_writer_daemon_lock = threading.Lock()  # 保证只启动一个写线程
+
+# 用于跟踪写入队列的统计
+_write_queue_stats = {
+    "total_queued": 0,
+    "total_written": 0,
+    "total_errors": 0,
+    "last_batch_size": 0,
+}
+
+_throttled_log_state = {}
+_throttled_log_lock = threading.Lock()
+UTC_PLUS_8 = timezone(timedelta(hours=8))
+
+def _get_table_exists_cache():
+    """获取表存在状态缓存"""
+    return _table_exists_cache
+
+
+# ============ 指令 1: ThreadLocal 读连接管理（禁止跨线程连接共享） ============
+def _get_thread_local_read_conn(db_path: str = None) -> sqlite3.Connection:
+    """获取当前线程专属的读连接（ThreadLocal 存储）。
+    
+    每个线程拥有且仅拥有一个读连接，避免多线程竞争导致的连接损坏。
+    """
+    path = db_path or DB_PATH
+    # 使用路径作为 key，支持多个数据库的线程隔离
+    cache_key = os.path.abspath(path)
+    
+    if not hasattr(_thread_local_read_conns, 'conns'):
+        _thread_local_read_conns.conns = {}
+    
+    conns_dict = _thread_local_read_conns.conns
+    cached_conn = conns_dict.get(cache_key)
+    if cached_conn is not None:
+        try:
+            cached_conn.execute("SELECT 1")
+            return cached_conn
+        except Exception:
+            try:
+                cached_conn.close()
+            except Exception:
+                pass
+            conns_dict.pop(cache_key, None)
+
+    if cache_key not in conns_dict or conns_dict[cache_key] is None:
+        # 创建新的读连接
+        conns_dict[cache_key] = _get_read_conn_impl(path)
+        _debug_log(f"ThreadLocal: 为线程 {threading.current_thread().name} 创建读连接: {cache_key}")
+    
+    return conns_dict[cache_key]
+
+
+def _cleanup_thread_local_read_conns():
+    """清理当前线程的所有读连接（线程退出时调用）。"""
+    if not hasattr(_thread_local_read_conns, 'conns'):
+        return
+    
+    conns_dict = _thread_local_read_conns.conns
+    for cache_key, conn in list(conns_dict.items()):
+        if conn is not None:
+            try:
+                conn.close()
+                _debug_log(f"ThreadLocal: 清理线程 {threading.current_thread().name} 的读连接: {cache_key}")
+            except Exception as e:
+                _debug_log(f"ThreadLocal: 关闭读连接出错: {e}", level="WARNING")
+    
+    conns_dict.clear()
+
+
+# ============ 指令 2: 后台写线程 + 异步队列（序列化所有写操作） ============
+def _get_dedicated_write_conn(db_path: str = None) -> sqlite3.Connection:
+    """获取后台写线程专用的写连接。
+    
+    此连接只在后台写守护线程中使用，不暴露给用户代码。
+    保证写操作的单线程序列化。
+    """
+    return _get_conn(db_path or DB_PATH)
+
+
+def _writer_daemon():
+    """后台写守护线程：从队列消费数据，执行批量写入。
+    
+    特点：
+    - 独占一个写连接（不与其他线程共享）
+    - 每积攒 N 条或超时 1 秒，执行一次批量提交
+    - 所有 INSERT/UPDATE 通过此线程序列化处理
+    """
+    batch_threshold = 50  # 积攒多少条数据后执行批量提交
+    timeout_seconds = 1.0  # 超时时间
+    
+    write_conn = None
+    pending_batch = []
+    last_commit_time = time.time()
+    
+    try:
+        write_conn = _get_dedicated_write_conn(DB_PATH)
+        _debug_log("后台写线程启动", level="INFO")
+        
+        while not _writer_daemon_stop_event.is_set():
+            try:
+                # 从队列取数据，超时 100ms
+                try:
+                    item = _write_queue.get(timeout=0.1)
+                    pending_batch.append(item)
+                    _write_queue_stats["total_queued"] += 1
+                except queue.Empty:
+                    pass
+                
+                # 决定是否提交：达到阈值或超时
+                now = time.time()
+                should_commit = (
+                    len(pending_batch) >= batch_threshold or
+                    (pending_batch and (now - last_commit_time) >= timeout_seconds)
+                )
+                
+                if should_commit and pending_batch:
+                    _execute_batch_writes(write_conn, pending_batch)
+                    _write_queue_stats["total_written"] += len(pending_batch)
+                    _write_queue_stats["last_batch_size"] = len(pending_batch)
+                    last_commit_time = now
+                    pending_batch = []
+            
+            except Exception as e:
+                _debug_log(f"后台写线程批量操作出错: {e}", level="ERROR")
+                _write_queue_stats["total_errors"] += 1
+                pending_batch = []
+                time.sleep(0.1)
+        
+        # 程序退出时，提交剩余数据
+        if pending_batch:
+            _execute_batch_writes(write_conn, pending_batch)
+            _write_queue_stats["total_written"] += len(pending_batch)
+    
+    except Exception as e:
+        _debug_log(f"后台写线程崩溃: {e}", level="CRITICAL")
+    
+    finally:
+        if write_conn:
+            try:
+                write_conn.close()
+            except Exception:
+                pass
+        _debug_log("后台写线程停止", level="INFO")
+
+
+def _execute_batch_writes(write_conn: sqlite3.Connection, batch: List[Dict[str, Any]]) -> None:
+    """执行批量写入操作，一次事务提交所有数据。"""
+    if not batch:
+        return
+    
+    try:
+        write_conn.execute("BEGIN TRANSACTION")
+        cur = write_conn.cursor()
+        
+        for item in batch:
+            op_type = item.get("op_type", "insert")
+            if op_type == "insert_or_replace":
+                sql = item.get("sql")
+                args = item.get("args", ())
+                cur.execute(sql, args)
+            elif op_type == "executemany":
+                sql = item.get("sql")
+                args_list = item.get("args_list", [])
+                if args_list:
+                    cur.executemany(sql, args_list)
+            # 可扩展其他操作类型
+        
+        write_conn.commit()
+    except Exception as e:
+        write_conn.rollback()
+        _debug_log(f"批量写入失败: {e}", level="ERROR")
+        raise
+
+
+def _start_writer_daemon():
+    """启动后台写守护线程（若未启动）。"""
+    global _writer_daemon_thread
+    
+    with _writer_daemon_lock:
+        if _writer_daemon_thread is None or not _writer_daemon_thread.is_alive():
+            _writer_daemon_stop_event.clear()
+            _writer_daemon_thread = threading.Thread(target=_writer_daemon, daemon=True, name="MomoDBWriter")
+            _writer_daemon_thread.start()
+            _debug_log("后台写守护线程已启动", level="INFO")
+
+
+def _stop_writer_daemon(timeout_seconds: float = 5.0):
+    """停止后台写守护线程（程序退出时调用）。"""
+    global _writer_daemon_thread
+    
+    _writer_daemon_stop_event.set()
+    if _writer_daemon_thread and _writer_daemon_thread.is_alive():
+        _writer_daemon_thread.join(timeout=timeout_seconds)
+        _debug_log("后台写守护线程已停止", level="INFO")
+
+
+def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace") -> bool:
+    """将写操作加入队列（异步处理）。
+    
+    高并发业务线程调用此函数，仅执行 queue.put()，立即返回。
+    """
+    _start_writer_daemon()  # 确保写线程已启动
+    
+    item = {
+        "op_type": op_type,
+        "sql": sql,
+        "args": args,
+    }
+    
+    try:
+        _write_queue.put(item, timeout=2.0)
+        return True
+    except queue.Full:
+        _debug_log(f"写队列满，丢弃操作: {sql[:100]}", level="WARNING")
+        return False
+
+
+def _queue_batch_write_operation(sql: str, args_list: List[Tuple]) -> bool:
+    """将批量写操作加入队列（异步处理）。"""
+    if not args_list:
+        return True
+
+    _start_writer_daemon()
+    item = {
+        "op_type": "executemany",
+        "sql": sql,
+        "args_list": args_list,
+    }
+
+    try:
+        _write_queue.put(item, timeout=2.0)
+        return True
+    except queue.Full:
+        _debug_log(f"写队列满，丢弃批量操作: {sql[:100]} | size={len(args_list)}", level="WARNING")
+        return False
+
 
 def _hash_fingerprint(raw: str) -> str:
     """将连接标识压缩成短哈希，避免 marker 文件名过长。"""
@@ -528,6 +774,17 @@ def _is_sqlite_malformed_error(error: Exception) -> bool:
     )
 
 
+def _is_sqlite_row_decode_error(error: Exception) -> bool:
+    """判断是否为 SQLite 文本列解码异常（历史脏数据/损坏字节）。"""
+    msg = str(error or "").lower()
+    return "could not decode to utf-8" in msg or ("utf-8" in msg and "decode" in msg)
+
+
+def _is_sqlite_data_corruption_error(error: Exception) -> bool:
+    """统一判断会导致查询失败的本地数据损坏/解码异常。"""
+    return _is_sqlite_malformed_error(error) or _is_sqlite_row_decode_error(error)
+
+
 def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional[str]:
     """备份损坏的本地数据库文件，保留现场以便后续排查。"""
     try:
@@ -580,16 +837,14 @@ def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional
                 _debug_log(f"备份损坏数据库失败: {copy_error}", level="WARNING")
                 return None
 
-        # 清理 SQLite 与 Embedded Replica 元数据侧文件，确保下次按全新副本启动。
-        for ext in ("-wal", "-shm", "-info"):
-            sidecar = abs_path + ext
-            if os.path.exists(sidecar):
-                try:
-                    os.remove(sidecar)
-                except Exception:
-                    pass
-
-        _debug_log(f"{warning_message}: {backup_path}", level="WARNING")
+        # 指令 3: 禁止删除 WAL 元数据文件
+        # 在多线程和 WAL 模式下，强行删除 -wal, -shm, -info 文件是导致主库损坏的直接原因。
+        # 备份主文件后，让 SQLite 的恢复机制自行处理元数据文件。
+        _debug_log(
+            f"{warning_message}: {backup_path}\n"
+            f"注意：副本文件已备份，但相关 WAL 元数据未删除（避免多线程竞争导致损坏）",
+            level="WARNING"
+        )
         return backup_path
     except Exception as backup_error:
         _debug_log(f"备份损坏数据库失败: {backup_error}", level="WARNING")
@@ -603,6 +858,7 @@ def _get_local_conn(db_path: str = None) -> sqlite3.Connection:
     def _open_local_connection() -> sqlite3.Connection:
         conn = sqlite3.connect(path, timeout=20.0)  # 增加超时时间以解决多线程死锁
         conn.row_factory = sqlite3.Row
+        conn.text_factory = lambda b: b.decode("utf-8", "replace")
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
@@ -741,6 +997,131 @@ def _is_cloud_connection(conn: Any) -> bool:
         return False
 
 
+def _resolve_conn_context(db_path: str = None) -> Dict[str, Any]:
+    """统一解析连接上下文，避免读/写连接函数重复计算。"""
+    path = db_path or DB_PATH
+    target_abs = os.path.abspath(path)
+    main_abs = os.path.abspath(DB_PATH)
+    is_test = 'test_' in os.path.basename(path)
+    url = TURSO_TEST_DB_URL if is_test else TURSO_DB_URL
+    token = TURSO_TEST_AUTH_TOKEN if is_test else TURSO_AUTH_TOKEN
+
+    if not url:
+        hostname = TURSO_TEST_DB_HOSTNAME if is_test else TURSO_DB_HOSTNAME
+        if hostname:
+            url = _normalize_turso_url(hostname)
+
+    from config import get_force_cloud_mode
+    force_cloud_mode = bool(get_force_cloud_mode())
+    if force_cloud_mode and not url:
+        raise RuntimeError("强制云端模式已启用，但未配置 TURSO_DB_URL 或 TURSO_DB_HOSTNAME")
+
+    return {
+        "db_path": path,
+        "is_test": is_test,
+        "is_main_db": target_abs == main_abs,
+        "url": url,
+        "token": token,
+        "force_cloud_mode": force_cloud_mode,
+    }
+
+
+def _get_pooled_wrapper_if_available(db_path: str, read_only: bool) -> Optional[Any]:
+    """废弃：旧连接池已替换为 ThreadLocal 读连接管理。直接返回 None。"""
+    return None
+
+
+def _wrap_and_track_connection(db_path: str, conn: Any, read_only: bool) -> Any:
+    """直接返回连接（无需包装，ConnectionPool 已移除）。"""
+    return conn
+
+
+def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool = False) -> Any:
+    """创建 Embedded Replica 连接，并按需执行首次 sync。"""
+    conn = libsql.connect(
+        db_path,
+        sync_url=url,
+        auth_token=token
+    )
+    if do_sync and hasattr(conn, 'sync'):
+        conn.sync()
+    return conn
+
+
+def _get_read_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0, allow_local_fallback: bool = True) -> Any:
+    """获取数据库连接用于读操作 - 指令 1: ThreadLocal 隔离
+    
+    改进：
+    - 所有读操作都通过 ThreadLocal 存储获取连接
+    - 每个线程仅拥有一个读连接，避免多线程竞争
+    - 连接的初始化逻辑（Embedded Replicas 或本地 SQLite）保持不变
+    
+    Args:
+        db_path: 数据库路径
+        max_retries: 最大重试次数（默认 3 次，仅用于首次连接）
+        retry_delay: 每次重试的延迟秒数（默认 1.0 秒）
+    
+    Returns:
+        libsql.Connection 对象（兼容 sqlite3 接口）或 sqlite3.Connection 对象
+    """
+    # 指令 1: 使用 ThreadLocal 获取读连接，禁止跨线程共享
+    return _get_thread_local_read_conn(db_path or DB_PATH)
+
+
+def _get_read_conn_impl(db_path: str, max_retries: int = 3, retry_delay: float = 1.0, allow_local_fallback: bool = True) -> Any:
+    """读连接初始化的实现细节（被 ThreadLocal 包装）。
+    
+    Embedded Replicas 在客户端维持本地 SQLite 副本。读操作直接从本地 SQLite 读取（无需 sync）。
+    """
+    ctx = _resolve_conn_context(db_path)
+    db_path = ctx["db_path"]
+
+    if _should_use_local_only_connection(db_path):
+        conn = _get_local_conn(db_path)
+        return _wrap_and_track_connection(db_path, conn, read_only=True)
+
+    pooled = _get_pooled_wrapper_if_available(db_path, read_only=True)
+    if pooled is not None:
+        return pooled
+
+    # 优先使用 Embedded Replicas 模式（若配置了云端凭据）
+    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and HAS_LIBSQL:
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # ✅ 创建 Embedded Replica 连接（读连接不执行 sync）
+                conn = _connect_embedded_replica(db_path, ctx["url"], ctx["token"], do_sync=False)
+                # 读操作不需要 sync，直接使用本地副本即可
+                return _wrap_and_track_connection(db_path, conn, read_only=True)
+                
+            except Exception as e:
+                if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                    backup_path = _backup_broken_replica_file(db_path)
+                    if backup_path:
+                        _debug_log(
+                            f"Embedded Replica 本地状态损坏，已备份并重试连接: {backup_path}",
+                            level="WARNING",
+                        )
+                        last_error = e
+                        continue
+                last_error = e
+                if attempt < max_retries - 1:
+                    _debug_log(f"Embedded Replica 读连接失败 (尝试 {attempt + 1})，{retry_delay} 秒后重试: {e}")
+                    time.sleep(retry_delay)
+                else:
+                    _debug_log(f"Embedded Replica 读连接失败 (已尝试 {max_retries} 次)，回退本地: {e}")
+
+        if ctx["force_cloud_mode"]:
+            raise RuntimeError(f"强制云端模式读连接失败 (已尝试 {max_retries} 次): {last_error}")
+
+    # 无云端配置时回退本地纯 SQLite
+    if allow_local_fallback and (not ctx["force_cloud_mode"] or ctx["is_test"]):
+        conn = _get_local_conn(db_path)
+        return _wrap_and_track_connection(db_path, conn, read_only=True)
+
+    raise RuntimeError("强制云端模式已启用，但无法连接到云端数据库")
+
+
 def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0, allow_local_fallback: bool = True) -> Any:
     """获取数据库连接 - Embedded Replicas 模式
     
@@ -757,51 +1138,37 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0, allo
     Returns:
         libsql.Connection 对象（兼容 sqlite3 接口）或 sqlite3.Connection 对象
     """
-    if db_path is None:
-        db_path = DB_PATH
+    ctx = _resolve_conn_context(db_path)
+    db_path = ctx["db_path"]
 
-    target_abs = os.path.abspath(db_path)
-    main_abs = os.path.abspath(DB_PATH)
-    is_test = 'test_' in os.path.basename(db_path)
-    url = TURSO_TEST_DB_URL if is_test else TURSO_DB_URL
-    token = TURSO_TEST_AUTH_TOKEN if is_test else TURSO_AUTH_TOKEN
+    if _should_use_local_only_connection(db_path):
+        _debug_log(f"使用本地 SQLite 模式: {db_path}")
+        conn = _get_local_conn(db_path)
+        return _wrap_and_track_connection(db_path, conn, read_only=False)
 
-    if not url:
-        hostname = TURSO_TEST_DB_HOSTNAME if is_test else TURSO_DB_HOSTNAME
-        if hostname:
-            url = _normalize_turso_url(hostname)
-
-    # 强制云端模式检查
-    from config import get_force_cloud_mode
-    if get_force_cloud_mode() and not url:
-        raise RuntimeError("强制云端模式已启用，但未配置 TURSO_DB_URL 或 TURSO_DB_HOSTNAME")
-
-    is_main_db = target_abs == main_abs
+    pooled = _get_pooled_wrapper_if_available(db_path, read_only=False)
+    if pooled is not None:
+        return pooled
 
     # 优先使用 Embedded Replicas 模式（若配置了云端凭据）
-    if (is_main_db or is_test) and url and token and HAS_LIBSQL:
+    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and HAS_LIBSQL:
         last_error = None
         for attempt in range(max_retries):
             try:
                 _debug_log_throttled(
-                    key=f"libsql-connect-attempt:{'test' if is_test else 'main'}",
+                    key=f"libsql-connect-attempt:{'test' if ctx['is_test'] else 'main'}",
                     msg=f"Embedded Replicas 首次连接 (第 {attempt + 1}/{max_retries} 次)",
                     interval_seconds=30.0,
                 )
                 
                 # ✅ 创建 Embedded Replica 连接
-                conn = libsql.connect(
-                    db_path,           # 本地 SQLite 文件路径
-                    sync_url=url,      # 远程 Turso 主库 URL
-                    auth_token=token   # 认证令牌
-                )
+                conn = _connect_embedded_replica(db_path, ctx["url"], ctx["token"], do_sync=True)
                 
                 # 首次连接时立即同步一次，确保本地数据最新
                 if hasattr(conn, 'sync'):
-                    conn.sync()
-                    _debug_log(f"Embedded Replica 连接完成并同步: {db_path} ↔ {url[:50]}...")
+                    _debug_log(f"Embedded Replica 连接完成并同步: {db_path} ↔ {ctx['url'][:50]}...")
                 
-                return conn
+                return _wrap_and_track_connection(db_path, conn, read_only=False)
                 
             except Exception as e:
                 if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
@@ -821,7 +1188,7 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0, allo
                     _debug_log(f"Embedded Replica 连接失败 (已尝试 {max_retries} 次)，回退本地: {e}")
 
         # 若主配置连接失败，尝试通过 Turso 管理 API 发现当前用户目标库并重连
-        if not is_test:
+        if not ctx["is_test"]:
             try:
                 preferred_db_name = f"history-{(ACTIVE_USER or '').lower()}"
                 for candidate_url, candidate_token, source_label in _get_cached_turso_cloud_targets():
@@ -829,27 +1196,22 @@ def _get_conn(db_path: str, max_retries: int = 3, retry_delay: float = 1.0, allo
                         continue
                     _debug_log(f"尝试 API 发现的用户库连接: {source_label}")
                     try:
-                        conn = libsql.connect(
-                            db_path,
-                            sync_url=candidate_url,
-                            auth_token=candidate_token
-                        )
-                        if hasattr(conn, 'sync'):
-                            conn.sync()
-                        return conn
+                        conn = _connect_embedded_replica(db_path, candidate_url, candidate_token, do_sync=True)
+                        return _wrap_and_track_connection(db_path, conn, read_only=False)
                     except Exception as fallback_error:
                         _debug_log(f"API 发现的库连接失败: {fallback_error}")
                         continue
             except Exception as api_error:
                 _debug_log(f"API 发现用户库过程失败: {api_error}")
 
-        if get_force_cloud_mode():
+        if ctx["force_cloud_mode"]:
             raise RuntimeError(f"强制云端模式连接失败 (已尝试 {max_retries} 次): {last_error}")
 
     # 无云端配置时回退本地纯 SQLite
-    if allow_local_fallback and (not get_force_cloud_mode() or is_test):
+    if allow_local_fallback and (not ctx["force_cloud_mode"] or ctx["is_test"]):
         _debug_log(f"使用本地 SQLite 模式: {db_path}")
-        return _get_local_conn(db_path)
+        conn = _get_local_conn(db_path)
+        return _wrap_and_track_connection(db_path, conn, read_only=False)
 
     raise RuntimeError("强制云端模式已启用，但无法连接到云端数据库")
 
@@ -941,6 +1303,27 @@ def _create_tables(cur, skip_migrations=False):
     except: pass
 
 @log_performance(lambda: ContextLogger(logging.getLogger(__name__)))
+def init_concurrent_system():
+    """初始化高并发系统组件（程序启动时调用）。
+    
+    - 启动后台写守护线程
+    - 准备 ThreadLocal 读连接存储
+    """
+    _start_writer_daemon()
+    _debug_log("并发系统初始化完成", level="INFO")
+
+
+def cleanup_concurrent_system():
+    """清理高并发系统组件（程序退出时调用）。
+    
+    - 停止后台写守护线程
+    - 清理 ThreadLocal 读连接
+    """
+    _stop_writer_daemon(timeout_seconds=5.0)
+    _cleanup_thread_local_read_conns()
+    _debug_log("并发系统清理完成", level="INFO")
+
+
 def init_db(db_path: str = None):
     """初始化数据库，确保本地和云端 schema 一致。"""
     path = db_path or DB_PATH
@@ -1003,71 +1386,221 @@ def init_db(db_path: str = None):
 
     # 3. 确保 Hub 数据库表结构完整
     hub_start = time.time()
-    init_users_hub_tables()
-    _debug_log("Hub 数据库初始化完成", hub_start)
+    hub_ok = init_users_hub_tables()
+    if hub_ok:
+        _debug_log("Hub 数据库初始化完成", hub_start)
+    else:
+        _debug_log("Hub 数据库初始化失败（已记录原因）", hub_start, level="WARNING")
 
 @log_performance(lambda: ContextLogger(logging.getLogger(__name__)))
 def get_processed_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
-    if not voc_ids: return set()
-    s = time.time()
-    c = _get_conn(db_path or DB_PATH); cur = c.cursor()
-    vs = [str(v) for v in voc_ids]; ph = ','.join(['?']*len(vs))
-    cur.execute(f'SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})', vs)
-    res = {str(r[0] if isinstance(r, (tuple,list)) else r['voc_id']) for r in cur.fetchall()}
-    c.close(); _debug_log(f'批量查询 ({len(voc_ids)} 词)', s)
-    return res
+    if not voc_ids:
+        return set()
+
+    try:
+        s = time.time()
+        c = _get_read_conn(db_path or DB_PATH)
+        cur = c.cursor()
+        vs = [str(v) for v in voc_ids]
+        ph = ','.join(['?'] * len(vs))
+        cur.execute(f'SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})', vs)
+        res = {str(r[0] if isinstance(r, (tuple,list)) else r['voc_id']) for r in cur.fetchall()}
+        c.close()
+        _debug_log(f'批量查询 ({len(voc_ids)} 词)', s)
+        return res
+    except Exception as e:
+        if _is_sqlite_data_corruption_error(e):
+            _debug_log_throttled(
+                "get_processed_ids_batch_corruption",
+                f"get_processed_ids_in_batch 数据损坏异常: {e}",
+                level="WARNING"
+            )
+            return set()
+        _debug_log(f"get_processed_ids_in_batch 异常: {e}", level="WARNING")
+        return set()
 
 def is_processed(voc_id: str, db_path: str = None) -> bool:
-    c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('SELECT 1 FROM processed_words WHERE voc_id = ?', (str(voc_id),))
-    res = cur.fetchone() is not None; c.close(); return res
+    try:
+        c = _get_read_conn(db_path or DB_PATH)
+        cur = c.cursor()
+        cur.execute('SELECT 1 FROM processed_words WHERE voc_id = ?', (str(voc_id),))
+        res = cur.fetchone() is not None
+        c.close()
+        return res
+    except Exception as e:
+        if _is_sqlite_data_corruption_error(e):
+            _debug_log_throttled(
+                "is_processed_corruption",
+                f"is_processed 数据损坏异常: {e}",
+                level="WARNING"
+            )
+            return False
+        _debug_log(f"is_processed 异常: {e}", level="WARNING")
+        return False
+
+
+def _run_with_managed_connection(
+    optional_conn: Any,
+    conn_factory: Callable[[], Any],
+    operation: Callable[[Any], Any],
+) -> Any:
+    """统一处理可复用连接：外部连接不提交不关闭，自建连接自动提交并关闭。"""
+    owned = optional_conn is None
+    target_conn = optional_conn or conn_factory()
+    try:
+        result = operation(target_conn)
+        if owned:
+            target_conn.commit()
+        return result
+    finally:
+        if owned:
+            try:
+                target_conn.close()
+            except Exception:
+                pass
+
+
+def _should_use_local_only_connection(db_path: str = None, conn: Any = None) -> bool:
+    """显式提供独立数据库连接/路径时，优先走本地直写/直读。"""
+    if conn is not None:
+        return True
+    if db_path is None:
+        db_path = DB_PATH
+
+    if os.path.abspath(db_path) != os.path.abspath(DB_PATH):
+        return True
+
+    ctx = _resolve_conn_context(db_path)
+    return not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL)
+
+
+def _execute_write_sql_sync(sql: str, params: tuple = (), db_path: str = None, conn: Any = None) -> None:
+    """同步执行单条写 SQL。"""
+    owned = conn is None
+    target_conn = conn or _get_local_conn(db_path or DB_PATH)
+    try:
+        cur = target_conn.cursor()
+        cur.execute(sql, params)
+        if owned:
+            target_conn.commit()
+        else:
+            target_conn.commit()
+    finally:
+        if owned:
+            try:
+                target_conn.close()
+            except Exception:
+                pass
+
+
+def _execute_batch_write_sql_sync(sql: str, args_list: List[Tuple], db_path: str = None, conn: Any = None) -> None:
+    """同步执行批量写 SQL。"""
+    if not args_list:
+        return
+
+    owned = conn is None
+    target_conn = conn or _get_local_conn(db_path or DB_PATH)
+    try:
+        cur = target_conn.cursor()
+        cur.executemany(sql, args_list)
+        if owned:
+            target_conn.commit()
+        else:
+            target_conn.commit()
+    finally:
+        if owned:
+            try:
+                target_conn.close()
+            except Exception:
+                pass
 
 def mark_processed(voc_id: str, spelling: str, db_path: str = None, conn: Any = None):
     """支持连接复用的标记处理函数
     
     使用 Embedded Replicas 连接时，一次写入自动同步本地+云端，无需显式双写。
     """
-    def _do_sql(cn):
-        cur = cn.cursor()
-        cur.execute('INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, ?)', 
-                    (str(voc_id), spelling, get_timestamp_with_tz()))
-        if not conn: 
-            cn.commit()
-            cn.close()
+    try:
+        sql = 'INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, ?)'
+        args = (str(voc_id), spelling, get_timestamp_with_tz())
+        if _should_use_local_only_connection(db_path, conn):
+            _execute_write_sql_sync(sql, args, db_path=db_path, conn=conn)
+            return True
+        if not _queue_write_operation(sql, args, op_type="insert_or_replace"):
+            _debug_log("mark_processed 入队失败: 写队列已满", level="WARNING")
+            return False
+        return True
+    except Exception as e:
+        _debug_log(f"mark_processed 写入失败: {e}")
+        return False
 
-    if conn:
-        # 连接复用场景，直接使用外部连接
-        _do_sql(conn)
-    else:
-        # 独立连接场景，使用 Embedded Replica 连接
-        path = db_path or DB_PATH
-        try:
-            c = _get_conn(path)
-            _do_sql(c)
-        except Exception as e:
-            _debug_log(f"mark_processed 写入失败: {e}")
+
+def mark_processed_batch(items: List[Tuple[str, str]], db_path: str = None) -> bool:
+    """批量标记 processed_words（异步入队 executemany）。"""
+    if not items:
+        return True
+
+    try:
+        sql = 'INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, ?)'
+        ts = get_timestamp_with_tz()
+        args_list = [(str(voc_id), spelling, ts) for voc_id, spelling in items]
+        if _should_use_local_only_connection(db_path):
+            _execute_batch_write_sql_sync(sql, args_list, db_path=db_path)
+            return True
+        if not _queue_batch_write_operation(sql, args_list):
+            _debug_log("mark_processed_batch 入队失败: 写队列已满", level="WARNING")
+            return False
+        return True
+    except Exception as e:
+        _debug_log(f"mark_processed_batch 失败: {e}", level="WARNING")
+        return False
 
 def log_progress_snapshots(words: List[dict], db_path: str = None):
-    if not words: return 0
+    if not words:
+        return 0
+
     s_all = time.time()
-    c = _get_conn(db_path or DB_PATH); cur = c.cursor()
-    vids = [str(w['voc_id']) for w in words]; ph = ','.join(['?']*len(vids))
+    c = _get_conn(db_path or DB_PATH)
+    cur = c.cursor()
+    vids = [str(w['voc_id']) for w in words]
+    ph = ','.join(['?'] * len(vids))
     cur.execute(f'SELECT voc_id, it_level FROM ai_word_notes WHERE voc_id IN ({ph})', vids)
     itm = {str(r[0]): r[1] for r in cur.fetchall()}
     cur.execute(f'SELECT voc_id, familiarity_short, review_count FROM word_progress_history WHERE voc_id IN ({ph}) ORDER BY created_at DESC', vids)
     lh = {}
     for r in cur.fetchall():
-        v = str(r[0]); 
-        if v not in lh: lh[v] = (r[1], r[2])
+        v = str(r[0])
+        if v not in lh:
+            lh[v] = (r[1], r[2])
+
     ins = []
     for w in words:
-        v = str(w['voc_id']); nf = w.get('short_term_familiarity', 0) or w.get('voc_familiarity', 0); nr = w.get('review_count', 0); l = lh.get(v)
-        if not l or abs(l[0]-float(nf))>0.01 or l[1]!=int(nr):
-            ins.append((v, nf, w.get('long_term_familiarity',0), nr, itm.get(v,0)))
+        v = str(w['voc_id'])
+        nf = w.get('short_term_familiarity', 0) or w.get('voc_familiarity', 0)
+        nr = w.get('review_count', 0)
+        l = lh.get(v)
+        if not l or abs(l[0] - float(nf)) > 0.01 or l[1] != int(nr):
+            ins.append((v, nf, w.get('long_term_familiarity', 0), nr, itm.get(v, 0)))
+
     if ins:
-        cur.executemany('INSERT INTO word_progress_history (voc_id, familiarity_short, familiarity_long, review_count, it_level) VALUES (?, ?, ?, ?, ?)', ins)
-        c.commit()
-    c.close(); _debug_log(f'进度同步 ({len(ins)} 条)', s_all)
+        sql = 'INSERT INTO word_progress_history (voc_id, familiarity_short, familiarity_long, review_count, it_level) VALUES (?, ?, ?, ?, ?)'
+        if _should_use_local_only_connection(db_path):
+            _execute_batch_write_sql_sync(sql, ins, db_path=db_path)
+            c.close()
+            _debug_log(f'进度同步 ({len(ins)} 条)', s_all)
+            return len(ins)
+        if not _queue_batch_write_operation(sql, ins):
+            _debug_log("log_progress_snapshots 入队失败: 写队列已满", level="WARNING")
+            c.close()
+            return 0
+
+    c.close()
+    _debug_log(f'进度同步 ({len(ins)} 条)', s_all)
     return len(ins)
+
+
+def _clean_payload_field(payload: Dict[str, Any], field: str) -> str:
+    """从 payload 读取字段并做墨墨清洗。"""
+    return clean_for_maimemo(payload.get(field, ''))
 
 @log_performance(lambda: ContextLogger(logging.getLogger(__name__)))
 def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata: dict = None, conn: Any = None):
@@ -1079,34 +1612,48 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata:
     _raw_candidate = {k: v for k, v in payload.items() if k != 'raw_full_text'}
     t = payload.get('raw_full_text') or json.dumps(_raw_candidate, ensure_ascii=False)
     m_ctx = json.dumps(metadata.get('maimemo_context', {}), ensure_ascii=False) if metadata and metadata.get('maimemo_context') else None
-    def _c(f): return clean_for_maimemo(payload.get(f, ''))
     original_meanings = metadata.get('original_meanings') if metadata else None
     if not original_meanings:
         original_meanings = payload.get('original_meanings')
     content_origin = (metadata.get('content_origin') if metadata else None) or payload.get('content_origin') or 'ai_generated'
     content_source_db = (metadata.get('content_source_db') if metadata else None) or payload.get('content_source_db')
     content_source_scope = (metadata.get('content_source_scope') if metadata else None) or payload.get('content_source_scope')
-    args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, content_origin, content_source_db, content_source_scope, 0, get_timestamp_with_tz())
+    args = (
+        str(voc_id), s,
+        _clean_payload_field(payload, 'basic_meanings'),
+        _clean_payload_field(payload, 'ielts_focus'),
+        _clean_payload_field(payload, 'collocations'),
+        _clean_payload_field(payload, 'traps'),
+        _clean_payload_field(payload, 'synonyms'),
+        _clean_payload_field(payload, 'discrimination'),
+        _clean_payload_field(payload, 'example_sentences'),
+        _clean_payload_field(payload, 'memory_aid'),
+        _clean_payload_field(payload, 'word_ratings'),
+        t,
+        payload.get('prompt_tokens', 0),
+        payload.get('completion_tokens', 0),
+        payload.get('total_tokens', 0),
+        metadata.get('batch_id') if metadata else None,
+        original_meanings,
+        m_ctx,
+        content_origin,
+        content_source_db,
+        content_source_scope,
+        0,
+        get_timestamp_with_tz(),
+    )
     sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, content_source_scope, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
-    def _do_sql(cn):
-        cur = cn.cursor()
-        cur.execute(sql, args)
-        if not conn: 
-            cn.commit()
-            cn.close()
-
-    if conn:
-        # 连接复用场景，直接使用外部连接
-        _do_sql(conn)
-    else:
-        # 独立连接场景，使用 Embedded Replica 连接
-        path = db_path or DB_PATH
-        try:
-            c = _get_conn(path)
-            _do_sql(c)
-        except Exception as e:
-            _debug_log(f"save_ai_word_note 写入失败: {e}")
+    # 指令 2：改用异步队列提交，避免高并发线程直接竞争写连接
+    try:
+        if _should_use_local_only_connection(db_path, conn):
+            _execute_write_sql_sync(sql, args, db_path=db_path, conn=conn)
+            return True
+        _queue_write_operation(sql, args, op_type="insert_or_replace")
+        return True
+    except Exception as e:
+        _debug_log(f"save_ai_word_note 入队失败: {e}", level="ERROR")
+        return False
 
 
 def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = None, conn: Any = None) -> bool:
@@ -1123,17 +1670,7 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
     if not notes_data:
         return True
 
-    need_close = False
     try:
-        if conn:
-            target_conn = conn
-        else:
-            # 直接使用本地数据库连接，避免云端连接延迟
-            # 后台同步机制会自动将数据同步到云端
-            target_conn = _get_local_conn(db_path or DB_PATH)
-            need_close = True
-
-        cur = target_conn.cursor()
         sql = 'INSERT OR REPLACE INTO ai_word_notes (voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, content_source_scope, sync_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
         batch_args = []
@@ -1146,7 +1683,6 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
             _raw_candidate = {k: v for k, v in payload.items() if k != 'raw_full_text'}
             t = payload.get('raw_full_text') or json.dumps(_raw_candidate, ensure_ascii=False)
             m_ctx = json.dumps(metadata.get('maimemo_context', {}), ensure_ascii=False) if metadata and metadata.get('maimemo_context') else None
-            def _c(f): return clean_for_maimemo(payload.get(f, ''))
 
             original_meanings = metadata.get('original_meanings') if metadata else None
             if not original_meanings:
@@ -1166,14 +1702,37 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
                 # legacy_unknown 或其他未知来源，保守处理为待同步
                 initial_sync_status = 0
             
-            args = (str(voc_id), s, _c('basic_meanings'), _c('ielts_focus'), _c('collocations'), _c('traps'), _c('synonyms'), _c('discrimination'), _c('example_sentences'), _c('memory_aid'), _c('word_ratings'), t, payload.get('prompt_tokens', 0), payload.get('completion_tokens', 0), payload.get('total_tokens', 0), metadata.get('batch_id') if metadata else None, original_meanings, m_ctx, content_origin, content_source_db, content_source_scope, initial_sync_status, get_timestamp_with_tz())
+            args = (
+                str(voc_id), s,
+                _clean_payload_field(payload, 'basic_meanings'),
+                _clean_payload_field(payload, 'ielts_focus'),
+                _clean_payload_field(payload, 'collocations'),
+                _clean_payload_field(payload, 'traps'),
+                _clean_payload_field(payload, 'synonyms'),
+                _clean_payload_field(payload, 'discrimination'),
+                _clean_payload_field(payload, 'example_sentences'),
+                _clean_payload_field(payload, 'memory_aid'),
+                _clean_payload_field(payload, 'word_ratings'),
+                t,
+                payload.get('prompt_tokens', 0),
+                payload.get('completion_tokens', 0),
+                payload.get('total_tokens', 0),
+                metadata.get('batch_id') if metadata else None,
+                original_meanings,
+                m_ctx,
+                content_origin,
+                content_source_db,
+                content_source_scope,
+                initial_sync_status,
+                get_timestamp_with_tz(),
+            )
             batch_args.append(args)
 
-        cur.executemany(sql, batch_args)
-
-        if need_close:
-            target_conn.commit()
-            target_conn.close()
+        if _should_use_local_only_connection(db_path, conn):
+            _execute_batch_write_sql_sync(sql, batch_args, db_path=db_path, conn=conn)
+        elif not _queue_batch_write_operation(sql, batch_args):
+            _debug_log("批量保存 AI 笔记入队失败: 写队列已满", level="WARNING")
+            return False
 
         _debug_log(f"批量保存 AI 笔记完成：{len(notes_data)} 个单词（本地数据库）")
         return True
@@ -1221,29 +1780,63 @@ def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, meta
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
 
-        def _do_sql(cn):
-            cur = cn.cursor()
-            cur.execute(sql, args)
-            if not conn:
-                cn.commit()
-                cn.close()
-
-        if conn:
-            # 连接复用场景，直接使用外部连接
-            _do_sql(conn)
-        else:
-            # 独立连接场景，使用 Embedded Replica 连接
-            path = db_path or DB_PATH
-            try:
-                c = _get_conn(path)
-                _do_sql(c)
-            except Exception as e:
-                _debug_log(f"save_ai_word_iteration 写入失败: {e}")
-                return False
+        if _should_use_local_only_connection(db_path, conn):
+            _execute_write_sql_sync(sql, args, db_path=db_path, conn=conn)
+            return True
+        if not _queue_write_operation(sql, args, op_type="insert_or_replace"):
+            _debug_log("save_ai_word_iteration 入队失败: 写队列已满", level="WARNING")
+            return False
 
         return True
     except Exception as e:
         _debug_log(f"保存迭代历史失败: {e}")
+        return False
+
+
+def update_ai_word_note_iteration_state(
+    voc_id: str,
+    level: int,
+    it_history_json: str,
+    memory_aid: Optional[str] = None,
+    db_path: str = None,
+) -> bool:
+    """异步更新 ai_word_notes 的迭代字段（it_level/it_history/updated_at[/memory_aid]）。"""
+    try:
+        if memory_aid is not None:
+            sql = (
+                "UPDATE ai_word_notes "
+                "SET it_level = ?, it_history = ?, memory_aid = ?, updated_at = ? "
+                "WHERE voc_id = ?"
+            )
+            args = (
+                int(level),
+                it_history_json,
+                memory_aid,
+                get_timestamp_with_tz(),
+                str(voc_id),
+            )
+        else:
+            sql = (
+                "UPDATE ai_word_notes "
+                "SET it_level = ?, it_history = ?, updated_at = ? "
+                "WHERE voc_id = ?"
+            )
+            args = (
+                int(level),
+                it_history_json,
+                get_timestamp_with_tz(),
+                str(voc_id),
+            )
+
+        if _should_use_local_only_connection(db_path):
+            _execute_write_sql_sync(sql, args, db_path=db_path)
+            return True
+        if not _queue_write_operation(sql, args, op_type="insert_or_replace"):
+            _debug_log("update_ai_word_note_iteration_state 入队失败: 写队列已满", level="WARNING")
+            return False
+        return True
+    except Exception as e:
+        _debug_log(f"update_ai_word_note_iteration_state 失败: {e}", level="WARNING")
         return False
 
 def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> bool:
@@ -1268,28 +1861,23 @@ def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> 
     target_status_text = _status_text(target_status)
 
     try:
-        path = db_path or DB_PATH
-        c = _get_conn(path)  # Embedded Replica 连接（如有云端配置）
-        cur = c.cursor()
-
-        cur.execute(
-            'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?',
-            (target_status, get_timestamp_with_tz(), str(voc_id))
-        )
-
-        c.commit()
-        updated = cur.rowcount
-        c.close()
-
-        if updated <= 0:
+        sql = 'UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?'
+        args = (target_status, get_timestamp_with_tz(), str(voc_id))
+        if _should_use_local_only_connection(db_path):
+            _execute_write_sql_sync(sql, args, db_path=db_path)
             _debug_log(
-                f"写入未命中记录: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）",
+                f"写入已同步: sync_status={target_status}（{target_status_text}）"
+            )
+            return True
+        if not _queue_write_operation(sql, args, op_type="insert_or_replace"):
+            _debug_log(
+                f"写入入队失败: voc_id={voc_id}, 目标sync_status={target_status}（{target_status_text}）",
                 level="WARNING",
             )
             return False
 
         _debug_log(
-            f"写入成功: sync_status={target_status}（{target_status_text}）"
+            f"写入已入队: sync_status={target_status}（{target_status_text}）"
         )
         return True
 
@@ -1347,23 +1935,81 @@ def get_unsynced_notes(db_path: str = None) -> list:
         
         _debug_log(f"获取未同步笔记完成: {len(result)} 条 (仅 ai_generated)")
         return result
-        
     except Exception as e:
-        _debug_log(f"获取未同步笔记失败: {e}")
+        if _is_sqlite_data_corruption_error(e):
+            _debug_log_throttled(
+                "get_unsynced_notes_corruption",
+                f"获取未同步笔记失败（本地数据损坏）: {e}，返回空列表",
+                level="WARNING"
+            )
+            return []
+        _debug_log(f"获取未同步笔记异常: {e}", level="WARNING")
         return []
 
 def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
-    c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),)); r = cur.fetchone(); c.close(); return _row_to_dict(cur, r) if r else None
+    target_path = db_path or DB_PATH
+    c = _get_read_conn(target_path)
+    try:
+        cur = c.cursor()
+        cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
+        r = cur.fetchone()
+        return _row_to_dict(cur, r) if r else None
+    except Exception as read_error:
+        if not _is_sqlite_data_corruption_error(read_error):
+            raise
+
+        _debug_log_throttled(
+            key=f"word-note-read-corruption:{os.path.abspath(target_path)}",
+            msg=f"检测到读路径数据异常，尝试云端主连接兜底读取: {read_error}",
+            interval_seconds=15.0,
+            level="WARNING",
+        )
+        try:
+            fallback_conn = _get_conn(target_path, allow_local_fallback=False)
+            fallback_cur = fallback_conn.cursor()
+            fallback_cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
+            fallback_row = fallback_cur.fetchone()
+            fallback_conn.close()
+            return _row_to_dict(fallback_cur, fallback_row) if fallback_row else None
+        except Exception as fallback_error:
+            _debug_log_throttled(
+                key=f"word-note-read-fallback-failed:{os.path.abspath(target_path)}",
+                msg=f"云端主连接兜底读取失败: {fallback_error}",
+                interval_seconds=15.0,
+                level="WARNING",
+            )
+            return None
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 
 def get_local_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
     """仅从本地数据库读取单词笔记，避免热路径触发云端连接。"""
-    c = _get_local_conn(db_path or DB_PATH)
-    cur = c.cursor()
-    cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
-    r = cur.fetchone()
-    c.close()
-    return _row_to_dict(cur, r) if r else None
+    target_path = db_path or DB_PATH
+    c = _get_local_conn(target_path)
+    try:
+        cur = c.cursor()
+        cur.execute('SELECT * FROM ai_word_notes WHERE voc_id = ?', (str(voc_id),))
+        r = cur.fetchone()
+        return _row_to_dict(cur, r) if r else None
+    except Exception as read_error:
+        if _is_sqlite_data_corruption_error(read_error):
+            _debug_log_throttled(
+                key=f"local-word-note-read-corruption:{os.path.abspath(target_path)}",
+                msg=f"本地单词读取命中损坏/乱码数据，返回空并交由上层兜底: {read_error}",
+                interval_seconds=15.0,
+                level="WARNING",
+            )
+            return None
+        raise
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 def _matches_ai_generation_context(note_row: Dict[str, Any], ai_provider: Optional[str] = None, prompt_version: Optional[str] = None) -> bool:
     """判断笔记是否与当前 AI 生成上下文一致。"""
@@ -1615,45 +2261,206 @@ def find_words_in_community_batch(
     return result
 
 def save_ai_batch(batch_data: dict, db_path: str = None):
-    c = _get_conn(db_path or DB_PATH)
-    cur = c.cursor()
-    cur.execute(
-        'INSERT OR REPLACE INTO ai_batches (batch_id, request_id, ai_provider, model_name, prompt_version, batch_size, total_latency_ms, prompt_tokens, completion_tokens, total_tokens, finish_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        (
-            batch_data.get('batch_id'),
-            batch_data.get('request_id'),
-            batch_data.get('ai_provider'),
-            batch_data.get('model_name'),
-            batch_data.get('prompt_version'),
-            batch_data.get('batch_size', 1),
-            batch_data.get('total_latency_ms', 0),
-            batch_data.get('prompt_tokens', 0),
-            batch_data.get('completion_tokens', 0),
-            batch_data.get('total_tokens', 0),
-            batch_data.get('finish_reason'),
-            get_timestamp_with_tz(),
-        ),
+    sql = 'INSERT OR REPLACE INTO ai_batches (batch_id, request_id, ai_provider, model_name, prompt_version, batch_size, total_latency_ms, prompt_tokens, completion_tokens, total_tokens, finish_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    args = (
+        batch_data.get('batch_id'),
+        batch_data.get('request_id'),
+        batch_data.get('ai_provider'),
+        batch_data.get('model_name'),
+        batch_data.get('prompt_version'),
+        batch_data.get('batch_size', 1),
+        batch_data.get('total_latency_ms', 0),
+        batch_data.get('prompt_tokens', 0),
+        batch_data.get('completion_tokens', 0),
+        batch_data.get('total_tokens', 0),
+        batch_data.get('finish_reason'),
+        get_timestamp_with_tz(),
     )
-    c.commit()
-    c.close()
+    if _should_use_local_only_connection(db_path):
+        _execute_write_sql_sync(sql, args, db_path=db_path)
+        return True
+    if not _queue_write_operation(sql, args, op_type="insert_or_replace"):
+        _debug_log("save_ai_batch 入队失败: 写队列已满", level="WARNING")
+        return False
+    return True
+
+
+def _execute_write_sql(sql: str, params: tuple = (), db_path: str = None) -> None:
+    """执行写 SQL（含 commit），用于消除重复样板代码。"""
+    conn = _get_conn(db_path or DB_PATH)
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+
+def _fetch_one_scalar(sql: str, params: tuple = (), db_path: str = None):
+    """执行读 SQL 并返回首行首列。"""
+    try:
+        conn = _get_read_conn(db_path or DB_PATH)
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return row[0]
+    except Exception as e:
+        if _is_sqlite_data_corruption_error(e):
+            _debug_log_throttled(
+                "fetch_one_scalar_corruption",
+                f"_fetch_one_scalar 数据损坏异常: {e}",
+                level="WARNING"
+            )
+            return None
+        _debug_log(f"_fetch_one_scalar 异常: {e}", level="WARNING")
+        return None
+
 
 def get_file_hash(file_path):
-    if not os.path.exists(file_path): return '00000000'
-    with open(file_path, 'rb') as f: return hashlib.md5(f.read()).hexdigest()[:8]
+    if not os.path.exists(file_path):
+        return '00000000'
+    with open(file_path, 'rb') as f:
+        return hashlib.md5(f.read()).hexdigest()[:8]
 
 def archive_prompt_file(source_path, prompt_hash, prompt_type='main'):
-    ad = os.path.join(DATA_DIR, 'prompts'); os.makedirs(ad, exist_ok=True); tp = os.path.join(ad, f'prompt_{prompt_type}_{prompt_hash}.md')
-    if not os.path.exists(tp): shutil.copy2(source_path, tp)
+    archive_dir = os.path.join(DATA_DIR, 'prompts')
+    os.makedirs(archive_dir, exist_ok=True)
+    target_path = os.path.join(archive_dir, f'prompt_{prompt_type}_{prompt_hash}.md')
+    if not os.path.exists(target_path):
+        shutil.copy2(source_path, target_path)
 
 def get_latest_progress(voc_id, db_path=None):
-    c = _get_conn(db_path or DB_PATH); cur = c.cursor(); cur.execute('SELECT familiarity_short, review_count FROM word_progress_history WHERE voc_id = ? ORDER BY created_at DESC LIMIT 1', (str(voc_id),)); r = cur.fetchone(); c.close(); return _row_to_dict(cur, r) if r else None
+    try:
+        c = _get_read_conn(db_path or DB_PATH)
+        cur = c.cursor()
+        cur.execute(
+            'SELECT familiarity_short, review_count FROM word_progress_history '
+            'WHERE voc_id = ? ORDER BY created_at DESC LIMIT 1',
+            (str(voc_id),)
+        )
+        r = cur.fetchone()
+        c.close()
+        return _row_to_dict(cur, r) if r else None
+    except Exception as e:
+        if _is_sqlite_data_corruption_error(e):
+            _debug_log_throttled(
+                "get_latest_progress_corruption",
+                f"get_latest_progress 数据损坏异常: {e}",
+                level="WARNING"
+            )
+            return None
+        _debug_log(f"get_latest_progress 异常: {e}", level="WARNING")
+        return None
 
-def set_config(k,v,db=None): c = _get_conn(db or DB_PATH); cur = c.cursor(); cur.execute('INSERT OR REPLACE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)', (k, v, get_timestamp_with_tz())); c.commit(); c.close()
-def get_config(k,db=None): c = _get_conn(db or DB_PATH); cur = c.cursor(); cur.execute('SELECT value FROM system_config WHERE key = ?', (k,)); r = cur.fetchone(); c.close(); return r[0] if r else None
-def log_progress_snapshots_bulk(w): return log_progress_snapshots(w)
-def save_test_word_note(v, p): save_ai_word_note(v, p, db_path=TEST_DB_PATH)
-def log_test_run(t, s, w, a, sp, d=True, e="", res=None):
-    c = _get_conn(TEST_DB_PATH); cur = c.cursor(); aj = json.dumps(res, ensure_ascii=False) if res else ""; cur.execute('INSERT INTO test_run_logs (total_count, sample_count, sample_words, ai_calls, success_parsed, is_dry_run, error_msg, ai_results_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (t, s, ",".join(w), a, sp, d, e, aj)); c.commit(); rid = cur.lastrowid; c.close(); return rid
+def set_config(k, v, db=None):
+    sql = 'INSERT OR REPLACE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)'
+    args = (k, v, get_timestamp_with_tz())
+    if _should_use_local_only_connection(db):
+        _execute_write_sql_sync(sql, args, db_path=db)
+        return True
+    if not _queue_write_operation(sql, args, op_type="insert_or_replace"):
+        _debug_log("set_config 入队失败: 写队列已满", level="WARNING")
+        return False
+    return True
+
+
+def initialize_local_database_file(db_path: str) -> bool:
+    """初始化指定路径的本地数据库文件（供业务层安全复用，避免直连 sqlite3）。"""
+    try:
+        conn = _get_local_conn(db_path)
+        cur = conn.cursor()
+        _create_tables(cur)
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        _debug_log(f"initialize_local_database_file 失败: {e}", level="WARNING")
+        return False
+
+
+def get_config(k, db=None):
+    return _fetch_one_scalar(
+        'SELECT value FROM system_config WHERE key = ?',
+        (k,),
+        db_path=(db or DB_PATH),
+    )
+
+
+def save_test_word_note(v, p):
+    save_ai_word_note(v, p, db_path=TEST_DB_PATH)
+
+
+def log_test_run(
+    t=None,
+    s=None,
+    w=None,
+    a=None,
+    sp=None,
+    d=True,
+    e="",
+    res=None,
+    **kwargs,
+):
+    """记录测试运行日志，兼容旧的 positional 调用和新的 keyword 调用。"""
+    if t is None:
+        t = kwargs.pop("total_count", None)
+    if s is None:
+        s = kwargs.pop("sample_count", None)
+    if w is None:
+        w = kwargs.pop("words_sampled", None)
+    if a is None:
+        a = kwargs.pop("ai_calls", None)
+    if sp is None:
+        sp = kwargs.pop("success_parsed", None)
+
+    if "is_dry_run" in kwargs:
+        d = kwargs.pop("is_dry_run")
+    if "error_msg" in kwargs:
+        e = kwargs.pop("error_msg")
+    if "ai_results" in kwargs:
+        res = kwargs.pop("ai_results")
+
+    if kwargs:
+        _debug_log(f"log_test_run 收到未使用参数: {sorted(kwargs.keys())}", level="DEBUG")
+
+    if t is None or s is None or w is None or a is None or sp is None:
+        raise TypeError("log_test_run 缺少必要参数")
+
+    if isinstance(w, (list, tuple)):
+        words_sampled = ",".join(str(item) for item in w)
+    else:
+        words_sampled = str(w)
+
+    c = _get_conn(TEST_DB_PATH)
+    cur = c.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS test_run_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            total_count INTEGER,
+            sample_count INTEGER,
+            sample_words TEXT,
+            ai_calls INTEGER,
+            success_parsed INTEGER,
+            is_dry_run BOOLEAN,
+            error_msg TEXT,
+            ai_results_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    aj = json.dumps(res, ensure_ascii=False) if res else ""
+    cur.execute(
+        'INSERT INTO test_run_logs '
+        '(total_count, sample_count, sample_words, ai_calls, success_parsed, is_dry_run, error_msg, ai_results_json) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        (t, s, words_sampled, a, sp, d, e, aj)
+    )
+    c.commit()
+    rid = cur.lastrowid
+    c.close()
+    return rid
 
 
 def _emit_sync_progress(progress_callback, stage: str, current: int, total: int, message: str, **extra):
@@ -1724,7 +2531,6 @@ def sync_databases(
     try:
         _emit_sync_progress(progress_callback, 'connect', 1, 2, '连接 Embedded Replica 数据库')
         
-        # 获取 Embedded Replica 连接（本地+云端自动同步）
         try:
             conn = _get_conn(path)
         except Exception as conn_error:
@@ -1817,6 +2623,8 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
     from config import get_force_cloud_mode
     if get_force_cloud_mode() and not is_hub_configured():
         raise RuntimeError("强制云端模式已启用，但未配置 TURSO_HUB_DB_URL 或 TURSO_HUB_AUTH_TOKEN。请在 .env 文件中配置，或将 FORCE_CLOUD_MODE 设置为 False 以允许本地运行。")
+    if get_force_cloud_mode() and not HAS_LIBSQL:
+        raise RuntimeError("强制云端模式已启用，但 libsql 不可用。请先安装/启用 libsql 依赖后再连接云端 Hub 数据库。")
 
     # 优先尝试云端（带重试机制）
     if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL:
@@ -1854,6 +2662,7 @@ def _get_hub_local_conn() -> sqlite3.Connection:
     def _open_local_connection() -> sqlite3.Connection:
         conn = sqlite3.connect(path, timeout=20.0)
         conn.row_factory = sqlite3.Row
+        conn.text_factory = lambda b: b.decode("utf-8", "replace")
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
@@ -2053,58 +2862,53 @@ def save_user_info_to_hub(user_id: str, username: str, email: str, user_notes: s
         role: 用户角色（默认 user，Asher 自动成为 admin）
         conn: 可选的数据库连接（用于复用连接）
     """
-    need_close = False
     try:
-        if conn:
-            hub_conn = conn
-        else:
-            hub_conn = _get_hub_conn()
-            need_close = True
+        def _do_sql(hub_conn):
+            cur = hub_conn.cursor()
 
-        cur = hub_conn.cursor()
+            timestamp = get_timestamp_with_tz()
+            normalized_username = username.strip().lower()
+            final_role = role
+            if normalized_username.lower() == 'asher':
+                final_role = 'admin'
 
-        timestamp = get_timestamp_with_tz()
-        normalized_username = username.strip().lower()
-        if normalized_username.lower() == 'asher':
-            role = 'admin'
+            existing = None
+            if user_id:
+                cur.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+                existing = cur.fetchone()
+            if not existing:
+                cur.execute('SELECT * FROM users WHERE lower(username) = ?', (normalized_username,))
+                existing = cur.fetchone()
 
-        existing = None
-        if user_id:
-            cur.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-            existing = cur.fetchone()
-        if not existing:
-            cur.execute('SELECT * FROM users WHERE lower(username) = ?', (normalized_username,))
-            existing = cur.fetchone()
+            existing_data = _row_to_dict(cur, existing) if existing else {}
+            inserted_user_id = existing_data.get('user_id', user_id)
+            created_at = existing_data.get('created_at', timestamp)
+            first_login_at = existing_data.get('first_login_at')
+            last_login_at = existing_data.get('last_login_at')
+            existing_role = existing_data.get('role')
+            if existing_role and existing_role.lower() == 'admin':
+                final_role = 'admin'
+            status = existing_data.get('status', 'active')
 
-        existing_data = _row_to_dict(cur, existing) if existing else {}
-        inserted_user_id = existing_data.get('user_id', user_id)
-        created_at = existing_data.get('created_at', timestamp)
-        first_login_at = existing_data.get('first_login_at')
-        last_login_at = existing_data.get('last_login_at')
-        existing_role = existing_data.get('role')
-        if existing_role and existing_role.lower() == 'admin':
-            role = 'admin'
-        status = existing_data.get('status', 'active')
+            cur.execute('''
+                INSERT OR REPLACE INTO users (user_id, username, email, created_at, first_login_at, last_login_at, status, role, notes, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                inserted_user_id,
+                normalized_username,
+                email,
+                created_at,
+                first_login_at,
+                last_login_at,
+                status,
+                final_role,
+                user_notes,
+                timestamp
+            ))
 
-        cur.execute('''
-            INSERT OR REPLACE INTO users (user_id, username, email, created_at, first_login_at, last_login_at, status, role, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            inserted_user_id,
-            normalized_username,
-            email,
-            created_at,
-            first_login_at,
-            last_login_at,
-            status,
-            role,
-            user_notes,
-            timestamp
-        ))
+            return normalized_username, inserted_user_id
 
-        if need_close:
-            hub_conn.commit()
-            hub_conn.close()
+        normalized_username, inserted_user_id = _run_with_managed_connection(conn, _get_hub_conn, _do_sql)
 
         _debug_log(f"用户信息已保存到 Hub: {normalized_username} ({inserted_user_id})")
         return True
@@ -2133,54 +2937,46 @@ def save_user_credentials_to_hub(user_id: str, credentials: Dict[str, str], conn
         "gemini_api_key": "gemini_api_key_enc",
     }
 
-    need_close = False
     try:
-        if conn:
-            hub_conn = conn
-        else:
-            hub_conn = _get_hub_conn()
-            need_close = True
+        def _do_sql(hub_conn):
+            cur = hub_conn.cursor()
+            cur.execute('SELECT * FROM user_credentials WHERE user_id = ?', (user_id,))
+            existing = cur.fetchone()
+            existing_data = _row_to_dict(cur, existing) if existing else {}
 
-        cur = hub_conn.cursor()
-        cur.execute('SELECT * FROM user_credentials WHERE user_id = ?', (user_id,))
-        existing = cur.fetchone()
-        existing_data = _row_to_dict(cur, existing) if existing else {}
+            now = get_timestamp_with_tz()
+            created_at = existing_data.get('created_at', now)
 
-        now = get_timestamp_with_tz()
-        created_at = existing_data.get('created_at', now)
+            row_values = {
+                "user_id": user_id,
+                "created_at": created_at,
+                "updated_at": now,
+            }
 
-        row_values = {
-            "user_id": user_id,
-            "created_at": created_at,
-            "updated_at": now,
-        }
+            for src_key, db_col in field_map.items():
+                candidate = credentials.get(src_key)
+                if candidate:
+                    row_values[db_col] = _encrypt_secret_value(str(candidate))
+                else:
+                    row_values[db_col] = existing_data.get(db_col)
 
-        for src_key, db_col in field_map.items():
-            candidate = credentials.get(src_key)
-            if candidate:
-                row_values[db_col] = _encrypt_secret_value(str(candidate))
-            else:
-                row_values[db_col] = existing_data.get(db_col)
+            cur.execute('''
+                INSERT OR REPLACE INTO user_credentials (
+                    user_id, turso_db_url_enc, turso_auth_token_enc, momo_token_enc,
+                    mimo_api_key_enc, gemini_api_key_enc, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                row_values["user_id"],
+                row_values.get("turso_db_url_enc"),
+                row_values.get("turso_auth_token_enc"),
+                row_values.get("momo_token_enc"),
+                row_values.get("mimo_api_key_enc"),
+                row_values.get("gemini_api_key_enc"),
+                row_values["created_at"],
+                row_values["updated_at"],
+            ))
 
-        cur.execute('''
-            INSERT OR REPLACE INTO user_credentials (
-                user_id, turso_db_url_enc, turso_auth_token_enc, momo_token_enc,
-                mimo_api_key_enc, gemini_api_key_enc, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            row_values["user_id"],
-            row_values.get("turso_db_url_enc"),
-            row_values.get("turso_auth_token_enc"),
-            row_values.get("momo_token_enc"),
-            row_values.get("mimo_api_key_enc"),
-            row_values.get("gemini_api_key_enc"),
-            row_values["created_at"],
-            row_values["updated_at"],
-        ))
-
-        if need_close:
-            hub_conn.commit()
-            hub_conn.close()
+        _run_with_managed_connection(conn, _get_hub_conn, _do_sql)
 
         _debug_log(f"用户凭据已更新到 Hub: {user_id}")
         return True
@@ -2188,20 +2984,57 @@ def save_user_credentials_to_hub(user_id: str, credentials: Dict[str, str], conn
         _debug_log(f"保存用户凭据到 Hub 失败: {e}")
         return False
 
+
+def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
+    """执行 Hub 查询并返回单条字典记录。"""
+    try:
+        hub_conn = _get_hub_conn()
+        cur = hub_conn.cursor()
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        hub_conn.close()
+        return _row_to_dict(cur, row) if row else None
+    except Exception as e:
+        if _is_sqlite_data_corruption_error(e):
+            _debug_log_throttled(
+                "hub_fetch_one_dict_corruption",
+                f"_hub_fetch_one_dict 数据损坏异常: {e}",
+                level="WARNING"
+            )
+            return None
+        _debug_log(f"_hub_fetch_one_dict 异常: {e}", level="WARNING")
+        return None
+
+
+def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
+    """执行 Hub 查询并返回字典列表。"""
+    try:
+        hub_conn = _get_hub_conn()
+        cur = hub_conn.cursor()
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        hub_conn.close()
+        return [_row_to_dict(cur, row) for row in rows]
+    except Exception as e:
+        if _is_sqlite_data_corruption_error(e):
+            _debug_log_throttled(
+                "hub_fetch_all_dicts_corruption",
+                f"_hub_fetch_all_dicts 数据损坏异常: {e}",
+                level="WARNING"
+            )
+            return []
+        _debug_log(f"_hub_fetch_all_dicts 异常: {e}", level="WARNING")
+        return []
+
 def get_user_credentials_from_hub(user_id: str, decrypt_values: bool = False) -> Optional[dict]:
     """读取 Hub 中的用户凭据；可选解密返回明文。"""
     if not user_id:
         return None
     try:
-        hub_conn = _get_hub_conn()
-        cur = hub_conn.cursor()
-        cur.execute('SELECT * FROM user_credentials WHERE user_id = ?', (user_id,))
-        row = cur.fetchone()
-        hub_conn.close()
-        if not row:
+        data = _hub_fetch_one_dict('SELECT * FROM user_credentials WHERE user_id = ?', (user_id,))
+        if not data:
             return None
 
-        data = _row_to_dict(cur, row)
         if not decrypt_values:
             return data
 
@@ -2227,12 +3060,7 @@ def get_user_credentials_from_hub(user_id: str, decrypt_values: bool = False) ->
 def get_user_by_username(username: str) -> Optional[dict]:
     """从 Hub 按 username 查询用户记录。"""
     try:
-        hub_conn = _get_hub_conn()
-        cur = hub_conn.cursor()
-        cur.execute('SELECT * FROM users WHERE lower(username) = ?', (username.strip().lower(),))
-        row = cur.fetchone()
-        hub_conn.close()
-        return _row_to_dict(cur, row) if row else None
+        return _hub_fetch_one_dict('SELECT * FROM users WHERE lower(username) = ?', (username.strip().lower(),))
     except Exception as e:
         _debug_log(f"从 Hub 按用户名查询失败: {e}")
         return None
@@ -2250,12 +3078,10 @@ def is_admin_username(username: str) -> bool:
 def list_hub_users(limit: int = 50) -> List[dict]:
     """列出 Hub 中的用户信息。"""
     try:
-        hub_conn = _get_hub_conn()
-        cur = hub_conn.cursor()
-        cur.execute('SELECT user_id, username, email, role, status, created_at, last_login_at FROM users ORDER BY created_at ASC LIMIT ?', (limit,))
-        rows = cur.fetchall()
-        hub_conn.close()
-        return [_row_to_dict(cur, row) for row in rows]
+        return _hub_fetch_all_dicts(
+            'SELECT user_id, username, email, role, status, created_at, last_login_at FROM users ORDER BY created_at ASC LIMIT ?',
+            (limit,),
+        )
     except Exception as e:
         _debug_log(f"获取 Hub 用户列表失败: {e}")
         return []
@@ -2265,12 +3091,12 @@ def set_user_status(user_id: str, status: str = 'active') -> bool:
     if status not in ('active', 'disabled', 'suspended'):
         raise ValueError('非法状态值')
     try:
-        hub_conn = _get_hub_conn()
-        cur = hub_conn.cursor()
-        cur.execute('UPDATE users SET status = ? WHERE user_id = ?', (status, user_id))
-        updated = cur.rowcount
-        hub_conn.commit()
-        hub_conn.close()
+        def _do_sql(hub_conn):
+            cur = hub_conn.cursor()
+            cur.execute('UPDATE users SET status = ? WHERE user_id = ?', (status, user_id))
+            return cur.rowcount
+
+        updated = _run_with_managed_connection(None, _get_hub_conn, _do_sql)
         _debug_log(f"用户状态已修改: {user_id} -> {status}")
         return updated > 0
     except Exception as e:
@@ -2280,12 +3106,7 @@ def set_user_status(user_id: str, status: str = 'active') -> bool:
 def list_admin_logs(limit: int = 25) -> List[dict]:
     """获取最近的管理员操作日志。"""
     try:
-        hub_conn = _get_hub_conn()
-        cur = hub_conn.cursor()
-        cur.execute('SELECT * FROM admin_logs ORDER BY id DESC LIMIT ?', (limit,))
-        rows = cur.fetchall()
-        hub_conn.close()
-        return [_row_to_dict(cur, row) for row in rows]
+        return _hub_fetch_all_dicts('SELECT * FROM admin_logs ORDER BY id DESC LIMIT ?', (limit,))
     except Exception as e:
         _debug_log(f"获取管理员日志失败: {e}")
         return []
@@ -2301,26 +3122,16 @@ def save_user_session(user_id: str, session_id: str, client_info: str, ip_addres
         ip_address: 用户 IP 地址
         conn: 可选的数据库连接（用于复用连接）
     """
-    need_close = False
     try:
-        if conn:
-            hub_conn = conn
-        else:
-            hub_conn = _get_hub_conn()
-            need_close = True
+        def _do_sql(hub_conn):
+            cur = hub_conn.cursor()
+            login_at = get_timestamp_with_tz()
+            cur.execute('''
+                INSERT INTO user_sessions (user_id, session_id, client_info, ip_address, login_at, last_activity_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, session_id, client_info, ip_address, login_at, login_at))
 
-        cur = hub_conn.cursor()
-
-        login_at = get_timestamp_with_tz()
-
-        cur.execute('''
-            INSERT INTO user_sessions (user_id, session_id, client_info, ip_address, login_at, last_activity_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, session_id, client_info, ip_address, login_at, login_at))
-
-        if need_close:
-            hub_conn.commit()
-            hub_conn.close()
+        _run_with_managed_connection(conn, _get_hub_conn, _do_sql)
 
         _debug_log(f"用户会话已记录: {user_id} from {ip_address}")
         return True
@@ -2342,44 +3153,43 @@ def update_user_stats(user_id: str, words_count: int = 0, ai_calls: int = 0,
         completion_tokens: Completion token 数量
     """
     try:
-        hub_conn = _get_hub_conn()
-        cur = hub_conn.cursor()
-        
-        updated_at = get_timestamp_with_tz()
-        
-        # 先查询现有数据
-        cur.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
-        row = cur.fetchone()
-        
-        if row:
-            # 更新（累加）
-            row_dict = _row_to_dict(cur, row)
-            new_words = row_dict.get('total_words_processed', 0) + words_count
-            new_calls = row_dict.get('total_ai_calls', 0) + ai_calls
-            new_prompt = row_dict.get('total_prompt_tokens', 0) + prompt_tokens
-            new_completion = row_dict.get('total_completion_tokens', 0) + completion_tokens
-            
-            cur.execute('''
-                UPDATE user_stats
-                SET total_words_processed = ?,
-                    total_ai_calls = ?,
-                    total_prompt_tokens = ?,
-                    total_completion_tokens = ?,
-                    last_activity_at = ?,
-                    updated_at = ?
-                WHERE user_id = ?
-            ''', (new_words, new_calls, new_prompt, new_completion, updated_at, updated_at, user_id))
-        else:
-            # 新增
-            cur.execute('''
-                INSERT INTO user_stats (user_id, total_words_processed, total_ai_calls, 
-                                       total_prompt_tokens, total_completion_tokens, 
-                                       last_activity_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (user_id, words_count, ai_calls, prompt_tokens, completion_tokens, updated_at, updated_at))
-        
-        hub_conn.commit()
-        hub_conn.close()
+        def _do_sql(hub_conn):
+            cur = hub_conn.cursor()
+
+            updated_at = get_timestamp_with_tz()
+
+            # 先查询现有数据
+            cur.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
+            row = cur.fetchone()
+
+            if row:
+                # 更新（累加）
+                row_dict = _row_to_dict(cur, row)
+                new_words = row_dict.get('total_words_processed', 0) + words_count
+                new_calls = row_dict.get('total_ai_calls', 0) + ai_calls
+                new_prompt = row_dict.get('total_prompt_tokens', 0) + prompt_tokens
+                new_completion = row_dict.get('total_completion_tokens', 0) + completion_tokens
+
+                cur.execute('''
+                    UPDATE user_stats
+                    SET total_words_processed = ?,
+                        total_ai_calls = ?,
+                        total_prompt_tokens = ?,
+                        total_completion_tokens = ?,
+                        last_activity_at = ?,
+                        updated_at = ?
+                    WHERE user_id = ?
+                ''', (new_words, new_calls, new_prompt, new_completion, updated_at, updated_at, user_id))
+            else:
+                # 新增
+                cur.execute('''
+                    INSERT INTO user_stats (user_id, total_words_processed, total_ai_calls,
+                                           total_prompt_tokens, total_completion_tokens,
+                                           last_activity_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, words_count, ai_calls, prompt_tokens, completion_tokens, updated_at, updated_at))
+
+        _run_with_managed_connection(None, _get_hub_conn, _do_sql)
         _debug_log(f"用户统计已更新: {user_id}")
         return True
         
@@ -2400,26 +3210,16 @@ def log_admin_action(action_type: str, action_detail: str = "", admin_username: 
         result: 操作结果（'success' 或 'failure'）
         conn: 可选的数据库连接（用于复用连接）
     """
-    need_close = False
     try:
-        if conn:
-            hub_conn = conn
-        else:
-            hub_conn = _get_hub_conn()
-            need_close = True
+        def _do_sql(hub_conn):
+            cur = hub_conn.cursor()
+            timestamp = get_timestamp_with_tz()
+            cur.execute('''
+                INSERT INTO admin_logs (action_type, action_detail, admin_username, target_user_id, timestamp, result)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (action_type, action_detail, admin_username, target_user_id, timestamp, result))
 
-        cur = hub_conn.cursor()
-
-        timestamp = get_timestamp_with_tz()
-
-        cur.execute('''
-            INSERT INTO admin_logs (action_type, action_detail, admin_username, target_user_id, timestamp, result)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (action_type, action_detail, admin_username, target_user_id, timestamp, result))
-
-        if need_close:
-            hub_conn.commit()
-            hub_conn.close()
+        _run_with_managed_connection(conn, _get_hub_conn, _do_sql)
 
         _debug_log(f"管理员操作已记录: {action_type}")
         return True
@@ -2430,27 +3230,17 @@ def log_admin_action(action_type: str, action_detail: str = "", admin_username: 
 
 def update_user_login_time(user_id: str, conn: Any = None) -> bool:
     """更新用户最后登录时间"""
-    need_close = False
     try:
-        if conn:
-            hub_conn = conn
-        else:
-            hub_conn = _get_hub_conn()
-            need_close = True
+        def _do_sql(hub_conn):
+            cur = hub_conn.cursor()
+            login_time = get_timestamp_with_tz()
+            cur.execute('''
+                UPDATE users
+                SET last_login_at = ?, first_login_at = COALESCE(first_login_at, ?)
+                WHERE user_id = ?
+            ''', (login_time, login_time, user_id))
 
-        cur = hub_conn.cursor()
-
-        login_time = get_timestamp_with_tz()
-
-        cur.execute('''
-            UPDATE users
-            SET last_login_at = ?, first_login_at = COALESCE(first_login_at, ?)
-            WHERE user_id = ?
-        ''', (login_time, login_time, user_id))
-
-        if need_close:
-            hub_conn.commit()
-            hub_conn.close()
+        _run_with_managed_connection(conn, _get_hub_conn, _do_sql)
 
         return True
 
@@ -2461,14 +3251,7 @@ def update_user_login_time(user_id: str, conn: Any = None) -> bool:
 def get_user_from_hub(user_id: str) -> Optional[dict]:
     """从中央 Hub 获取用户信息"""
     try:
-        hub_conn = _get_hub_conn()
-        cur = hub_conn.cursor()
-        
-        cur.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-        row = cur.fetchone()
-        hub_conn.close()
-        
-        return _row_to_dict(cur, row) if row else None
+        return _hub_fetch_one_dict('SELECT * FROM users WHERE user_id = ?', (user_id,))
         
     except Exception as e:
         _debug_log(f"从 Hub 获取用户信息失败: {e}")

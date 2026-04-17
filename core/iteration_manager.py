@@ -3,7 +3,9 @@ import time
 from typing import List, Dict
 from core.db_manager import (
     get_latest_progress,
-    _get_conn, DB_PATH, save_ai_word_iteration, get_timestamp_with_tz
+    _get_read_conn,
+    _row_to_dict, DB_PATH, save_ai_word_iteration, get_timestamp_with_tz,
+    update_ai_word_note_iteration_state,
 )
 from core.constants import MAIMEMO_BRIEF_MEANING_MAX_LENGTH
 from config import SCORE_PROMPT_FILE, REFINE_PROMPT_FILE
@@ -148,8 +150,7 @@ class IterationManager:
         1. 优先处理已有 AI 笔记但熟悉度低的单词（迭代优化）
         2. 处理没有 AI 笔记但熟悉度低的单词（首次助记生成）
         """
-        from core.db_manager import _get_conn, _row_to_dict
-        conn = _get_conn(DB_PATH)
+        conn = _get_read_conn(DB_PATH)
         cur = conn.cursor()
 
         weak_words = []
@@ -214,7 +215,7 @@ class IterationManager:
 
     def _get_last_recorded_fam(self, voc_id: str) -> float:
         """获取该单词在最后一次 it_level 变更时的熟悉度基准。"""
-        conn = _get_conn(DB_PATH)
+        conn = _get_read_conn(DB_PATH)
         cur = conn.cursor()
         cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
         row = cur.fetchone()
@@ -359,10 +360,7 @@ class IterationManager:
 
     def _update_it_state(self, voc_id, level, reason, new_note=None, raw_text=None, iteration_data=None):
         """原子化更新迭代状态。"""
-        conn = _get_conn(DB_PATH)
-        cur = conn.cursor()
-        
-        # 获取当前熟悉度作为基准
+        # 读取当前快照用于构建新 history；写入统一走 db_manager 异步队列。
         current_progress = get_latest_progress(voc_id)
         current_fam = current_progress.get("familiarity_short", 0.0) if current_progress else 0.0
         if current_fam is None:
@@ -372,32 +370,31 @@ class IterationManager:
             "time": get_timestamp_with_tz(),
             "level": level,
             "reason": reason,
-            "baseline_fam": current_fam
+            "baseline_fam": current_fam,
         }
-        
-        # 获取旧 history
-        cur.execute("SELECT it_history, memory_aid, raw_full_text FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+
+        conn = _get_read_conn(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
         row = cur.fetchone()
+        conn.close()
+
         old_history = json.loads(row[0]) if row and row[0] else []
+        old_memory_aid = row[1] if row and len(row) > 1 else ""
         old_history.append(history_item)
+        history_json = json.dumps(old_history, ensure_ascii=False)
 
         if iteration_data:
-            save_ai_word_iteration(voc_id, iteration_data, conn=conn)
-        
+            ok = save_ai_word_iteration(voc_id, iteration_data)
+            if not ok:
+                self.logger.warning(f"迭代历史入队失败: {voc_id}", module="iteration_manager", function="_update_it_state")
+
         if new_note:
             # 模式：将重炼结果置顶保存，保留历史
-            combined_note = f"{new_note}\n\n--- 历史记录 ---\n{row[1]}" if row else new_note
-            cur.execute("""
-                UPDATE ai_word_notes 
-                SET it_level = ?, it_history = ?, memory_aid = ?, updated_at = ?
-                WHERE voc_id = ?
-            """, (level, json.dumps(old_history, ensure_ascii=False), combined_note, get_timestamp_with_tz(), voc_id))
+            combined_note = f"{new_note}\n\n--- 历史记录 ---\n{old_memory_aid}" if old_memory_aid else new_note
+            ok = update_ai_word_note_iteration_state(voc_id, level, history_json, memory_aid=combined_note)
         else:
-            cur.execute("""
-                UPDATE ai_word_notes 
-                SET it_level = ?, it_history = ?, updated_at = ?
-                WHERE voc_id = ?
-            """, (level, json.dumps(old_history, ensure_ascii=False), get_timestamp_with_tz(), voc_id))
-            
-        conn.commit()
-        conn.close()
+            ok = update_ai_word_note_iteration_state(voc_id, level, history_json)
+
+        if not ok:
+            self.logger.warning(f"迭代状态入队失败: {voc_id}", module="iteration_manager", function="_update_it_state")

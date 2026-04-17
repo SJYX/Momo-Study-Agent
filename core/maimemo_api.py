@@ -7,8 +7,11 @@
 import requests
 import time
 import threading
+import os
 from collections import deque
 from typing import List, Dict, Optional, Union, Any
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from core.constants import MAIMEMO_NOTE_TAG_OPTIONS, MAIMEMO_NOTE_TAG_FALLBACK
 try:
     from core.logger import get_logger
@@ -20,6 +23,19 @@ class MaiMemoAPI:
     def __init__(self, access_token: str):
         self.base_url = "https://open.maimemo.com/open/api/v1"
         self._session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            status=3,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
         self.headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
@@ -37,6 +53,8 @@ class MaiMemoAPI:
         self._min_interval_sec = 0.12
         self._last_request_ts = 0.0
         self._rate_limit_lock = threading.Lock()
+        self._connect_timeout_s = float(os.getenv("MAIMEMO_CONNECT_TIMEOUT_S", "8"))
+        self._read_timeout_s = float(os.getenv("MAIMEMO_READ_TIMEOUT_S", "20"))
 
     def close(self):
         """释放底层 HTTP 连接，避免退出时资源告警。"""
@@ -82,6 +100,18 @@ class MaiMemoAPI:
         return status_code in {500, 502, 503, 504}
 
     @staticmethod
+    def _is_transient_network_error(error: Exception) -> bool:
+        msg = str(error or "").lower()
+        return (
+            "unexpected eof while reading" in msg
+            or "ssleoferror" in msg
+            or "ssl" in msg and "eof" in msg
+            or "connection reset" in msg
+            or "timed out" in msg
+            or "temporarily unavailable" in msg
+        )
+
+    @staticmethod
     def _normalize_note_tags(tags: Optional[List[str]]) -> List[str]:
         allowed = set(MAIMEMO_NOTE_TAG_OPTIONS)
         if not tags:
@@ -102,6 +132,7 @@ class MaiMemoAPI:
         """统一请求处理及限流"""
         url = f"{self.base_url}{endpoint}"
         expected_error_codes = set(kwargs.pop("expected_error_codes", []) or [])
+        kwargs.setdefault("timeout", (self._connect_timeout_s, self._read_timeout_s))
 
         # 单测通常会 patch `requests.request`；生产环境仍优先走 session 复用连接。
         request_impl = requests.request if requests.request.__class__.__module__ == "unittest.mock" else self._session.request
@@ -113,6 +144,8 @@ class MaiMemoAPI:
                 response = request_impl(method, url, headers=self.headers, **kwargs)
 
                 if 200 <= response.status_code < 300:
+                    if not (response.text or "").strip():
+                        return {"success": True, "status_code": response.status_code}
                     return response.json()
                 elif response.status_code == 429:
                     # 处理频率限制错误
@@ -175,7 +208,8 @@ class MaiMemoAPI:
                         ],
                     }
             except Exception as e:
-                get_logger().error(f"请求异常: {e}", module="maimemo_api")
+                log_func = get_logger().warning if self._is_transient_network_error(e) else get_logger().error
+                log_func(f"请求异常: {e}", module="maimemo_api")
                 if attempt < 2:  # MAX_RETRIES - 1
                     wait_times = [10, 25, 60]
                     time.sleep(wait_times[attempt])
@@ -437,6 +471,10 @@ class MaiMemoAPI:
                     self.creation_limit_reached = True
                     get_logger().warning(f"[*] {word标识} - 创建释义失败：{error_msg}（已超出最大创建数量限制）", module="maimemo_api")
                     return _finalize_from_lookup(self.list_interpretations(voc_id), empty_reason="limit_reached", lookup_stage="limit_reached")
+
+                if error_code == "common_invalid_res_id":
+                    get_logger().error(f"[*] {word标识} - 创建释义失败：{error_msg}", module="maimemo_api")
+                    return _finish(0, "invalid_res_id")
 
                 get_logger().error(f"[*] {word标识} - 创建释义失败：{error_msg}", module="maimemo_api")
             else:

@@ -489,8 +489,8 @@ def test_get_cloud_conn_self_heals_when_malformed(tmp_path, monkeypatch):
     assert len(backups) == 1
 
 
-def test_backup_broken_replica_file_removes_sidecars(tmp_path):
-    """备份损坏副本时应清理 wal/shm/info 残留，避免后续重建污染。"""
+def test_backup_broken_replica_file_keeps_sidecars(tmp_path):
+    """备份损坏副本时应保留 wal/shm/info，避免破坏 SQLite 恢复链路。"""
     base = tmp_path / "local.db"
     base.write_text("x", encoding="utf-8")
     (tmp_path / "local.db-wal").write_text("wal", encoding="utf-8")
@@ -500,9 +500,9 @@ def test_backup_broken_replica_file_removes_sidecars(tmp_path):
     backup_path = db_manager._backup_broken_replica_file(str(base))
     assert backup_path is not None
     assert not base.exists()
-    assert not (tmp_path / "local.db-wal").exists()
-    assert not (tmp_path / "local.db-shm").exists()
-    assert not (tmp_path / "local.db-info").exists()
+    assert (tmp_path / "local.db-wal").exists()
+    assert (tmp_path / "local.db-shm").exists()
+    assert (tmp_path / "local.db-info").exists()
     assert os.path.exists(backup_path)
 
 
