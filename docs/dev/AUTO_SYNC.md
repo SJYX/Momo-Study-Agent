@@ -125,7 +125,8 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 - co_origin 笔记实际上已经存在于云端，无需当前用户再同步
 
 
-- 入队顺序约束：`main.py` 在生成结果处理中必须先调用批量落库，再将任务加入收尾同步队列；禁止“先入队后落库”，避免后台线程先消费导致误报“未检索到记录”。
+- 从入队顺序约束看：默认情况下流程中必须先投递给持久层落库，再将任务加入收尾同步队列以备查验。
+- **快路径特例（Memory-Trust）**：若随同步任务下发了 `force_sync=True` 旗帜，则会豁免上述等待约束；系统将直接利用刚产出的内存数据发起远端调用，大幅消除写盘滞后带来的吞吐瓶颈。
 
 **状态更新和持久化：**
 
@@ -147,8 +148,10 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 
 ## 本地并发写入配置
 
-- 本地 SQLite 连接启用 `WAL` 模式与 `synchronous=NORMAL`
-- 本地连接超时调整为 `20.0s`（降低高并发写入场景下的锁等待失败）
+当前应用放弃了完全依赖 `timeout` 解锁的主线阻塞并发，转为采用 **写操作队列 + 后台单例守护线程 (`_writer_daemon`)** 的序列化落盘方案，彻底告别了多线程 SQLite I/O 抢占。
+- 读操作已强制隔离为 ThreadLocal 专属连接。
+- 所有写入（除了事务锁紧情况）均被封装成消息投递入队。
+- （底层兜底）本地 SQLite 连接仍保持 `WAL` 模式、`synchronous=NORMAL` 与超时 `timeout=20.0s` 配置。
 
 ### Hub 库（`sync_hub_databases`）
 

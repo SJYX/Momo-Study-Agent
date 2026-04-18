@@ -33,7 +33,13 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 改动前先确认模块归属，避免越层实现。
 
 - 入口层：`main.py`
-  - 职责：流程编排、用户交互、线程池分发、同步收尾。
+  - 职责：全局配置引导与环境拉起，将业务逻辑委派给 `StudyWorkflow`。
+- 业务核心：`core/study_workflow.py`
+  - 职责：整合本地数据库查询、任务过滤、AI 生成、以及队列消费，提供独立的端到端处理方法。
+- 展示层：`core/ui_manager.py`
+  - 职责：隔离终端 UI 输入输出交互，统一状态格式呈现。
+- 后台同步：`core/sync_manager.py`
+  - 职责：高性能后台同步队列维护、墨墨同步网络调度及冲突回写处理。
 - 持久层：`core/db_manager.py`
   - 职责：唯一 SQL 写入入口；维护 `sync_status`；处理 SQLite/Turso 双轨行为。
 - API 层：`core/maimemo_api.py`
@@ -42,8 +48,8 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
   - 职责：模型调用、结果清洗、结构化输出。
 - 业务引擎：`core/iteration_manager.py`
   - 职责：重炼/选优链路与薄弱词迭代。
-- 基建层：`config.py`, `core/logger.py`
-  - 职责：多用户隔离、配置装载、结构化日志。
+- 基建层：`config.py`, `core/logger.py`, `core/log_config.py`
+  - 职责：多用户隔离、配置装载、结构化日志配置。
 
 ## 3. MUST 级架构契约（违反即视为严重问题）
 
@@ -56,16 +62,16 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 2. 禁用 `row_factory` 依赖。
     - Turso（libsql）不支持 `sqlite3.Row` 语义。
     - 查询结果统一走 `_row_to_dict(cursor, row)`。
-3. SQLite 连接必须具备并发兜底。
-    - `sqlite3.connect(..., timeout=20.0)`。
-    - 执行 `PRAGMA journal_mode=WAL`。
+3. 严禁业务线程直连写库，必须使用读写分离的高并发架构。
+    - 读操作：必须使用线程专属的 `_get_thread_local_read_conn()` （防争抢与连接损坏）。
+    - 写操作：必须投递给 `_write_queue`（如 `_queue_write_operation`），由后台守护线程单线程序列化执行。禁止业务代码里直接建立普通连接并随意 `INSERT/UPDATE`。
+    - 底层仍需执行 `PRAGMA journal_mode=WAL` 和 `timeout=20.0` 作为最终兜底。
 4. 批量写入优先。
-    - 禁止在循环中逐条 `INSERT`。
-    - 使用 `save_ai_word_notes_batch` 等批量接口。
-5. 同步状态机不可破坏。
-    - 入队前必须先落库并标记 `sync_status=0`。
-    - 后台同步成功后标记 `sync_status=1`。
-    - 启动时必须恢复未同步数据（`sync_status=0`）。
+    - 禁止在交互或循环内部频繁逐条调用写队列模块。
+    - 必须使用 `save_ai_word_notes_batch` 等专属聚合接口，借由 `_queue_batch_write_operation` 完成批次事务提交。
+5. 同步状态机与内存快路径（Memory-Trust Path）。
+    - 常规流水：入队前必须先落库并标记 `sync_status=0`，后台同步成功后标记 `sync_status=1` 或 `2`（冲突）。启动时须恢复未同步数据。
+    - 内存兜底豁免：极速模式下允许附加 `force_sync=True` 旗帜直接入网络队列，此时视 AI 返回的实时内存结果为合法，从而跳过入队前“写完再发”的时间差束缚。
 6. Schema 变更必须兼容旧库。
     - 在 `_create_tables()` 中维护字段。
     - 使用 `ALTER TABLE ... ADD COLUMN` 做平滑升级。

@@ -24,6 +24,9 @@ MOMO_Script/
 ├── .env.example            # 环境变量模板
 ├── CLAUDE.md               # AI 上下文文档
 ├── core/                   # 核心业务逻辑
+│   ├── study_workflow.py   # 主工作流引擎与重试总线
+│   ├── sync_manager.py     # 异步同步与队列调度
+│   ├── ui_manager.py       # 终端交互界面层
 │   ├── maimemo_api.py      # 墨墨 API 封装
 │   ├── db_manager.py       # 数据库管理
 │   ├── iteration_manager.py # 智能迭代

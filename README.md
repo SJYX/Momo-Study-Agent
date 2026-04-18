@@ -2,7 +2,7 @@
 
 这是一个基于墨墨背单词 OpenAPI 的多用户 CLI 工具。它负责拉取词汇、调用 AI 生成助记、写回墨墨，并把本地学习数据同步到 Turso 云端。
 
-当前版本在本地数据库层默认启用 SQLite WAL 并发模式，并为 AI 笔记引入 `sync_status` 持久化队列状态（`0=待同步`, `1=已同步`），用于提升高并发写入稳定性和同步可恢复性。云端同步使用 Embedded Replicas 的 `conn.sync()`，不再维护手工逐表增量同步逻辑。
+当前系统在并发架构上实现了深度解耦：底层数据库启用 **专属写消息队列 + 后台守护并发写机制（Daemon Writer）** 与 ThreadLocal 读分离；业务层分离了原生 UI 和网络管道，并为网络同步提供了极速 **内存数据信任（Memory-trust）直连通道**；数据持久层则由 Embedded Replicas 的 `conn.sync()` 直接完成 SQLite 与 Turso 的增量同步收敛。
 
 ## 快速开始
 

@@ -11,7 +11,7 @@ from core.db_manager import (
     mark_processed_batch,
     clean_for_maimemo,
 )
-from sync_manager import SyncManager
+from core.sync_manager import SyncManager
 
 
 class StudyWorkflow:

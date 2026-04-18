@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import os
 import signal
 import uuid
@@ -32,8 +32,8 @@ from core.log_config import get_full_config
 from core.logger import setup_logger
 from core.maimemo_api import MaiMemoAPI
 from core.mimo_client import MimoClient
-from study_workflow import StudyWorkflow
-from ui_manager import CLIUIManager
+from core.study_workflow import StudyWorkflow
+from core.ui_manager import CLIUIManager
 
 
 def _disable_signal_wakeup_fd() -> None:
