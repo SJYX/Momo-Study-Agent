@@ -36,16 +36,26 @@ def get_processed_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
     if not voc_ids:
         return set()
 
+    c = None
     try:
         started = time.time()
         c = connection._get_read_conn(db_path or DB_PATH)
-        cur = c.cursor()
+        conn_lock = connection._get_singleton_conn_op_lock(c)
         vs = [str(v) for v in voc_ids]
         ph = ",".join(["?"] * len(vs))
-        cur.execute(f"SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})", vs)
-        rows = cur.fetchall()
-        if not connection._is_main_write_singleton_conn(c):
-            c.close()
+
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                cur.execute(f"SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})", vs)
+                rows = cur.fetchall()
+                c.commit()
+        else:
+            cur = c.cursor()
+            cur.execute(f"SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})", vs)
+            rows = cur.fetchall()
+            c.commit()
+
         result = {str(r[0] if isinstance(r, (tuple, list)) else r["voc_id"]) for r in rows}
         _debug_log(f"批量查询 ({len(voc_ids)} 词)", start_time=started, module="database.momo_words")
         return result
@@ -60,21 +70,37 @@ def get_processed_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
             return set()
         _debug_log(f"get_processed_ids_in_batch 异常: {e}", level="WARNING", module="database.momo_words")
         return set()
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
 
 
 def get_progress_tracked_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
     if not voc_ids:
         return set()
 
+    c = None
     try:
         c = connection._get_read_conn(db_path or DB_PATH)
-        cur = c.cursor()
+        conn_lock = connection._get_singleton_conn_op_lock(c)
         vs = [str(v) for v in voc_ids]
         ph = ",".join(["?"] * len(vs))
-        cur.execute(f"SELECT DISTINCT voc_id FROM word_progress_history WHERE voc_id IN ({ph})", vs)
-        rows = cur.fetchall()
-        if not connection._is_main_write_singleton_conn(c):
-            c.close()
+
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                cur.execute(f"SELECT DISTINCT voc_id FROM word_progress_history WHERE voc_id IN ({ph})", vs)
+                rows = cur.fetchall()
+                c.commit()
+        else:
+            cur = c.cursor()
+            cur.execute(f"SELECT DISTINCT voc_id FROM word_progress_history WHERE voc_id IN ({ph})", vs)
+            rows = cur.fetchall()
+            c.commit()
+
         return {str(r[0] if isinstance(r, (tuple, list)) else r["voc_id"]) for r in rows}
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
@@ -87,16 +113,32 @@ def get_progress_tracked_ids_in_batch(voc_ids: list, db_path: str = None) -> set
             return set()
         _debug_log(f"get_progress_tracked_ids_in_batch 异常: {e}", level="WARNING", module="database.momo_words")
         return set()
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
 
 
 def is_processed(voc_id: str, db_path: str = None) -> bool:
+    c = None
     try:
         c = connection._get_read_conn(db_path or DB_PATH)
-        cur = c.cursor()
-        cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
-        res = cur.fetchone() is not None
-        if not connection._is_main_write_singleton_conn(c):
-            c.close()
+        conn_lock = connection._get_singleton_conn_op_lock(c)
+
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
+                res = cur.fetchone() is not None
+                c.commit()
+        else:
+            cur = c.cursor()
+            cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
+            res = cur.fetchone() is not None
+            c.commit()
+
         return res
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
@@ -109,6 +151,12 @@ def is_processed(voc_id: str, db_path: str = None) -> bool:
             return False
         _debug_log(f"is_processed 异常: {e}", level="WARNING", module="database.momo_words")
         return False
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
 
 
 def mark_processed(voc_id: str, spelling: str, db_path: str = None, conn: Any = None) -> bool:
@@ -152,21 +200,45 @@ def log_progress_snapshots(words: List[dict], db_path: str = None) -> int:
         return 0
 
     started = time.time()
-    c = connection._get_read_conn(db_path or DB_PATH)
-    cur = c.cursor()
-    vids = [str(w["voc_id"]) for w in words]
-    ph = ",".join(["?"] * len(vids))
-    cur.execute(f"SELECT voc_id, it_level FROM ai_word_notes WHERE voc_id IN ({ph})", vids)
-    itm = {str(r[0]): r[1] for r in cur.fetchall()}
-    cur.execute(
-        f"SELECT voc_id, familiarity_short, review_count FROM word_progress_history WHERE voc_id IN ({ph}) ORDER BY created_at DESC",
-        vids,
-    )
-    lh = {}
-    for r in cur.fetchall():
-        v = str(r[0])
-        if v not in lh:
-            lh[v] = (r[1], r[2])
+    c = None
+
+    def _query_progress_data(c):
+        vids = [str(w["voc_id"]) for w in words]
+        ph = ",".join(["?"] * len(vids))
+        cur = c.cursor()
+        cur.execute(f"SELECT voc_id, it_level FROM ai_word_notes WHERE voc_id IN ({ph})", vids)
+        itm = {str(r[0]): r[1] for r in cur.fetchall()}
+        cur.execute(
+            f"SELECT voc_id, familiarity_short, review_count FROM word_progress_history WHERE voc_id IN ({ph}) ORDER BY created_at DESC",
+            vids,
+        )
+        lh = {}
+        for r in cur.fetchall():
+            v = str(r[0])
+            if v not in lh:
+                lh[v] = (r[1], r[2])
+        return itm, lh, vids
+
+    try:
+        c = connection._get_read_conn(db_path or DB_PATH)
+        conn_lock = connection._get_singleton_conn_op_lock(c)
+
+        if conn_lock is not None:
+            with conn_lock:
+                itm, lh, vids = _query_progress_data(c)
+                c.commit()
+        else:
+            itm, lh, vids = _query_progress_data(c)
+            c.commit()
+    except Exception as e:
+        _debug_log(f"log_progress_snapshots 读取异常: {e}", level="WARNING", module="database.momo_words")
+        return 0
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
 
     ins = []
     for w in words:
@@ -181,18 +253,12 @@ def log_progress_snapshots(words: List[dict], db_path: str = None) -> int:
         sql = "INSERT INTO word_progress_history (voc_id, familiarity_short, familiarity_long, review_count, it_level) VALUES (?, ?, ?, ?, ?)"
         if connection._should_use_local_only_connection(db_path):
             connection._execute_batch_write_sql_sync(sql, ins, db_path=db_path)
-            if not connection._is_main_write_singleton_conn(c):
-                c.close()
             _debug_log(f"进度同步 ({len(ins)} 条)", start_time=started, module="database.momo_words")
             return len(ins)
         if not connection._queue_batch_write_operation(sql, ins):
             _debug_log("log_progress_snapshots 入队失败: 写队列已满", level="WARNING", module="database.momo_words")
-            if not connection._is_main_write_singleton_conn(c):
-                c.close()
             return 0
 
-    if not connection._is_main_write_singleton_conn(c):
-        c.close()
     _debug_log(f"进度同步 ({len(ins)} 条)", start_time=started, module="database.momo_words")
     return len(ins)
 
@@ -336,14 +402,24 @@ def get_unsynced_notes(db_path: str = None, _recovery_attempted: bool = False) -
         "ORDER BY updated_at ASC"
     )
 
+    c = None
     try:
         path = db_path or DB_PATH
-        conn = connection._get_read_conn(path)
-        cur = conn.cursor()
-        cur.execute(unsynced_sql)
-        rows = cur.fetchall()
-        if not connection._is_main_write_singleton_conn(conn):
-            conn.close()
+        c = connection._get_read_conn(path)
+        conn_lock = connection._get_singleton_conn_op_lock(c)
+
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                cur.execute(unsynced_sql)
+                rows = cur.fetchall()
+                c.commit()
+        else:
+            cur = c.cursor()
+            cur.execute(unsynced_sql)
+            rows = cur.fetchall()
+            c.commit()
+
         result = [connection._row_to_dict(cur, row) for row in rows]
         _debug_log(f"获取未同步笔记完成: {len(result)} 条 (仅 ai_generated)", module="database.momo_words")
         return result
@@ -413,15 +489,34 @@ def get_unsynced_notes(db_path: str = None, _recovery_attempted: bool = False) -
             return []
         _debug_log(f"获取未同步笔记异常: {e}", level="WARNING", module="database.momo_words")
         return []
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
 
 
 def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
     target_path = db_path or DB_PATH
-    c = connection._get_read_conn(target_path)
+
+    c = None
     try:
-        cur = c.cursor()
-        cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
-        r = cur.fetchone()
+        c = connection._get_read_conn(target_path)
+        conn_lock = connection._get_singleton_conn_op_lock(c)
+
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+                r = cur.fetchone()
+                c.commit()
+        else:
+            cur = c.cursor()
+            cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+            r = cur.fetchone()
+            c.commit()
+
         return connection._row_to_dict(cur, r) if r else None
     except Exception as read_error:
         if not _is_sqlite_data_corruption_error(read_error):
@@ -435,12 +530,21 @@ def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
         )
 
         try:
-            fallback_conn = connection._get_read_conn(target_path, allow_local_fallback=False)
-            fallback_cur = fallback_conn.cursor()
-            fallback_cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
-            fallback_row = fallback_cur.fetchone()
-            if not connection._is_main_write_singleton_conn(fallback_conn):
-                fallback_conn.close()
+            fc = connection._get_read_conn(target_path, allow_local_fallback=False)
+            conn_lock = connection._get_singleton_conn_op_lock(fc)
+
+            if conn_lock is not None:
+                with conn_lock:
+                    fallback_cur = fc.cursor()
+                    fallback_cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+                    fallback_row = fallback_cur.fetchone()
+                    fc.commit()
+            else:
+                fallback_cur = fc.cursor()
+                fallback_cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+                fallback_row = fallback_cur.fetchone()
+                fc.commit()
+
             return connection._row_to_dict(fallback_cur, fallback_row) if fallback_row else None
         except Exception as fallback_error:
             _debug_log_throttled(
@@ -453,7 +557,7 @@ def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
             return None
     finally:
         try:
-            if not connection._is_main_write_singleton_conn(c):
+            if c is not None and not connection._is_main_write_singleton_conn(c):
                 c.close()
         except Exception:
             pass
@@ -513,6 +617,7 @@ def find_words_in_community_batch(
                     remaining_ids,
                 )
                 rows = cur.fetchall()
+                c.commit()
                 c.close()
 
                 if rows:
@@ -530,22 +635,39 @@ def find_words_in_community_batch(
                 continue
 
     if remaining_ids:
+        c = None
         try:
             c = connection._get_read_conn(DB_PATH)
-            cur = c.cursor()
+            conn_lock = connection._get_singleton_conn_op_lock(c)
             placeholders = ",".join(["?"] * len(remaining_ids))
-            cur.execute(
-                f"""
-                SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
-                FROM ai_word_notes n
-                LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
-                WHERE n.voc_id IN ({placeholders})
-                """,
-                remaining_ids,
-            )
-            rows = cur.fetchall()
-            if not connection._is_main_write_singleton_conn(c):
-                c.close()
+
+            if conn_lock is not None:
+                with conn_lock:
+                    cur = c.cursor()
+                    cur.execute(
+                        f"""
+                        SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                        FROM ai_word_notes n
+                        LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                        WHERE n.voc_id IN ({placeholders})
+                        """,
+                        remaining_ids,
+                    )
+                    rows = cur.fetchall()
+                    c.commit()
+            else:
+                cur = c.cursor()
+                cur.execute(
+                    f"""
+                    SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                    FROM ai_word_notes n
+                    LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                    WHERE n.voc_id IN ({placeholders})
+                    """,
+                    remaining_ids,
+                )
+                rows = cur.fetchall()
+                c.commit()
 
             if rows:
                 for row in rows:
@@ -557,6 +679,12 @@ def find_words_in_community_batch(
                             remaining_ids.remove(voc_id)
         except Exception:
             pass
+        finally:
+            try:
+                if c is not None and not connection._is_main_write_singleton_conn(c):
+                    c.close()
+            except Exception:
+                pass
 
     if not skip_cloud and connection.HAS_LIBSQL and remaining_ids and libsql is not None:
         cloud_targets = _collect_cloud_lookup_targets()
@@ -604,16 +732,23 @@ def find_words_in_community_batch(
 
 
 def get_latest_progress(voc_id: str, db_path: str = None):
+    c = None
     try:
         c = connection._get_read_conn(db_path or DB_PATH)
-        cur = c.cursor()
-        cur.execute(
-            "SELECT familiarity_short, review_count FROM word_progress_history WHERE voc_id = ? ORDER BY created_at DESC LIMIT 1",
-            (str(voc_id),),
-        )
-        r = cur.fetchone()
-        if not connection._is_main_write_singleton_conn(c):
-            c.close()
+        conn_lock = connection._get_singleton_conn_op_lock(c)
+
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                cur.execute("SELECT familiarity_short, review_count FROM word_progress_history WHERE voc_id = ? ORDER BY created_at DESC LIMIT 1", (str(voc_id),))
+                r = cur.fetchone()
+                c.commit()
+        else:
+            cur = c.cursor()
+            cur.execute("SELECT familiarity_short, review_count FROM word_progress_history WHERE voc_id = ? ORDER BY created_at DESC LIMIT 1", (str(voc_id),))
+            r = cur.fetchone()
+            c.commit()
+
         return connection._row_to_dict(cur, r) if r else None
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
@@ -626,6 +761,12 @@ def get_latest_progress(voc_id: str, db_path: str = None):
             return None
         _debug_log(f"get_latest_progress 异常: {e}", level="WARNING", module="database.momo_words")
         return None
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
 
 
 def set_config(k, v, db=None) -> bool:
@@ -641,13 +782,23 @@ def set_config(k, v, db=None) -> bool:
 
 
 def _fetch_one_scalar(sql: str, params: tuple = (), db_path: str = None):
+    c = None
     try:
-        conn = connection._get_read_conn(db_path or DB_PATH)
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        row = cur.fetchone()
-        if not connection._is_main_write_singleton_conn(conn):
-            conn.close()
+        c = connection._get_read_conn(db_path or DB_PATH)
+        conn_lock = connection._get_singleton_conn_op_lock(c)
+
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                c.commit()
+        else:
+            cur = c.cursor()
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            c.commit()
+
         if not row:
             return None
         return row[0]
@@ -662,6 +813,12 @@ def _fetch_one_scalar(sql: str, params: tuple = (), db_path: str = None):
             return None
         _debug_log(f"_fetch_one_scalar 异常: {e}", level="WARNING", module="database.momo_words")
         return None
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
 
 
 def get_config(k, db=None):

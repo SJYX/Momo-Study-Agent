@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from typing import List, Dict, Tuple
 from config import DB_PATH
-from database.connection import _get_read_conn, _row_to_dict
+from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
 
 class WeakWordFilter:
@@ -118,29 +118,55 @@ class WeakWordFilter:
     def _get_user_stats(self) -> Dict:
         """获取用户统计信息"""
         conn = _get_read_conn(DB_PATH)
+        conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
 
-        # 获取平均熟悉度
-        cur.execute("""
-            SELECT AVG(familiarity_short) as avg_fam
-            FROM (
-                SELECT familiarity_short
-                FROM word_progress_history
-                GROUP BY voc_id
-                HAVING MAX(created_at)
-            )
-        """)
-        avg_fam = cur.fetchone()[0] or 2.5
+        if conn_lock is not None:
+            with conn_lock:
+                # 获取平均熟悉度
+                cur.execute("""
+                    SELECT AVG(familiarity_short) as avg_fam
+                    FROM (
+                        SELECT familiarity_short
+                        FROM word_progress_history
+                        GROUP BY voc_id
+                        HAVING MAX(created_at)
+                    )
+                """)
+                avg_fam = cur.fetchone()[0] or 2.5
 
-        # 获取平均复习次数
-        cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
-        avg_reviews = cur.fetchone()[0] or 0
+                # 获取平均复习次数
+                cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
+                avg_reviews = cur.fetchone()[0] or 0
 
-        # 获取总单词数
-        cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
-        total_words = cur.fetchone()[0] or 0
+                # 获取总单词数
+                cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
+                total_words = cur.fetchone()[0] or 0
+                conn.commit()
+        else:
+            # 获取平均熟悉度
+            cur.execute("""
+                SELECT AVG(familiarity_short) as avg_fam
+                FROM (
+                    SELECT familiarity_short
+                    FROM word_progress_history
+                    GROUP BY voc_id
+                    HAVING MAX(created_at)
+                )
+            """)
+            avg_fam = cur.fetchone()[0] or 2.5
 
-        conn.close()
+            # 获取平均复习次数
+            cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
+            avg_reviews = cur.fetchone()[0] or 0
+
+            # 获取总单词数
+            cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
+            total_words = cur.fetchone()[0] or 0
+            conn.commit()
+
+        if not _is_main_write_singleton_conn(conn):
+            conn.close()
 
         # 估算学习频率 (简易实现)
         study_frequency = "normal"
@@ -164,6 +190,7 @@ class WeakWordFilter:
             limit: 最大返回数量
         """
         conn = _get_read_conn(DB_PATH)
+        conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
 
         try:
@@ -186,10 +213,18 @@ class WeakWordFilter:
                 LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
                 LEFT JOIN processed_words p ON h.voc_id = p.voc_id
             """
-            cur.execute(query)
-            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+            if conn_lock is not None:
+                with conn_lock:
+                    cur.execute(query)
+                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    conn.commit()
+            else:
+                cur.execute(query)
+                rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                conn.commit()
         finally:
-            conn.close()
+            if not _is_main_write_singleton_conn(conn):
+                conn.close()
 
         # 计算每个单词的薄弱分数
         user_stats = self._get_user_stats()
@@ -221,6 +256,7 @@ class WeakWordFilter:
             }
         """
         conn = _get_read_conn(DB_PATH)
+        conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
 
         try:
@@ -243,10 +279,18 @@ class WeakWordFilter:
                 LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
                 LEFT JOIN processed_words p ON h.voc_id = p.voc_id
             """
-            cur.execute(query)
-            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+            if conn_lock is not None:
+                with conn_lock:
+                    cur.execute(query)
+                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    conn.commit()
+            else:
+                cur.execute(query)
+                rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                conn.commit()
         finally:
-            conn.close()
+            if not _is_main_write_singleton_conn(conn):
+                conn.close()
 
         urgent_words = []
         normal_words = []

@@ -2,7 +2,7 @@ import json
 import time
 from typing import List, Dict
 from config import DB_PATH
-from database.connection import _get_read_conn, _row_to_dict
+from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 from database.momo_words import get_latest_progress, save_ai_word_iteration, update_ai_word_note_iteration_state
 from database.utils import get_timestamp_with_tz
 from core.constants import MAIMEMO_BRIEF_MEANING_MAX_LENGTH
@@ -155,6 +155,7 @@ class IterationManager:
         2. 处理没有 AI 笔记但熟悉度低的单词（首次助记生成）
         """
         conn = _get_read_conn(DB_PATH)
+        conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
 
         weak_words = []
@@ -172,8 +173,15 @@ class IterationManager:
                 ) h ON n.voc_id = h.voc_id
                 WHERE h.familiarity_short < ?
             """
-            cur.execute(query1, (threshold,))
-            rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+            if conn_lock is not None:
+                with conn_lock:
+                    cur.execute(query1, (threshold,))
+                    rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    conn.commit()
+            else:
+                cur.execute(query1, (threshold,))
+                rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                conn.commit()
             weak_words.extend(rows1)
 
             # 2. 获取没有 AI 笔记但熟悉度低的单词（首次助记生成）
@@ -194,8 +202,15 @@ class IterationManager:
                 WHERE h.familiarity_short < ? AND n.voc_id IS NULL
                 GROUP BY h.voc_id
             """
-            cur.execute(query2, (threshold,))
-            rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+            if conn_lock is not None:
+                with conn_lock:
+                    cur.execute(query2, (threshold,))
+                    rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    conn.commit()
+            else:
+                cur.execute(query2, (threshold,))
+                rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                conn.commit()
 
             # 补全缺失的字段
             for row in rows2:
@@ -206,7 +221,8 @@ class IterationManager:
                 row['meanings'] = ''  # 没有释义信息
                 weak_words.append(row)
         finally:
-            conn.close()
+            if not _is_main_write_singleton_conn(conn):
+                conn.close()
 
         # 去重（基于 voc_id）
         unique_words = {}
@@ -220,10 +236,19 @@ class IterationManager:
     def _get_last_recorded_fam(self, voc_id: str) -> float:
         """获取该单词在最后一次 it_level 变更时的熟悉度基准。"""
         conn = _get_read_conn(DB_PATH)
+        conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
-        cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-        row = cur.fetchone()
-        conn.close()
+        if conn_lock is not None:
+            with conn_lock:
+                cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+                row = cur.fetchone()
+                conn.commit()
+        else:
+            cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+            row = cur.fetchone()
+            conn.commit()
+        if not _is_main_write_singleton_conn(conn):
+            conn.close()
         
         if row and row[0]:
             history = json.loads(row[0])
@@ -365,7 +390,7 @@ class IterationManager:
     def _update_it_state(self, voc_id, level, reason, new_note=None, raw_text=None, iteration_data=None):
         """原子化更新迭代状态。"""
         # 读取当前快照用于构建新 history；写入统一走 db_manager 异步队列。
-        current_progress = get_latest_progress(voc_id)
+        current_progress = get_latest_progress(voc_id, db_path=DB_PATH)
         current_fam = current_progress.get("familiarity_short", 0.0) if current_progress else 0.0
         if current_fam is None:
             current_fam = 0.0
@@ -378,10 +403,19 @@ class IterationManager:
         }
 
         conn = _get_read_conn(DB_PATH)
+        conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
-        cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-        row = cur.fetchone()
-        conn.close()
+        if conn_lock is not None:
+            with conn_lock:
+                cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+                row = cur.fetchone()
+                conn.commit()
+        else:
+            cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+            row = cur.fetchone()
+            conn.commit()
+        if not _is_main_write_singleton_conn(conn):
+            conn.close()
 
         old_history = json.loads(row[0]) if row and row[0] else []
         old_memory_aid = row[1] if row and len(row) > 1 else ""

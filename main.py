@@ -1,7 +1,34 @@
-import argparse
 import os
+import sys
+
+# ==============================================================================
+# EARLY BOOTSTRAP: 用户配置热加载 (彻底消灭 subprocess 多进程套娃)
+# ==============================================================================
+# 确保这段代码在所有的 from config import ... 之前执行！
+if __name__ == "__main__":
+    _user_from_env = bool(os.getenv("MOMO_USER"))
+    if not _user_from_env and sys.stdin.isatty():
+        import config
+        if getattr(config, "ACTIVE_USER", "default") == "default":
+            selected_user = config.pm.normalize_username(config.pm.pick_profile() or "")
+            if not selected_user:
+                print("\n[Exit] 未选择有效用户，已退出，避免回退到 default。")
+                sys.exit(0)
+            
+            # 1. 注入环境变量到当前进程
+            os.environ["MOMO_USER"] = selected_user
+            
+            # 2. 热重载 config 模块，刷新所有常量（当前进程继续执行，无需开启子进程！）
+            import importlib
+            importlib.reload(config)
+
+# ==============================================================================
+# 常规导包开始（此时 config 已经是最终用户的真实配置）
+# ==============================================================================
+import argparse
 import signal
 import uuid
+import atexit
 from datetime import datetime, timedelta
 
 from config import (
@@ -12,6 +39,7 @@ from config import (
     GEMINI_API_KEY,
     MIMO_API_KEY,
     MOMO_TOKEN,
+    DATA_DIR,  # 引入 DATA_DIR 用于存放进程锁
 )
 from database.connection import cleanup_concurrent_system, init_concurrent_system
 from database.momo_words import (
@@ -34,7 +62,48 @@ from core.mimo_client import MimoClient
 from core.study_workflow import StudyWorkflow
 from core.ui_manager import CLIUIManager
 
+# ==============================================================================
+# 进程锁机制：防御多终端/脚本同时拉起争抢数据库
+# ==============================================================================
+_process_lock_fd = None
 
+def acquire_process_lock():
+    global _process_lock_fd
+    lock_file = os.path.join(DATA_DIR, ".process.lock")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    try:
+        if os.name == 'nt':  # Windows 系统底层锁
+            import msvcrt
+            _process_lock_fd = os.open(lock_file, os.O_RDWR | os.O_CREAT | os.O_TRUNC)
+            msvcrt.locking(_process_lock_fd, msvcrt.LK_NBLCK, 1)
+        else:  # Unix/Linux/Mac 系统底层锁
+            import fcntl
+            _process_lock_fd = os.open(lock_file, os.O_RDWR | os.O_CREAT | os.O_TRUNC)
+            fcntl.flock(_process_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        print(f"\n❌ [致命错误] 检测到程序已经在运行中！\n为保护数据库防冲突(WalConflict)，已拦截本次启动。\n如确信无其他进程在运行，请手动删除锁文件后重试: {lock_file}\n")
+        sys.exit(1)
+        
+    def release_process_lock():
+        global _process_lock_fd
+        if _process_lock_fd is not None:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    os.lseek(_process_lock_fd, 0, os.SEEK_SET)
+                    msvcrt.locking(_process_lock_fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(_process_lock_fd, fcntl.LOCK_UN)
+                os.close(_process_lock_fd)
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+            except Exception:
+                pass
+            _process_lock_fd = None
+
+    atexit.register(release_process_lock)
 
 
 def _build_ai_client():
@@ -91,10 +160,6 @@ class StudyFlowManager:
 
     def _wait_for_choice(self, valid_choices):
         return self.ui.wait_for_choice(valid_choices)
-
-
-
-
 
     def run(self):
         while True:
@@ -195,6 +260,9 @@ class StudyFlowManager:
 
 
 def run(environment=None, config_file=None):
+    # 【最核心防御】在初始化数据库前，夺取进程锁！
+    acquire_process_lock()
+    
     manager = None
     try:
         manager = StudyFlowManager(environment=environment, config_file=config_file)
@@ -222,31 +290,5 @@ if __name__ == "__main__":
     parser.add_argument("--config", "--config-file", default=os.getenv("MOMO_CONFIG_FILE", "config/logging.yaml"))
     args = parser.parse_args()
 
-    # ──────────────────────────────────────────────────────────────────────────────
-    # 交互式用户选择逻辑（从 config.py 移除后在此处补回）
-    # ──────────────────────────────────────────────────────────────────────────────
-    import sys
-    from config import ACTIVE_USER, pm, _USER_FROM_ENV
-    
-    # 如果是交互式终端运行且没通过外部环境变量设定用户，则触发选择菜单
-    if ACTIVE_USER == "default" and sys.stdin.isatty() and not _USER_FROM_ENV:
-        try:
-            selected_user = pm.normalize_username(pm.pick_profile() or "")
-            if not selected_user:
-                print("\n[Exit] 未选择有效用户，已退出，避免回退到 default。")
-                sys.exit(0)
-
-            os.environ["MOMO_USER"] = selected_user
-            # 在 Windows 下 os.execv 会导致失去控制台输入流(stdin失效)
-            # 使用 subprocess.run 并显式传递环境变量，确保子进程读取到最终用户
-            import subprocess
-
-            child_env = os.environ.copy()
-            child_env["MOMO_USER"] = selected_user
-            result = subprocess.run([sys.executable] + sys.argv, env=child_env)
-            sys.exit(result.returncode)
-        except (KeyboardInterrupt, EOFError):
-            print("\n[Exit] 用户取消。")
-            sys.exit(0)
-
+    # 之前位于此处的 subprocess.run(父子进程套娃) 逻辑已被移除，由文件顶部的 EARLY BOOTSTRAP 完美替代
     run(environment=args.env, config_file=args.config)

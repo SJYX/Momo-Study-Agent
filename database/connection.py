@@ -700,7 +700,8 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
                 with conn_lock:
                     _execute_batch_writes_unlocked(write_conn, batch)
             return
-        except sqlite3.OperationalError as e:
+        except Exception as e:
+            # Catch ALL exceptions here to check for libsql WalConflicts
             error_msg = str(e).lower()
             is_wal_conflict = (
                 "wal" in error_msg
@@ -723,12 +724,7 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
                 last_error = e
                 continue
 
-            try:
-                write_conn.rollback()
-            except Exception:
-                pass
-            raise
-        except Exception:
+            # If it's not a wal conflict, or we ran out of retries
             try:
                 write_conn.rollback()
             except Exception:
@@ -984,9 +980,11 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
             with conn_lock:
                 cur.execute(sql, params)
                 row = cur.fetchone()
+                hub_conn.commit()
         else:
             cur.execute(sql, params)
             row = cur.fetchone()
+            hub_conn.commit()
 
         if conn_lock is None:
             try:
@@ -1026,9 +1024,11 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
             with conn_lock:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
+                hub_conn.commit()
         else:
             cur.execute(sql, params)
             rows = cur.fetchall()
+            hub_conn.commit()
 
         if conn_lock is None:
             try:
