@@ -6,10 +6,9 @@ import sys
 
 try:
     # Import new high-concurrency APIs
-    from core.db_manager import (
+    from database.connection import (
         init_concurrent_system,
         cleanup_concurrent_system,
-        _get_thread_local_read_conn,
         _queue_write_operation,
         _writer_daemon_stop_event,
         _write_queue_stats
@@ -20,16 +19,17 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    # Verify ThreadLocal storage
-    from core.db_manager import _thread_local_read_conns
-    print("✅ Test 2: ThreadLocal storage verified")
-except ImportError as e:
+    # Verify ThreadLocal storage has been removed (WalConflict fix)
+    import database.connection as db_connection
+    assert not hasattr(db_connection, "_thread_local_read_conns")
+    print("✅ Test 2: ThreadLocal storage removed as expected")
+except (ImportError, AssertionError) as e:
     print(f"❌ Test 2 FAILED: {e}")
     sys.exit(1)
 
 try:
     # Verify write queue
-    from core.db_manager import _write_queue
+    from database.connection import _write_queue
     assert hasattr(_write_queue, 'maxsize')
     assert _write_queue.maxsize == 10000
     print("✅ Test 3: Write queue verified (maxsize=10000)")
@@ -39,11 +39,10 @@ except (ImportError, AssertionError) as e:
 
 try:
     # Verify daemon thread infrastructure
-    from core.db_manager import (
+    from database.connection import (
         _start_writer_daemon,
         _stop_writer_daemon,
         _execute_batch_writes,
-        _cleanup_thread_local_read_conns
     )
     print("✅ Test 4: Daemon thread functions verified")
 except ImportError as e:

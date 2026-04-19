@@ -3,7 +3,8 @@
 import sys
 sys.path.append('.')
 
-from core.db_manager import init_db, save_ai_word_note
+from database.momo_words import save_ai_word_note
+from database.schema import init_db
 from config import TEST_DB_PATH
 from core.gemini_client import GeminiClient
 

@@ -9,7 +9,8 @@ import json
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple
-from core.db_manager import _get_read_conn, DB_PATH, _row_to_dict
+from config import DB_PATH
+from database.connection import _get_read_conn, _row_to_dict
 
 
 class WeakWordFilter:
@@ -131,35 +132,28 @@ class WeakWordFilter:
         """)
         avg_fam = cur.fetchone()[0] or 2.5
 
+        # 获取平均复习次数
+        cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
+        avg_reviews = cur.fetchone()[0] or 0
+
         # 获取总单词数
         cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
         total_words = cur.fetchone()[0] or 0
 
-        # 判断学习频率
-        cur.execute("""
-            SELECT COUNT(*) as study_count
-            FROM word_progress_history
-            WHERE created_at > datetime('now', '-7 days')
-        """)
-        recent_studies = cur.fetchone()[0] or 0
-
-        if total_words > 0:
-            daily_avg = recent_studies / 7.0
-            if daily_avg > total_words * 0.1:
-                study_frequency = 'high'
-            elif daily_avg < total_words * 0.02:
-                study_frequency = 'low'
-            else:
-                study_frequency = 'normal'
-        else:
-            study_frequency = 'normal'
-
         conn.close()
+
+        # 估算学习频率 (简易实现)
+        study_frequency = "normal"
+        if avg_reviews > 20:
+            study_frequency = "high"
+        elif avg_reviews < 5:
+            study_frequency = "low"
 
         return {
             'avg_familiarity': avg_fam,
             'total_words': total_words,
-            'study_frequency': study_frequency
+            'study_frequency': study_frequency,
+            'avg_review_count': avg_reviews
         }
 
     def get_weak_words_by_score(self, min_score: float = 50.0, limit: int = 100) -> List[Dict]:
@@ -198,10 +192,14 @@ class WeakWordFilter:
             conn.close()
 
         # 计算每个单词的薄弱分数
+        user_stats = self._get_user_stats()
+        avg_reviews = user_stats.get('avg_review_count', 0)
+        # 动态门槛：如果库比较新（平均复习少），则门槛降为 1，否则维持在 3
+        min_review_threshold = 1 if avg_reviews < 5 else 3
+
         scored_words = []
         for word in rows:
-            # 复习次数过低的词不参与迭代薄弱词筛选，避免把初始脏数据当薄弱词
-            if int(self._as_number(word.get('review_count'), 0)) < 3:
+            if int(self._as_number(word.get('review_count'), 0)) < min_review_threshold:
                 continue
             score = self.calculate_weak_score(word)
             if score >= min_score:
@@ -254,12 +252,16 @@ class WeakWordFilter:
         normal_words = []
         potential_words = []
 
+        user_stats = self._get_user_stats()
+        avg_reviews = user_stats.get('avg_review_count', 0)
+        min_review_threshold = 1 if avg_reviews < 5 else 3
+
         for word in rows:
             familiarity = self._as_number(word.get('familiarity_short'), 0.0)
             review_count = int(self._as_number(word.get('review_count'), 0))
 
-            # 复习次数过低的词跳过，不进入迭代分类
-            if review_count < 3:
+            # 复习次数门槛
+            if review_count < min_review_threshold:
                 continue
 
             # 紧急薄弱词：熟悉度极低

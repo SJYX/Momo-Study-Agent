@@ -142,15 +142,17 @@ if os.path.exists(global_env_path):
         os.environ['FORCE_CLOUD_MODE'] = global_config['FORCE_CLOUD_MODE']
 
 if not _USER_FROM_ENV:
-    # 交互式选择或创建用户（放在 DB_PATH 定义之后，避免新建用户时触发循环导入）
-    ACTIVE_USER = _normalize_username(pm.pick_profile())
+    # 彻底杜绝 import 时的交互行为。
+    # 如果没有指定 MOMO_USER，默认降级为 "default"。
+    # 真正的交互式用户选择必须由 main.py 等入口点显式触发 pm.pick_profile()。
+    ACTIVE_USER = "default"
     os.environ["MOMO_USER"] = ACTIVE_USER
-
+    
     # 重新加载选中用户的配置文件（用户配置优先级更高）
     ACTIVE_USER, profile_env = _resolve_profile_env_path(ACTIVE_USER)
     if profile_env:
-        load_dotenv(profile_env, override=True)  # override=False: 用户配置覆盖全局
-
+        load_dotenv(profile_env, override=True)
+        
     # 根据最终选中的用户重新计算数据库路径
     DB_PATH, TEST_DB_PATH = _resolve_user_db_paths(ACTIVE_USER)
 

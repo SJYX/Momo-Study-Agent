@@ -17,7 +17,7 @@ os.environ.setdefault("MOMO_USER", "Asher")
 
 def test_logging_levels():
     """测试日志分级系统"""
-    from core.db_manager import _debug_log
+    from database.utils import _debug_log
     from core.logger import setup_logger, get_logger
     
     print("=" * 70)

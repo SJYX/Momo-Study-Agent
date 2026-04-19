@@ -20,7 +20,7 @@ sys.path.insert(0, ROOT_DIR)
 
 from dotenv import load_dotenv
 from mimo_client import MimoClient
-from db_manager import log_test_run
+from database.momo_words import log_test_run
 
 # ── 终端编码 ──────────────────────────────────────────────────────────────────
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")

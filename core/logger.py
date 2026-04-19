@@ -488,12 +488,33 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
     logger = logging.getLogger()
     logger.setLevel(global_level)
 
-    # 避免重复添加 Handler (防止多次初始化)
-    if logger.handlers:
+    # 检查并更新文件处理器（支持热切换用户）
+    target_log_file = os.path.abspath(log_file)
+    existing_file_handler = None
+    handlers_to_remove = []
+
+    for h in logger.handlers:
+        if isinstance(h, RotatingFileHandler):
+            current_file = os.path.abspath(h.baseFilename)
+            if current_file != target_log_file:
+                handlers_to_remove.append(h)
+            else:
+                existing_file_handler = h
+    
+    for h in handlers_to_remove:
+        h.close()
+        logger.removeHandler(h)
+
+    # 避免重复添加 Handler (防止多次初始化且用户名未变时重复添加)
+    if existing_file_handler and logger.handlers:
+        # 如果已经有正确的文件处理器，只需更新上下文
+        if _global_context_logger:
+            _global_context_logger.set_context(user=username)
+            return _global_context_logger
+        
         context_logger = ContextLogger(logger)
         context_logger.set_context(user=username)
         _setup_module_levels(context_logger, config)
-
         _global_context_logger = context_logger
         return context_logger
 

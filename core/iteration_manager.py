@@ -1,12 +1,10 @@
 import json
 import time
 from typing import List, Dict
-from core.db_manager import (
-    get_latest_progress,
-    _get_read_conn,
-    _row_to_dict, DB_PATH, save_ai_word_iteration, get_timestamp_with_tz,
-    update_ai_word_note_iteration_state,
-)
+from config import DB_PATH
+from database.connection import _get_read_conn, _row_to_dict
+from database.momo_words import get_latest_progress, save_ai_word_iteration, update_ai_word_note_iteration_state
+from database.utils import get_timestamp_with_tz
 from core.constants import MAIMEMO_BRIEF_MEANING_MAX_LENGTH
 from config import SCORE_PROMPT_FILE, REFINE_PROMPT_FILE
 from core.weak_word_filter import WeakWordFilter
@@ -45,16 +43,22 @@ class IterationManager:
         # 按分数获取薄弱词（推荐分数 >= 50）
         weak_words = filter.get_weak_words_by_score(min_score=50.0, limit=100)
 
-        # 如果没有按分数获取到单词，使用类别筛选作为备选
+        # 备选 1：如果按分数没抓到，尝试按类别抓取紧急和一般词
         if not weak_words:
+            self.logger.info("  [Fallback] 高薄弱分筛选结果为空，尝试按分类筛选...", module="iteration_manager", function="run_iteration")
             categorized = filter.get_weak_words_by_category(dynamic_threshold)
             weak_words = categorized['urgent'] + categorized['normal']
 
+        # 备选 2：如果还是没抓到，使用底层的直接数据库查询（忽略 review_count 门槛）
         if not weak_words:
-            self.logger.info("🎉 没有发现需要迭代的薄弱单词。", module="iteration_manager", function="run_iteration")
+            self.logger.info("  [Fallback] 分类筛选结果为空，尝试基础数据库扫描...", module="iteration_manager", function="run_iteration")
+            weak_words = self._get_weak_words_from_db(dynamic_threshold)
+
+        if not weak_words:
+            self.logger.info("🎉 经过多级筛选，未发现符合条件的薄弱单词。", module="iteration_manager", function="run_iteration")
             return
 
-        self.logger.info(f"🔍 发现 {len(weak_words)} 个薄弱单词，准备进入智能迭代流程...", module="iteration_manager", function="run_iteration")
+        self.logger.info(f"🔍 发现 {len(weak_words)} 个薄弱单词，进入分级处理流程...", module="iteration_manager", function="run_iteration")
 
         # 统计信息
         stats = {

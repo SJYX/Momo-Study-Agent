@@ -152,13 +152,16 @@ class ConfigWizard:
         
         # 记录到 Hub
         try:
-            from core import db_manager
-            user_id = db_manager.generate_user_id(username)
+            from database.hub_users import log_admin_action, save_user_info_to_hub
+            from database.utils import generate_user_id
+
+            user_id = generate_user_id(username)
             profile = self._read_profile_env(username)
             user_email = profile.get('USER_EMAIL') or f"{username}@momo-local"
-            db_manager.save_user_info_to_hub(user_id, username, user_email, "自动配置云端")
-            db_manager.log_admin_action("user_created", f"用户 {username} 已启用云数据库", "wizard", user_id)
-        except: pass
+            save_user_info_to_hub(user_id, username, user_email, "自动配置云端")
+            log_admin_action("user_created", f"用户 {username} 已启用云数据库", "wizard", user_id)
+        except:
+            pass
         
         return env_data
 
@@ -291,17 +294,19 @@ class ConfigWizard:
             if hub_token:
                 self._save_hub_config_to_global_env(hub_url, hub_token)
                 try:
-                    from core import db_manager
-                    db_manager.init_users_hub_tables()
+                    from database.schema import init_users_hub_tables
+
+                    init_users_hub_tables()
                     return True
-                except: return True
+                except:
+                    return True
         return False
 
     def _init_local_db(self, username: str):
         db_dir = os.path.join(ROOT_DIR, 'data')
         os.makedirs(db_dir, exist_ok=True)
         db_path = os.path.join(db_dir, f'history-{username.lower()}.db')
-        from core.db_manager import initialize_local_database_file
+        from database.momo_words import initialize_local_database_file
         ok = initialize_local_database_file(db_path)
         if not ok:
             raise RuntimeError(f"初始化本地数据库失败: {db_path}")

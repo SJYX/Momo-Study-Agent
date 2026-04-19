@@ -7,7 +7,9 @@
 import sys
 sys.path.append('.')
 
-from core.db_manager import _get_conn, DB_PATH, _debug_log
+from config import DB_PATH
+from database.connection import _get_conn
+from database.utils import _debug_log
 import sqlite3
 
 def fix_legacy_raw_text(db_path=None):

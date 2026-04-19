@@ -134,7 +134,7 @@ def _run_sync_with_current_profile(user: str, phase_label: str) -> Dict[str, obj
     cmd = [
         sys.executable,
         "-c",
-        "from core.db_manager import sync_databases; import json; print(json.dumps(sync_databases(dry_run=False), ensure_ascii=False))",
+        "from database.momo_words import sync_databases; import json; print(json.dumps(sync_databases(dry_run=False), ensure_ascii=False))",
     ]
     result = subprocess.run(cmd, cwd=str(BASE_DIR), env=env, capture_output=True, text=True)
 

@@ -3,7 +3,9 @@ import json
 import sqlite3
 import os
 from core.iteration_manager import IterationManager
-from core.db_manager import init_db, log_progress_snapshots, _get_conn
+from database.connection import _get_conn
+from database.momo_words import log_progress_snapshots
+from database.schema import init_db
 
 @pytest.fixture
 def temp_db(tmp_path, mocker):
@@ -11,7 +13,7 @@ def temp_db(tmp_path, mocker):
     db_path = str(tmp_path / "test_it.db")
     
     # 彻底 Patch 掉所有模块里的 DB_PATH，确保它们都指向这个临时文件
-    mocker.patch("core.db_manager.DB_PATH", db_path)
+    mocker.patch("database.connection.DB_PATH", db_path)
     mocker.patch("core.iteration_manager.DB_PATH", db_path)
     
     init_db(db_path)

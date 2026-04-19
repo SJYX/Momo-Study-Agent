@@ -8,8 +8,9 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
 from core.maimemo_api import MaiMemoAPI
-from core.db_manager import clean_for_maimemo, DB_PATH
 from config import MOMO_TOKEN
+from config import DB_PATH
+from database.utils import clean_for_maimemo
 
 def rollback():
     print("🚀 [Rollback] Starting to fix incorrect interpretations in MaiMemo...")

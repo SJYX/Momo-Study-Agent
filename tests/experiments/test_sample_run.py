@@ -21,7 +21,13 @@ sys.path.insert(0, ROOT_DIR)
 from dotenv import load_dotenv
 from compat.maimemo_api import MaiMemoAPI
 from compat.gemini_client import GeminiClient
-from db_manager import init_test_db, save_test_word_note, log_test_run, TEST_DB_PATH
+from config import TEST_DB_PATH
+from database.momo_words import log_test_run, save_test_word_note
+from database.schema import init_db
+
+
+def init_test_db():
+    init_db(TEST_DB_PATH)
 
 # ── 解决 Windows 终端中文乱码 ──────────────────────────────────────────────────
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")

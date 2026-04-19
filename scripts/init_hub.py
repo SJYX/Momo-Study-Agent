@@ -13,7 +13,8 @@ sys.path.insert(0, ROOT_DIR)
 # 设置终端编码以防止 Windows 乱码
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
-from core import db_manager
+from database import hub_users as hub_users_db
+from database import schema as schema_db
 from core.config_wizard import ConfigWizard
 from core.logger import get_logger
 
@@ -219,9 +220,10 @@ def init_hub_smart():
 
     # 3. 初始化表结构
     print("\n[Step 3] 正在初始化数据库表结构...")
-    importlib.reload(db_manager)
+    importlib.reload(schema_db)
+    importlib.reload(hub_users_db)
     
-    success = db_manager.init_users_hub_tables()
+    success = schema_db.init_users_hub_tables()
     if not success:
         print("  ❌ 初始化表结构失败。")
         return False
@@ -232,12 +234,12 @@ def init_hub_smart():
     admin_username = "Asher"
     admin_email = "asher@momo.com"
     
-    existing_user = db_manager.get_user_by_username(admin_username)
+    existing_user = hub_users_db.get_user_by_username(admin_username)
     if existing_user:
         print(f"  ℹ️ 管理员账户 {admin_username} 已存在。")
     else:
         user_id = str(uuid.uuid4())
-        success = db_manager.save_user_info_to_hub(
+        success = hub_users_db.save_user_info_to_hub(
             user_id=user_id,
             username=admin_username,
             email=admin_email,
@@ -245,7 +247,7 @@ def init_hub_smart():
             role="admin"
         )
         if success:
-            db_manager.log_admin_action("hub_initialized", "中央 Hub 智能初始化 V2 (集成 API Token)", "System", user_id)
+            hub_users_db.log_admin_action("hub_initialized", "中央 Hub 智能初始化 V2 (集成 API Token)", "System", user_id)
             print(f"  ✅ 管理员账户 {admin_username} 创建成功 (初始密码: sjy@1518)。")
         else:
             print(f"  ❌ 管理员账户创建失败。")

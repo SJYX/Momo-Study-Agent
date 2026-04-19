@@ -6,7 +6,8 @@ import json
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.mimo_client import MimoClient
-from core.db_manager import save_test_word_note, log_test_run, is_processed, mark_processed, TEST_DB_PATH
+from config import TEST_DB_PATH
+from database.momo_words import is_processed, log_test_run, mark_processed, save_test_word_note
 import pytest
 
 def test_pipeline():

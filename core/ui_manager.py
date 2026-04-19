@@ -34,6 +34,41 @@ class CLIUIManager:
             print(status_line)
             print("-" * 35)
 
+    def render_future_days_menu(self) -> int:
+        print("\n" + "-" * 30)
+        print("📅 选择未来计划时间跨度")
+        print("-" * 30)
+        print("  1. 未来 1 天")
+        print("  2. 未来 3 天")
+        print("  3. 未来 7 天 (默认)")
+        print("  4. 未来 14 天")
+        print("  5. 未来 30 天")
+        print("  6. 自定义天数")
+        print("  0. 返回主菜单")
+        print("-" * 30)
+
+        # wait_for_choice expects a list of strings
+        choice = self.wait_for_choice(["1", "2", "3", "4", "5", "6", "0"])
+
+        mapping = {"1": 1, "2": 3, "3": 7, "4": 14, "5": 30}
+        if choice in mapping:
+            return mapping[choice]
+        if choice == "6":
+            try:
+                days_str = self.ask_text("请输入查询天数 (1-100)", default="7")
+                days = int(days_str)
+                return max(1, min(100, days))
+            except ValueError:
+                print("❌ 输入无效，默认使用 7 天")
+                return 7
+        return 0 # 0 means go back
+
+    def ask_confirmation(self, message: str) -> bool:
+        print(f"\n❓ {message} (y/n)")
+        # support enter as default 'y' if we add it to choices, but here we stick to explicit
+        choice = self.wait_for_choice(["y", "n", "Y", "N"])
+        return choice.lower() == "y"
+
     def ui_print(self, message: str, style: str = "") -> None:
         print(message)
 

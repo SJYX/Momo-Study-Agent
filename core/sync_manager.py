@@ -2,9 +2,10 @@ import queue
 import threading
 from typing import Callable, Optional
 
-from core.db_manager import (
+from database.momo_words import (
     get_local_word_note,
     get_word_note,
+    mark_processed,
     mark_note_synced,
     set_note_sync_status,
 )
@@ -153,13 +154,22 @@ class SyncManager:
 
                     if sync_status == 1:
                         try:
+                            mark_processed(voc_id, spell)
+                        except Exception as persist_error:
+                            self.logger.warning(f"⚠️ {spell} 已同步，但 processed 标记持久化失败: {persist_error}")
+                        try:
                             self.on_mark_processed(voc_id, spell)
                         except Exception as cache_error:
                             self.logger.warning(f"⚠️ {spell} 已同步，但缓存更新失败: {cache_error}")
                         ok = mark_note_synced(voc_id)
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=1 写回未命中")
+                        self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
                     elif sync_status == 2:
+                        try:
+                            mark_processed(voc_id, spell)
+                        except Exception as persist_error:
+                            self.logger.warning(f"⚠️ {spell} 冲突态 processed 持久化失败: {persist_error}")
                         try:
                             self.on_mark_processed(voc_id, spell)
                         except Exception as cache_error:
@@ -167,7 +177,7 @@ class SyncManager:
                         ok = set_note_sync_status(voc_id, 2)
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=2 写回未命中")
-                        self.logger.warning(f"⚠️ {spell} 云端释义与数据库内容不一致，已标记冲突")
+                        self.logger.warning(f"[Pipeline] ⚠️ {spell} - 4. 墨墨同步提示: 发现已存在的不一致释义，已标记冲突")
                     else:
                         reason = ""
                         if isinstance(sync_result, dict):
@@ -198,7 +208,7 @@ class SyncManager:
         pending_count = self.sync_queue.qsize()
         self.logger.info(f"退出前关闭后台同步线程，剩余任务 {pending_count} 个...")
         self.sync_queue.put(None)
-        self.sync_worker_thread.join(timeout=10.0)
+        self.sync_worker_thread.join(timeout=5.0)
         if self.sync_worker_thread.is_alive():
             self.logger.warning("后台同步线程未在 10 秒内结束")
         else:

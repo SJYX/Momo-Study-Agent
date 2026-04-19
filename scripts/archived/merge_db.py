@@ -11,7 +11,16 @@ import sys
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
-from core.db_manager import _get_conn, _create_tables, get_momo_token_hash, get_config
+from database.connection import _get_conn
+from database.momo_words import get_config
+from database.schema import _create_tables
+
+
+def get_momo_token_hash(token: str) -> str:
+    raw = (token or "").strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 def get_token_from_env_file(env_path: str) -> str:
     """从指定的 .env 文件中提取 MOMO_TOKEN"""

@@ -2,8 +2,8 @@ import os
 import pytest
 import sqlite3
 import json
-import core.db_manager as db_manager
-from core.db_manager import init_db, is_processed, mark_processed, save_ai_word_note, save_ai_batch, find_word_in_community, find_words_in_community_batch
+import database.legacy as db_manager
+from database.legacy import find_word_in_community, find_words_in_community_batch, init_db, is_processed, mark_processed, save_ai_batch, save_ai_word_note
 
 @pytest.fixture
 def temp_db(tmp_path):
@@ -763,3 +763,106 @@ def test_init_db_applies_cloud_schema_even_when_table_exists(tmp_path, monkeypat
     verify_conn.close()
 
     assert "content_origin" in cols
+
+def test_thread_local_isolation(temp_db, monkeypatch):
+    """验证不同线程获取的是各自独立的连接。"""
+    import threading
+    from database.connection import _get_read_conn as _get_thread_local_read_conn
+    
+    monkeypatch.setattr(db_manager, "DB_PATH", temp_db)
+    
+    conns = {}
+    
+    def get_conn():
+        thread_id = threading.get_ident()
+        # 这里获取的是 thread local 的连接
+        conns[thread_id] = _get_thread_local_read_conn()
+        
+    t1 = threading.Thread(target=get_conn)
+    t2 = threading.Thread(target=get_conn)
+    
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    
+    ids = list(conns.keys())
+    assert len(ids) == 2
+    # 验证两个连接不是同一个对象
+    assert conns[ids[0]] is not conns[ids[1]]
+
+def test_concurrent_writes(temp_db, monkeypatch):
+    """模拟多线程并发写入，验证写队列的序列化能力。"""
+    import threading
+    import time
+    from database.momo_words import save_ai_batch
+    
+    monkeypatch.setattr(db_manager, "DB_PATH", temp_db)
+    
+    # 确保初始化
+    db_manager.init_db(temp_db)
+    
+    num_threads = 5
+    items_per_thread = 20
+    
+    def worker(worker_id):
+        for i in range(items_per_thread):
+            batch_id = f"thread-{worker_id}-item-{i}"
+            save_ai_batch({"batch_id": batch_id, "model_name": "test"}, db_path=temp_db)
+            time.sleep(0.01) # 增加交替机会
+            
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    
+    # 因为写入是后台队列，我们需要给守护线程一点点时间收尾
+    # 或者调用一个同步触发机制 (由于目前的架构是守护线程，我们稍微等一下)
+    time.sleep(1.0)
+    
+    conn = sqlite3.connect(temp_db)
+    cur = conn.cursor()
+    cur.execute("SELECT count(*) FROM ai_batches WHERE batch_id LIKE 'thread-%'")
+    count = cur.fetchone()[0]
+    conn.close()
+    
+    assert count == num_threads * items_per_thread
+
+
+def test_db_concurrent_readonly_leak(cloud_integ_env, temp_db):
+    """
+    ????????????,????????????
+    ???? WalConflict ???????????????
+    """
+    import time
+    import threading
+    from database.connection import cleanup_concurrent_system, init_concurrent_system
+    from database.momo_words import log_progress_snapshots
+
+    # ?????????,???????????
+    init_concurrent_system()
+    
+    try:
+        errors = []
+        def worker(thread_id):
+            try:
+                # ???? log_progress_snapshots ?????
+                words = [{'voc_id': f'vid_{thread_id}_{i}'} for i in range(100)]
+                # ??:??? db_manager ???? _get_conn ??????????? sync daemon
+                # ?????????????? _get_read_conn,????? WalConflict ???
+                log_progress_snapshots(words, db_path=temp_db)
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        # ??? AI ????,????????
+        for i in range(20):
+            t = threading.Thread(target=worker, args=(i,), daemon=False)
+            threads.append(t)
+            t.start()
+            
+        for t in threads:
+            t.join()
+
+        assert not errors, f"??????????/??/Wal??: {errors}"
+    finally:
+        cleanup_concurrent_system()

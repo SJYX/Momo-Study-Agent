@@ -10,7 +10,8 @@ sys.path.insert(0, ROOT_DIR)
 from config import MOMO_TOKEN, GEMINI_API_KEY, TEST_DB_PATH, DB_PATH
 from compat.maimemo_api import MaiMemoAPI
 from compat.gemini_client import GeminiClient
-from db_manager import init_db, save_ai_word_note, mark_processed
+from database.momo_words import mark_processed, save_ai_word_note
+from database.schema import init_db
 
 # 终端编码修正 (Windows 友好)
 if hasattr(sys.stdout, 'reconfigure'):
