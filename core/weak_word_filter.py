@@ -120,53 +120,59 @@ class WeakWordFilter:
         conn = _get_read_conn(DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
+        try:
+            if conn_lock is not None:
+                with conn_lock:
+                    try:
+                        # 获取平均熟悉度
+                        cur.execute("""
+                            SELECT AVG(familiarity_short) as avg_fam
+                            FROM (
+                                SELECT familiarity_short
+                                FROM word_progress_history
+                                GROUP BY voc_id
+                                HAVING MAX(created_at)
+                            )
+                        """)
+                        avg_fam = cur.fetchone()[0] or 2.5
 
-        if conn_lock is not None:
-            with conn_lock:
-                # 获取平均熟悉度
-                cur.execute("""
-                    SELECT AVG(familiarity_short) as avg_fam
-                    FROM (
-                        SELECT familiarity_short
-                        FROM word_progress_history
-                        GROUP BY voc_id
-                        HAVING MAX(created_at)
-                    )
-                """)
-                avg_fam = cur.fetchone()[0] or 2.5
+                        # 获取平均复习次数
+                        cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
+                        avg_reviews = cur.fetchone()[0] or 0
 
-                # 获取平均复习次数
-                cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
-                avg_reviews = cur.fetchone()[0] or 0
+                        # 获取总单词数
+                        cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
+                        total_words = cur.fetchone()[0] or 0
+                    finally:
+                        cur.close()
+                    conn.commit()
+            else:
+                try:
+                    # 获取平均熟悉度
+                    cur.execute("""
+                        SELECT AVG(familiarity_short) as avg_fam
+                        FROM (
+                            SELECT familiarity_short
+                            FROM word_progress_history
+                            GROUP BY voc_id
+                            HAVING MAX(created_at)
+                        )
+                    """)
+                    avg_fam = cur.fetchone()[0] or 2.5
 
-                # 获取总单词数
-                cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
-                total_words = cur.fetchone()[0] or 0
+                    # 获取平均复习次数
+                    cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
+                    avg_reviews = cur.fetchone()[0] or 0
+
+                    # 获取总单词数
+                    cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
+                    total_words = cur.fetchone()[0] or 0
+                finally:
+                    cur.close()
                 conn.commit()
-        else:
-            # 获取平均熟悉度
-            cur.execute("""
-                SELECT AVG(familiarity_short) as avg_fam
-                FROM (
-                    SELECT familiarity_short
-                    FROM word_progress_history
-                    GROUP BY voc_id
-                    HAVING MAX(created_at)
-                )
-            """)
-            avg_fam = cur.fetchone()[0] or 2.5
-
-            # 获取平均复习次数
-            cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
-            avg_reviews = cur.fetchone()[0] or 0
-
-            # 获取总单词数
-            cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
-            total_words = cur.fetchone()[0] or 0
-            conn.commit()
-
-        if not _is_main_write_singleton_conn(conn):
-            conn.close()
+        finally:
+            if not _is_main_write_singleton_conn(conn):
+                conn.close()
 
         # 估算学习频率 (简易实现)
         study_frequency = "normal"
@@ -192,7 +198,6 @@ class WeakWordFilter:
         conn = _get_read_conn(DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
-
         try:
             # 获取所有单词的最新进度
             query = """
@@ -215,12 +220,18 @@ class WeakWordFilter:
             """
             if conn_lock is not None:
                 with conn_lock:
-                    cur.execute(query)
-                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    try:
+                        cur.execute(query)
+                        rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    finally:
+                        cur.close()
                     conn.commit()
             else:
-                cur.execute(query)
-                rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                try:
+                    cur.execute(query)
+                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                finally:
+                    cur.close()
                 conn.commit()
         finally:
             if not _is_main_write_singleton_conn(conn):
@@ -258,7 +269,6 @@ class WeakWordFilter:
         conn = _get_read_conn(DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
-
         try:
             # 获取所有单词的最新进度
             query = """
@@ -281,12 +291,18 @@ class WeakWordFilter:
             """
             if conn_lock is not None:
                 with conn_lock:
-                    cur.execute(query)
-                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    try:
+                        cur.execute(query)
+                        rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    finally:
+                        cur.close()
                     conn.commit()
             else:
-                cur.execute(query)
-                rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                try:
+                    cur.execute(query)
+                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                finally:
+                    cur.close()
                 conn.commit()
         finally:
             if not _is_main_write_singleton_conn(conn):

@@ -667,20 +667,31 @@ def _get_dedicated_write_conn(db_path: Optional[str] = None) -> Any:
 
 
 def _execute_batch_writes_unlocked(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
-    write_conn.execute("BEGIN TRANSACTION")
     cur = write_conn.cursor()
-    for item in batch:
-        op_type = item.get("op_type", "insert")
-        if op_type == "insert_or_replace":
-            sql = item.get("sql")
-            args = item.get("args", ())
-            cur.execute(sql, args)
-        elif op_type == "executemany":
-            sql = item.get("sql")
-            args_list = item.get("args_list", [])
-            if args_list:
-                cur.executemany(sql, args_list)
-    write_conn.commit()
+    try:
+        # 【关键修复】使用具名游标执行，绝不能用 write_conn.execute
+        cur.execute("BEGIN IMMEDIATE")
+        for item in batch:
+            op_type = item.get("op_type", "insert")
+            if op_type == "insert_or_replace":
+                sql = item.get("sql")
+                args = item.get("args", ())
+                cur.execute(sql, args)
+            elif op_type == "executemany":
+                sql = item.get("sql")
+                args_list = item.get("args_list", [])
+                if args_list:
+                    cur.executemany(sql, args_list)
+        write_conn.commit()
+    except Exception:
+        # 【关键修复】如果发生任何异常，强行回滚，防止事务卡死
+        try:
+            write_conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        cur.close()
 
 
 def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
@@ -741,12 +752,10 @@ def _writer_daemon() -> None:
     batch_threshold = 50
     timeout_seconds = 1.0
 
-    write_conn = None
     pending_batch: List[Dict[str, Any]] = []
     last_commit_time = time.time()
 
     try:
-        write_conn = _get_dedicated_write_conn(DB_PATH)
         _debug_log("后台写线程启动", level="INFO")
 
         while True:
@@ -769,32 +778,55 @@ def _writer_daemon() -> None:
                 )
 
                 if should_commit and pending_batch:
-                    _execute_batch_writes(write_conn, pending_batch)
-                    _write_queue_stats["total_written"] += len(pending_batch)
-                    _write_queue_stats["last_batch_size"] = len(pending_batch)
-                    pending_batch = []
-                    last_commit_time = now
-                    _needs_sync = True
-                    _last_write_time = time.time()
+                    try:
+                        write_conn = _get_dedicated_write_conn(DB_PATH)
+                        _execute_batch_writes(write_conn, pending_batch)
+                        _write_queue_stats["total_written"] += len(pending_batch)
+                        _write_queue_stats["last_batch_size"] = len(pending_batch)
+                        pending_batch = []
+                        last_commit_time = now
+                        _needs_sync = True
+                        _last_write_time = time.time()
+                    except Exception as e:
+                        _write_queue_stats["total_errors"] += 1
+                        err_msg = str(e).lower()
+                        
+                        # 【核弹级自愈机制】增加了 Turso 的 stream not found 和 hrana 断连捕获
+                        is_broken_conn = any(k in err_msg for k in [
+                            "invalid state", "txn", "poison", "wal", "stream not found", "hrana"
+                        ])
+                        
+                        if is_broken_conn:
+                            _debug_log("检测到 Turso 云端连接休眠或底层状态失效，正在静默重建单例并重试...", level="INFO")
+                            _close_main_write_conn_singleton()
+                            time.sleep(0.5)
+                            continue  # 直接 continue，保留 pending_batch，下一次循环会自动用新连接把刚才没写进去的数据补写进去！
+                        else:
+                            _debug_log(f"后台写线程批量操作出错: {e}", level="ERROR")
+                            # 非断连错误，清空 batch 防止毒药数据死循环
+                            pending_batch = []
+                            
+                        time.sleep(0.1)
             except Exception as e:
                 _write_queue_stats["total_errors"] += 1
-                _debug_log(f"后台写线程批量操作出错: {e}", level="ERROR")
+                _debug_log(f"后台写线程外层捕获出错: {e}", level="ERROR")
                 time.sleep(0.1)
 
+        # 关机前的最后一次 Flush
         if pending_batch:
-            _execute_batch_writes(write_conn, pending_batch)
-            _write_queue_stats["total_written"] += len(pending_batch)
-            _needs_sync = True
-            _last_write_time = time.time()
+            try:
+                write_conn = _get_dedicated_write_conn(DB_PATH)
+                _execute_batch_writes(write_conn, pending_batch)
+                _write_queue_stats["total_written"] += len(pending_batch)
+                _needs_sync = True
+                _last_write_time = time.time()
+            except Exception as e:
+                _write_queue_stats["total_errors"] += 1
+                _debug_log(f"后台写线程关机批量操作出错: {e}", level="ERROR")
 
     except BaseException as e:
         _debug_log(f"后台写线程崩溃: {e}", level="CRITICAL")
     finally:
-        if write_conn and not _is_main_write_singleton_conn(write_conn):
-            try:
-                write_conn.close()
-            except Exception:
-                pass
         _debug_log("后台写线程停止", level="INFO")
 
 
@@ -976,22 +1008,28 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
 
         conn_lock = _get_singleton_conn_op_lock(hub_conn)
         cur = hub_conn.cursor()
-        if conn_lock is not None:
-            with conn_lock:
-                cur.execute(sql, params)
-                row = cur.fetchone()
+        try:
+            if conn_lock is not None:
+                with conn_lock:
+                    try:
+                        cur.execute(sql, params)
+                        row = cur.fetchone()
+                    finally:
+                        cur.close()
+                    hub_conn.commit()
+            else:
+                try:
+                    cur.execute(sql, params)
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
                 hub_conn.commit()
-        else:
-            cur.execute(sql, params)
-            row = cur.fetchone()
-            hub_conn.commit()
-
-        if conn_lock is None:
-            try:
-                hub_conn.close()
-            except Exception:
-                pass
-
+        finally:
+            if conn_lock is None:
+                try:
+                    hub_conn.close()
+                except Exception:
+                    pass
         return _row_to_dict(cur, row) if row else None
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
@@ -1020,22 +1058,28 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
 
         conn_lock = _get_singleton_conn_op_lock(hub_conn)
         cur = hub_conn.cursor()
-        if conn_lock is not None:
-            with conn_lock:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
+        try:
+            if conn_lock is not None:
+                with conn_lock:
+                    try:
+                        cur.execute(sql, params)
+                        rows = cur.fetchall()
+                    finally:
+                        cur.close()
+                    hub_conn.commit()
+            else:
+                try:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+                finally:
+                    cur.close()
                 hub_conn.commit()
-        else:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-            hub_conn.commit()
-
-        if conn_lock is None:
-            try:
-                hub_conn.close()
-            except Exception:
-                pass
-
+        finally:
+            if conn_lock is None:
+                try:
+                    hub_conn.close()
+                except Exception:
+                    pass
         return [_row_to_dict(cur, row) for row in rows]
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
@@ -1067,7 +1111,10 @@ def _execute_write_sql_sync(sql: str, params: tuple = (), db_path: Optional[str]
     target_conn = conn or _get_local_conn(db_path or DB_PATH)
     try:
         cur = target_conn.cursor()
-        cur.execute(sql, params)
+        try:
+            cur.execute(sql, params)
+        finally:
+            cur.close()  # 【关键修复】释放单条写入的游标
         target_conn.commit()
         _mark_main_db_needs_sync(db_path=db_path, conn=target_conn)
     finally:
@@ -1091,7 +1138,10 @@ def _execute_batch_write_sql_sync(
     target_conn = conn or _get_local_conn(db_path or DB_PATH)
     try:
         cur = target_conn.cursor()
-        cur.executemany(sql, args_list)
+        try:
+            cur.executemany(sql, args_list)
+        finally:
+            cur.close()  # 【关键修复】释放批量写入的游标
         target_conn.commit()
         _mark_main_db_needs_sync(db_path=db_path, conn=target_conn)
     finally:

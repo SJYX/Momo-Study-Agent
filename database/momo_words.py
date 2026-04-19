@@ -47,13 +47,19 @@ def get_processed_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
         if conn_lock is not None:
             with conn_lock:
                 cur = c.cursor()
-                cur.execute(f"SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})", vs)
-                rows = cur.fetchall()
+                try:
+                    cur.execute(f"SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})", vs)
+                    rows = cur.fetchall()
+                finally:
+                    cur.close()
                 c.commit()
         else:
             cur = c.cursor()
-            cur.execute(f"SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})", vs)
-            rows = cur.fetchall()
+            try:
+                cur.execute(f"SELECT voc_id FROM processed_words WHERE voc_id IN ({ph})", vs)
+                rows = cur.fetchall()
+            finally:
+                cur.close()
             c.commit()
 
         result = {str(r[0] if isinstance(r, (tuple, list)) else r["voc_id"]) for r in rows}
@@ -92,13 +98,19 @@ def get_progress_tracked_ids_in_batch(voc_ids: list, db_path: str = None) -> set
         if conn_lock is not None:
             with conn_lock:
                 cur = c.cursor()
-                cur.execute(f"SELECT DISTINCT voc_id FROM word_progress_history WHERE voc_id IN ({ph})", vs)
-                rows = cur.fetchall()
+                try:
+                    cur.execute(f"SELECT DISTINCT voc_id FROM word_progress_history WHERE voc_id IN ({ph})", vs)
+                    rows = cur.fetchall()
+                finally:
+                    cur.close()
                 c.commit()
         else:
             cur = c.cursor()
-            cur.execute(f"SELECT DISTINCT voc_id FROM word_progress_history WHERE voc_id IN ({ph})", vs)
-            rows = cur.fetchall()
+            try:
+                cur.execute(f"SELECT DISTINCT voc_id FROM word_progress_history WHERE voc_id IN ({ph})", vs)
+                rows = cur.fetchall()
+            finally:
+                cur.close()
             c.commit()
 
         return {str(r[0] if isinstance(r, (tuple, list)) else r["voc_id"]) for r in rows}
@@ -130,13 +142,19 @@ def is_processed(voc_id: str, db_path: str = None) -> bool:
         if conn_lock is not None:
             with conn_lock:
                 cur = c.cursor()
-                cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
-                res = cur.fetchone() is not None
+                try:
+                    cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
+                    res = cur.fetchone() is not None
+                finally:
+                    cur.close()
                 c.commit()
         else:
             cur = c.cursor()
-            cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
-            res = cur.fetchone() is not None
+            try:
+                cur.execute("SELECT 1 FROM processed_words WHERE voc_id = ?", (str(voc_id),))
+                res = cur.fetchone() is not None
+            finally:
+                cur.close()
             c.commit()
 
         return res
@@ -206,18 +224,21 @@ def log_progress_snapshots(words: List[dict], db_path: str = None) -> int:
         vids = [str(w["voc_id"]) for w in words]
         ph = ",".join(["?"] * len(vids))
         cur = c.cursor()
-        cur.execute(f"SELECT voc_id, it_level FROM ai_word_notes WHERE voc_id IN ({ph})", vids)
-        itm = {str(r[0]): r[1] for r in cur.fetchall()}
-        cur.execute(
-            f"SELECT voc_id, familiarity_short, review_count FROM word_progress_history WHERE voc_id IN ({ph}) ORDER BY created_at DESC",
-            vids,
-        )
-        lh = {}
-        for r in cur.fetchall():
-            v = str(r[0])
-            if v not in lh:
-                lh[v] = (r[1], r[2])
-        return itm, lh, vids
+        try:
+            cur.execute(f"SELECT voc_id, it_level FROM ai_word_notes WHERE voc_id IN ({ph})", vids)
+            itm = {str(r[0]): r[1] for r in cur.fetchall()}
+            cur.execute(
+                f"SELECT voc_id, familiarity_short, review_count FROM word_progress_history WHERE voc_id IN ({ph}) ORDER BY created_at DESC",
+                vids,
+            )
+            lh = {}
+            for r in cur.fetchall():
+                v = str(r[0])
+                if v not in lh:
+                    lh[v] = (r[1], r[2])
+            return itm, lh, vids
+        finally:
+            cur.close()
 
     try:
         c = connection._get_read_conn(db_path or DB_PATH)
@@ -411,16 +432,23 @@ def get_unsynced_notes(db_path: str = None, _recovery_attempted: bool = False) -
         if conn_lock is not None:
             with conn_lock:
                 cur = c.cursor()
-                cur.execute(unsynced_sql)
-                rows = cur.fetchall()
+                try:
+                    cur.execute(unsynced_sql)
+                    rows = cur.fetchall()
+                    result = [connection._row_to_dict(cur, row) for row in rows]
+                finally:
+                    cur.close()
                 c.commit()
         else:
             cur = c.cursor()
-            cur.execute(unsynced_sql)
-            rows = cur.fetchall()
+            try:
+                cur.execute(unsynced_sql)
+                rows = cur.fetchall()
+                result = [connection._row_to_dict(cur, row) for row in rows]
+            finally:
+                cur.close()
             c.commit()
 
-        result = [connection._row_to_dict(cur, row) for row in rows]
         _debug_log(f"获取未同步笔记完成: {len(result)} 条 (仅 ai_generated)", module="database.momo_words")
         return result
     except Exception as e:
@@ -508,16 +536,24 @@ def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
         if conn_lock is not None:
             with conn_lock:
                 cur = c.cursor()
-                cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
-                r = cur.fetchone()
+                try:
+                    cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+                    r = cur.fetchone()
+                    result = connection._row_to_dict(cur, r) if r else None
+                finally:
+                    cur.close()
                 c.commit()
         else:
             cur = c.cursor()
-            cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
-            r = cur.fetchone()
+            try:
+                cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+                r = cur.fetchone()
+                result = connection._row_to_dict(cur, r) if r else None
+            finally:
+                cur.close()
             c.commit()
 
-        return connection._row_to_dict(cur, r) if r else None
+        return result
     except Exception as read_error:
         if not _is_sqlite_data_corruption_error(read_error):
             raise
@@ -536,13 +572,19 @@ def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
             if conn_lock is not None:
                 with conn_lock:
                     fallback_cur = fc.cursor()
-                    fallback_cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
-                    fallback_row = fallback_cur.fetchone()
+                    try:
+                        fallback_cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+                        fallback_row = fallback_cur.fetchone()
+                    finally:
+                        fallback_cur.close() # 【关键修复】
                     fc.commit()
             else:
                 fallback_cur = fc.cursor()
-                fallback_cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
-                fallback_row = fallback_cur.fetchone()
+                try:
+                    fallback_cur.execute("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),))
+                    fallback_row = fallback_cur.fetchone()
+                finally:
+                    fallback_cur.close() # 【关键修复】
                 fc.commit()
 
             return connection._row_to_dict(fallback_cur, fallback_row) if fallback_row else None
@@ -585,45 +627,57 @@ def find_words_in_community_batch(
     ai_provider: str = None,
     prompt_version: str = None,
 ) -> Dict[str, Tuple[dict, str]]:
+    """批量在社区数据库中查找单词笔记（优先本地历史/当前库，云端只补查剩余项）"""
     if not voc_ids:
         return {}
 
-    result: Dict[str, Tuple[dict, str]] = {}
+    result = {}
     remaining_ids = [str(vid) for vid in voc_ids]
 
+    # =========================================================================
+    # 1. 先查询本地历史数据库文件（只查未找到的单词）
+    # =========================================================================
     if remaining_ids:
         cdb = os.path.basename(DB_PATH)
         dr = os.path.dirname(DB_PATH)
-        dfs = sorted(
-            [f for f in os.listdir(dr) if (f.startswith("history_") or f.startswith("history-")) and f.endswith(".db")],
-            key=lambda x: os.path.getmtime(os.path.join(dr, x)),
-            reverse=True,
-        )
+        try:
+            dfs = sorted([f for f in os.listdir(dr) if (f.startswith('history_') or f.startswith('history-')) and f.endswith('.db')],
+                         key=lambda x: os.path.getmtime(os.path.join(dr, x)), reverse=True)
+        except Exception:
+            dfs = []
 
         for df in dfs:
             if df == cdb:
                 continue
             try:
                 c = connection._get_local_conn(os.path.join(dr, df))
-                cur = c.cursor()
-                placeholders = ",".join(["?"] * len(remaining_ids))
-                cur.execute(
-                    f"""
-                    SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
-                    FROM ai_word_notes n
-                    LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
-                    WHERE n.voc_id IN ({placeholders})
-                    """,
-                    remaining_ids,
-                )
-                rows = cur.fetchall()
-                c.commit()
-                c.close()
+                mapped_rows = []
+                try:
+                    cur = c.cursor()
+                    try:
+                        placeholders = ','.join(['?'] * len(remaining_ids))
+                        cur.execute(
+                            f'''
+                            SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                            FROM ai_word_notes n
+                            LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                            WHERE n.voc_id IN ({placeholders})
+                            ''',
+                            remaining_ids,
+                        )
+                        rows = cur.fetchall()
+                        # 【关键】在关闭游标前完成字典映射，因为关闭后 cur.description 会丢失
+                        if rows:
+                            for row in rows:
+                                mapped_rows.append(connection._row_to_dict(cur, row))
+                    finally:
+                        cur.close()  # 【修复】安全释放游标
+                finally:
+                    c.close()
 
-                if rows:
-                    for row in rows:
-                        note_dict = connection._row_to_dict(cur, row)
-                        voc_id = note_dict.get("voc_id")
+                if mapped_rows:
+                    for note_dict in mapped_rows:
+                        voc_id = note_dict.get('voc_id')
                         if voc_id and voc_id not in result and _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
                             result[voc_id] = (note_dict, df)
                             if voc_id in remaining_ids:
@@ -634,45 +688,61 @@ def find_words_in_community_batch(
             except Exception:
                 continue
 
+    # =========================================================================
+    # 2. 再查询当前数据库（只查未找到的单词，需严格遵守单例和读锁释放）
+    # =========================================================================
     if remaining_ids:
         c = None
         try:
             c = connection._get_read_conn(DB_PATH)
             conn_lock = connection._get_singleton_conn_op_lock(c)
-            placeholders = ",".join(["?"] * len(remaining_ids))
+            mapped_rows = []
 
             if conn_lock is not None:
                 with conn_lock:
                     cur = c.cursor()
+                    try:
+                        placeholders = ','.join(['?'] * len(remaining_ids))
+                        cur.execute(
+                            f'''
+                            SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                            FROM ai_word_notes n
+                            LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                            WHERE n.voc_id IN ({placeholders})
+                            ''',
+                            remaining_ids,
+                        )
+                        rows = cur.fetchall()
+                        if rows:
+                            for row in rows:
+                                mapped_rows.append(connection._row_to_dict(cur, row))
+                    finally:
+                        cur.close()  # 【修复】安全释放游标
+                    c.commit()       # 【修复】彻底释放 SQLite 底层读事务锁
+            else:
+                cur = c.cursor()
+                try:
+                    placeholders = ','.join(['?'] * len(remaining_ids))
                     cur.execute(
-                        f"""
+                        f'''
                         SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
                         FROM ai_word_notes n
                         LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
                         WHERE n.voc_id IN ({placeholders})
-                        """,
+                        ''',
                         remaining_ids,
                     )
                     rows = cur.fetchall()
-                    c.commit()
-            else:
-                cur = c.cursor()
-                cur.execute(
-                    f"""
-                    SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
-                    FROM ai_word_notes n
-                    LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
-                    WHERE n.voc_id IN ({placeholders})
-                    """,
-                    remaining_ids,
-                )
-                rows = cur.fetchall()
-                c.commit()
+                    if rows:
+                        for row in rows:
+                            mapped_rows.append(connection._row_to_dict(cur, row))
+                finally:
+                    cur.close()  # 【修复】安全释放游标
+                c.commit()       # 【修复】彻底释放 SQLite 底层读事务锁
 
-            if rows:
-                for row in rows:
-                    note_dict = connection._row_to_dict(cur, row)
-                    voc_id = note_dict.get("voc_id")
+            if mapped_rows:
+                for note_dict in mapped_rows:
+                    voc_id = note_dict.get('voc_id')
                     if voc_id and voc_id not in result and _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
                         result[voc_id] = (note_dict, "当前数据库")
                         if voc_id in remaining_ids:
@@ -680,47 +750,63 @@ def find_words_in_community_batch(
         except Exception:
             pass
         finally:
-            try:
-                if c is not None and not connection._is_main_write_singleton_conn(c):
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                try:
                     c.close()
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-    if not skip_cloud and connection.HAS_LIBSQL and remaining_ids and libsql is not None:
+    # =========================================================================
+    # 3. 云端只补查本地未命中的剩余单词
+    # =========================================================================
+    if not skip_cloud and libsql is not None and remaining_ids:
         cloud_targets = _collect_cloud_lookup_targets()
-        for cloud_url, _cloud_token, source_label in cloud_targets:
+
+        for cloud_url, cloud_token, source_label in cloud_targets:
             if not remaining_ids:
                 break
             cloud_conn = None
             try:
                 lookup_path = _get_cloud_lookup_replica_path(cloud_url)
                 if not os.path.exists(lookup_path):
+                    _debug_log(f"{source_label} 本地副本不存在，跳过纯读补查: {lookup_path}", level="DEBUG")
                     continue
 
                 cloud_conn = libsql.connect(lookup_path)
                 cloud_cur = cloud_conn.cursor()
-                placeholders = ",".join(["?"] * len(remaining_ids))
-                cloud_cur.execute(
-                    f"""
-                    SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
-                    FROM ai_word_notes n
-                    LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
-                    WHERE n.voc_id IN ({placeholders})
-                    """,
-                    remaining_ids,
-                )
-                rows = cloud_cur.fetchall()
+                mapped_rows = []
+                try:
+                    placeholders = ','.join(['?'] * len(remaining_ids))
+                    cloud_cur.execute(
+                        f'''
+                        SELECT n.*, b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version
+                        FROM ai_word_notes n
+                        LEFT JOIN ai_batches b ON n.batch_id = b.batch_id
+                        WHERE n.voc_id IN ({placeholders})
+                        ''',
+                        remaining_ids,
+                    )
+                    rows = cloud_cur.fetchall()
+                    if rows:
+                        columns = [col[0] for col in cloud_cur.description]
+                        for row in rows:
+                            mapped_rows.append(dict(zip(columns, row)))
+                finally:
+                    cloud_cur.close()  # 【修复】安全释放云端连接的游标
 
-                if rows:
-                    columns = [col[0] for col in cloud_cur.description]
-                    for row in rows:
-                        note_dict = dict(zip(columns, row))
-                        voc_id = note_dict.get("voc_id")
+                if mapped_rows:
+                    found_count = 0
+                    for note_dict in mapped_rows:
+                        voc_id = note_dict.get('voc_id')
                         if voc_id and voc_id not in result and _matches_ai_generation_context(note_dict, ai_provider=ai_provider, prompt_version=prompt_version):
                             result[voc_id] = (note_dict, source_label)
-                    remaining_ids = [vid for vid in remaining_ids if vid not in result]
+                            found_count += 1
+                    if found_count:
+                        remaining_ids = [vid for vid in remaining_ids if vid not in result]
+
+                _debug_log(f"{source_label} 批量查询完成：累计找到 {len(result)} 个单词的笔记")
             except Exception as e:
-                _debug_log(f"{source_label} 批量查询失败: {e}", module="database.momo_words")
+                _debug_log(f"{source_label} 批量查询失败: {e}")
             finally:
                 if cloud_conn:
                     try:
@@ -790,13 +876,19 @@ def _fetch_one_scalar(sql: str, params: tuple = (), db_path: str = None):
         if conn_lock is not None:
             with conn_lock:
                 cur = c.cursor()
-                cur.execute(sql, params)
-                row = cur.fetchone()
+                try:
+                    cur.execute(sql, params)
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
                 c.commit()
         else:
             cur = c.cursor()
-            cur.execute(sql, params)
-            row = cur.fetchone()
+            try:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+            finally:
+                cur.close()
             c.commit()
 
         if not row:

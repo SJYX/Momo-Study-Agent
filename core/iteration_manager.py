@@ -156,10 +156,8 @@ class IterationManager:
         """
         conn = _get_read_conn(DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
-        cur = conn.cursor()
-
         weak_words = []
-
+        cur = conn.cursor()
         try:
             # 1. 获取已有 AI 笔记的薄弱词（迭代优化）
             query1 = f"""
@@ -175,17 +173,24 @@ class IterationManager:
             """
             if conn_lock is not None:
                 with conn_lock:
-                    cur.execute(query1, (threshold,))
-                    rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    try:
+                        cur.execute(query1, (threshold,))
+                        rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    finally:
+                        cur.close()
                     conn.commit()
             else:
-                cur.execute(query1, (threshold,))
-                rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                try:
+                    cur.execute(query1, (threshold,))
+                    rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                finally:
+                    cur.close()
                 conn.commit()
             weak_words.extend(rows1)
 
             # 2. 获取没有 AI 笔记但熟悉度低的单词（首次助记生成）
             # 排除已有 AI 笔记的单词
+            cur = conn.cursor()
             query2 = f"""
                 SELECT
                     h.voc_id,
@@ -204,12 +209,18 @@ class IterationManager:
             """
             if conn_lock is not None:
                 with conn_lock:
-                    cur.execute(query2, (threshold,))
-                    rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    try:
+                        cur.execute(query2, (threshold,))
+                        rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    finally:
+                        cur.close()
                     conn.commit()
             else:
-                cur.execute(query2, (threshold,))
-                rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                try:
+                    cur.execute(query2, (threshold,))
+                    rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                finally:
+                    cur.close()
                 conn.commit()
 
             # 补全缺失的字段
@@ -238,18 +249,25 @@ class IterationManager:
         conn = _get_read_conn(DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
-        if conn_lock is not None:
-            with conn_lock:
-                cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-                row = cur.fetchone()
+        try:
+            if conn_lock is not None:
+                with conn_lock:
+                    try:
+                        cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+                        row = cur.fetchone()
+                    finally:
+                        cur.close()
+                    conn.commit()
+            else:
+                try:
+                    cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
                 conn.commit()
-        else:
-            cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-            row = cur.fetchone()
-            conn.commit()
-        if not _is_main_write_singleton_conn(conn):
-            conn.close()
-        
+        finally:
+            if not _is_main_write_singleton_conn(conn):
+                conn.close()
         if row and row[0]:
             history = json.loads(row[0])
             if history:
@@ -405,17 +423,25 @@ class IterationManager:
         conn = _get_read_conn(DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
-        if conn_lock is not None:
-            with conn_lock:
-                cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-                row = cur.fetchone()
+        try:
+            if conn_lock is not None:
+                with conn_lock:
+                    try:
+                        cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+                        row = cur.fetchone()
+                    finally:
+                        cur.close()
+                    conn.commit()
+            else:
+                try:
+                    cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
                 conn.commit()
-        else:
-            cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-            row = cur.fetchone()
-            conn.commit()
-        if not _is_main_write_singleton_conn(conn):
-            conn.close()
+        finally:
+            if not _is_main_write_singleton_conn(conn):
+                conn.close()
 
         old_history = json.loads(row[0]) if row and row[0] else []
         old_memory_aid = row[1] if row and len(row) > 1 else ""

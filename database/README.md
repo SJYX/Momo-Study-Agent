@@ -1,3 +1,48 @@
+# [Rule] Turso libsql (Embedded Replica) 并发与防冲突 (WalConflict) 开发守则
+
+## 0. 背景与核心哲学
+在处理 Turso 的嵌入式本地副本（Embedded Replica）时，底层的 Rust 同步引擎对 SQLite 的 `.db-wal` 文件锁极其敏感。任何跨进程的多开、悬空游标（Dangling Cursors）、未释放的读锁（Shared Locks）都会导致 `libsql::sync : WalConflict` 甚至连接中毒（`invalid state, started with Txn`）。
+**核心准则：进程绝对唯一，连接绝对单例，游标绝对关闭，读后绝对释放。**
+
+## 1. 进程级防御 (OS Process Lock)
+- **绝对禁止多开套娃**：禁止在代码中使用 `subprocess.run` 重新拉起带不同环境变量的主程序。环境变量热重载必须在内存中使用 `importlib.reload()` 解决。
+- **强制物理锁**：入口文件（如 `main.py`）必须在连接任何数据库前，通过 `msvcrt` (Windows) 或 `fcntl` (Unix) 抢占物理 `.process.lock` 文件。抢锁失败必须立即 `sys.exit(1)`。
+
+## 2. 连接级防御 (Singleton Connection)
+- **全局单例**：对同一个本地副本 `.db` 文件，全局只能保持**唯一一个**持久化的 `libsql` 连接对象。
+- **禁止私自建连**：业务代码绝对禁止直接调用 `libsql.connect(DB_PATH)`。所有读写操作必须通过 `connection.py` 提供的单例获取接口（如 `_get_read_conn`）。
+
+## 3. 游标与读锁协议 (The Cursor & Read-Lock Protocol) - 🌟 最易犯错点！
+SQLite 的 `SELECT` 语句会隐式开启共享读事务。如果不显式清理，将永久锁死 WAL 文件导致 `conn.sync()` 崩溃。
+任何查询操作必须严格遵循以下 `try...finally` 闭环模板：
+- **必选项 1**：必须包裹在单例线程锁（如 `with conn_lock:`）内。
+- **必选项 2**：必须在 `finally` 块中调用 `cur.close()`。彻底清除 `SQLITE_ROW` 状态。
+- **必选项 3**：必须在查询结束后调用 `c.commit()`。彻底释放 SQLite 底层读锁。
+- **禁忌**：绝对禁止使用匿名游标（如 `conn.execute("SELECT...")`）。
+
+**✅ 正确的查询模板：**
+```python
+c = connection._get_read_conn(DB_PATH)
+conn_lock = connection._get_singleton_conn_op_lock(c)
+if conn_lock is not None:
+  with conn_lock:
+    cur = c.cursor()
+    try:
+      cur.execute("SELECT ...")
+      res = cur.fetchone() # 或 fetchall()
+    finally:
+      cur.close()  # <--- 第一道防线：重置语句状态
+    c.commit()       # <--- 第二道防线：释放底层读锁
+```
+
+## 4. 写事务与自愈机制 (Write & Self-Healing)
+- 显式排他锁：批量写入必须使用显式的 cur.execute("BEGIN IMMEDIATE")，防止死锁。
+- 回滚兜底：写操作的 try...except 块中，发生任何异常必须执行 conn.rollback()。
+- 静默自愈 (Poisoned Connection Recovery)：如果底层抛出 invalid state, started with Txn, WalConflict, stream not found, 或 hrana 断连异常，说明单例连接已损坏/被云端踢出。必须在守护线程中捕获这些关键字，强制执行 _close_main_write_conn_singleton() 销毁旧连接，并在下一次循环中静默重建重试。
+
+## 5. 垃圾回收核弹 (The GC Hack)
+在调用底层的 conn.sync() 同步增量帧到云端之前，必须强制调用一次 import gc; gc.collect()。此举旨在物理销毁业务层（如各类 Manager 脚本中）可能因漏写 cur.close() 而游荡在内存中的僵尸游标对象，确保 WAL 文件处于绝对干净的解锁状态。
+
 # database Package Architecture
 
 This package splits the old `db_manager.py` into clear layers while preserving runtime behavior and improving safety in Embedded Replica mode.
