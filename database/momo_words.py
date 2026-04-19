@@ -1,7 +1,10 @@
-# -*- coding: utf-8 -*-
-"""Main DB business logic for momo word notes/progress/sync wrappers."""
 
 from __future__ import annotations
+"""
+database/momo_words.py: 主库单词/助记业务逻辑与同步快照。
+"""
+# -*- coding: utf-8 -*-
+"""Main DB business logic for momo word notes/progress/sync wrappers."""
 
 import hashlib
 import json
@@ -32,7 +35,7 @@ except Exception:
     libsql = None
 
 
-def get_processed_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
+def get_processed_ids_in_batch(voc_ids: List[str], db_path: Optional[str] = None) -> Set[str]:
     if not voc_ids:
         return set()
 
@@ -84,7 +87,7 @@ def get_processed_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
             pass
 
 
-def get_progress_tracked_ids_in_batch(voc_ids: list, db_path: str = None) -> set:
+def get_progress_tracked_ids_in_batch(voc_ids: List[str], db_path: Optional[str] = None) -> Set[str]:
     if not voc_ids:
         return set()
 
@@ -133,7 +136,7 @@ def get_progress_tracked_ids_in_batch(voc_ids: list, db_path: str = None) -> set
             pass
 
 
-def is_processed(voc_id: str, db_path: str = None) -> bool:
+def is_processed(voc_id: str, db_path: Optional[str] = None) -> bool:
     c = None
     try:
         c = connection._get_read_conn(db_path or DB_PATH)
@@ -177,7 +180,7 @@ def is_processed(voc_id: str, db_path: str = None) -> bool:
             pass
 
 
-def mark_processed(voc_id: str, spelling: str, db_path: str = None, conn: Any = None) -> bool:
+def mark_processed(voc_id: str, spelling: str, db_path: Optional[str] = None, conn: Any = None) -> bool:
     try:
         sql = "INSERT OR REPLACE INTO processed_words (voc_id, spelling, updated_at) VALUES (?, ?, ?)"
         args = (str(voc_id), spelling, get_timestamp_with_tz())
@@ -193,7 +196,7 @@ def mark_processed(voc_id: str, spelling: str, db_path: str = None, conn: Any = 
         return False
 
 
-def mark_processed_batch(items: List[Tuple[str, str]], db_path: str = None) -> bool:
+def mark_processed_batch(items: List[Tuple[str, str]], db_path: Optional[str] = None) -> bool:
     if not items:
         return True
 
@@ -213,7 +216,7 @@ def mark_processed_batch(items: List[Tuple[str, str]], db_path: str = None) -> b
         return False
 
 
-def log_progress_snapshots(words: List[dict], db_path: str = None) -> int:
+def log_progress_snapshots(words: List[Dict[str, Any]], db_path: Optional[str] = None) -> int:
     if not words:
         return 0
 
@@ -288,7 +291,7 @@ def _clean_payload_field(payload: Dict[str, Any], field: str) -> str:
     return clean_for_maimemo(payload.get(field, ""))
 
 
-def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata: dict = None, conn: Any = None) -> bool:
+def save_ai_word_note(voc_id: str, payload: Dict[str, Any], db_path: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, conn: Any = None) -> bool:
     s = payload.get("spelling", "")
     raw_candidate = {k: v for k, v in payload.items() if k != "raw_full_text"}
     t = payload.get("raw_full_text") or json.dumps(raw_candidate, ensure_ascii=False)
@@ -341,7 +344,7 @@ def save_ai_word_note(voc_id: str, payload: dict, db_path: str = None, metadata:
         return False
 
 
-def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = None, conn: Any = None) -> bool:
+def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: Optional[str] = None, conn: Any = None) -> bool:
     if not notes_data:
         return True
 
@@ -411,7 +414,7 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: str = No
         return False
 
 
-def get_unsynced_notes(db_path: str = None, _recovery_attempted: bool = False) -> list:
+def get_unsynced_notes(db_path: Optional[str] = None, _recovery_attempted: bool = False) -> List[Dict[str, Any]]:
     unsynced_sql = (
         "SELECT voc_id, spelling, basic_meanings, ielts_focus, collocations, "
         "traps, synonyms, discrimination, example_sentences, memory_aid, "
@@ -525,7 +528,7 @@ def get_unsynced_notes(db_path: str = None, _recovery_attempted: bool = False) -
             pass
 
 
-def get_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
+def get_word_note(voc_id: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     target_path = db_path or DB_PATH
 
     c = None
@@ -624,9 +627,9 @@ def _matches_ai_generation_context(note_row: Dict[str, Any], ai_provider: Option
 def find_words_in_community_batch(
     voc_ids: List[str],
     skip_cloud: bool = False,
-    ai_provider: str = None,
-    prompt_version: str = None,
-) -> Dict[str, Tuple[dict, str]]:
+    ai_provider: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+) -> Dict[str, Tuple[Dict[str, Any], str]]:
     """批量在社区数据库中查找单词笔记（优先本地历史/当前库，云端只补查剩余项）"""
     if not voc_ids:
         return {}
@@ -817,7 +820,7 @@ def find_words_in_community_batch(
     return result
 
 
-def get_latest_progress(voc_id: str, db_path: str = None):
+def get_latest_progress(voc_id: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     c = None
     try:
         c = connection._get_read_conn(db_path or DB_PATH)
@@ -855,7 +858,7 @@ def get_latest_progress(voc_id: str, db_path: str = None):
             pass
 
 
-def set_config(k, v, db=None) -> bool:
+def set_config(k: str, v: str, db: Optional[str] = None) -> bool:
     sql = "INSERT OR REPLACE INTO system_config (key, value, updated_at) VALUES (?, ?, ?)"
     args = (k, v, get_timestamp_with_tz())
     if connection._should_use_local_only_connection(db):
@@ -867,7 +870,7 @@ def set_config(k, v, db=None) -> bool:
     return True
 
 
-def _fetch_one_scalar(sql: str, params: tuple = (), db_path: str = None):
+def _fetch_one_scalar(sql: str, params: Tuple = (), db_path: Optional[str] = None) -> Any:
     c = None
     try:
         c = connection._get_read_conn(db_path or DB_PATH)
@@ -913,7 +916,7 @@ def _fetch_one_scalar(sql: str, params: tuple = (), db_path: str = None):
             pass
 
 
-def get_config(k, db=None):
+def get_config(k: str, db: Optional[str] = None) -> Optional[str]:
     return _fetch_one_scalar("SELECT value FROM system_config WHERE key = ?", (k,), db_path=(db or DB_PATH))
 
 
@@ -932,11 +935,11 @@ def archive_prompt_file(source_path: str, prompt_hash: str, prompt_type: str = "
         shutil.copy2(source_path, target_path)
 
 
-def save_test_word_note(voc_id: str, payload: dict) -> None:
+def save_test_word_note(voc_id: str, payload: Dict[str, Any]) -> None:
     save_ai_word_note(voc_id, payload, db_path=TEST_DB_PATH)
 
 
-def _emit_sync_progress(progress_callback, stage: str, current: int, total: int, message: str, **extra):
+def _emit_sync_progress(progress_callback: Optional[Callable[[Dict[str, Any]], None]], stage: str, current: int, total: int, message: str, **extra) -> None:
     if not progress_callback:
         return
     payload = {"stage": stage, "current": current, "total": total, "message": message}
@@ -960,7 +963,7 @@ def _is_cloud_connection_unavailable_error(error: Exception) -> bool:
 
 
 def sync_databases(
-    db_path: str = None,
+    db_path: Optional[str] = None,
     dry_run: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
@@ -1075,12 +1078,12 @@ def sync_hub_databases(
         return stats
 
 
-def get_local_word_note(voc_id: str, db_path: str = None) -> Optional[dict]:
+def get_local_word_note(voc_id: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Read word note from local/read path; fallback behavior handled by read layer."""
     return get_word_note(voc_id, db_path=db_path)
 
 
-def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> bool:
+def set_note_sync_status(voc_id: str, sync_status: int, db_path: Optional[str] = None) -> bool:
     try:
         sql = "UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?"
         args = (int(sync_status), get_timestamp_with_tz(), str(voc_id))
@@ -1093,15 +1096,15 @@ def set_note_sync_status(voc_id: str, sync_status: int, db_path: str = None) -> 
         return False
 
 
-def mark_note_synced(voc_id: str, db_path: str = None) -> bool:
+def mark_note_synced(voc_id: str, db_path: Optional[str] = None) -> bool:
     return set_note_sync_status(voc_id, 1, db_path=db_path)
 
 
-def mark_note_sync_conflict(voc_id: str, db_path: str = None) -> bool:
+def mark_note_sync_conflict(voc_id: str, db_path: Optional[str] = None) -> bool:
     return set_note_sync_status(voc_id, 2, db_path=db_path)
 
 
-def save_ai_batch(batch_data: dict, db_path: str = None) -> bool:
+def save_ai_batch(batch_data: Dict[str, Any], db_path: Optional[str] = None) -> bool:
     sql = (
         "INSERT OR REPLACE INTO ai_batches (batch_id, request_id, ai_provider, model_name, prompt_version, "
         "batch_size, total_latency_ms, prompt_tokens, completion_tokens, total_tokens, finish_reason, created_at) "
@@ -1127,7 +1130,7 @@ def save_ai_batch(batch_data: dict, db_path: str = None) -> bool:
     return connection._queue_write_operation(sql, args, op_type="insert_or_replace")
 
 
-def save_ai_word_iteration(voc_id: str, payload: dict, db_path: str = None, metadata: dict = None, conn: Any = None) -> bool:
+def save_ai_word_iteration(voc_id: str, payload: Dict[str, Any], db_path: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, conn: Any = None) -> bool:
     if not voc_id:
         return False
     try:
@@ -1173,7 +1176,7 @@ def update_ai_word_note_iteration_state(
     level: int,
     it_history_json: str,
     memory_aid: Optional[str] = None,
-    db_path: str = None,
+    db_path: Optional[str] = None,
 ) -> bool:
     try:
         if memory_aid is not None:
@@ -1205,7 +1208,7 @@ def initialize_local_database_file(db_path: str) -> bool:
         return False
 
 
-def find_word_in_community(voc_id: str, ai_provider: str = None, prompt_version: str = None) -> Optional[Tuple[dict, str]]:
+def find_word_in_community(voc_id: str, ai_provider: Optional[str] = None, prompt_version: Optional[str] = None) -> Optional[Tuple[Dict[str, Any], str]]:
     result = find_words_in_community_batch([str(voc_id)], skip_cloud=False, ai_provider=ai_provider, prompt_version=prompt_version)
     return result.get(str(voc_id))
 

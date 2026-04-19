@@ -1,3 +1,6 @@
+"""
+core/study_workflow.py: 主学习流程与任务编排，负责单词处理流水线与 AI 调度。
+"""
 import os
 import time
 import uuid

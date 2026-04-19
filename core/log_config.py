@@ -1,3 +1,6 @@
+"""
+core/log_config.py: 日志系统配置与参数定义。
+"""
 #!/usr/bin/env python3
 """
 日志系统配置文件

@@ -1,3 +1,8 @@
+
+from __future__ import annotations
+"""
+database/connection.py: 负责全局 libsql 单例连接管理、后台双守护线程调度及进程锁控制。
+"""
 # -*- coding: utf-8 -*-
 """Database connection infrastructure.
 
@@ -7,10 +12,8 @@ and Embedded Replica connection rules.
 Critical WalConflict rule:
 - In Embedded Replica mode, NEVER open extra local libsql read connections.
 - All reads/writes must be funneled through a single process-level singleton
-  connection per database file.
+    connection per database file.
 """
-
-from __future__ import annotations
 
 import os
 import queue

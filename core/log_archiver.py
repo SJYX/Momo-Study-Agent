@@ -1,3 +1,6 @@
+"""
+core/log_archiver.py: 日志归档与压缩清理逻辑。
+"""
 #!/usr/bin/env python3
 """
 日志压缩和归档功能

@@ -1,3 +1,6 @@
+"""
+core/logger.py: 日志封装与全局日志上下文管理。
+"""
 import logging
 import os
 import sys

@@ -1,3 +1,6 @@
+"""
+core/preflight.py: 启动前环境体检与依赖检查。
+"""
 import os
 from typing import Dict, List
 

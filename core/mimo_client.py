@@ -1,3 +1,6 @@
+"""
+core/mimo_client.py: Mimo AI 客户端封装，兼容 OpenAI API 格式。
+"""
 import os
 import json
 import time

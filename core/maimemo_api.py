@@ -1,3 +1,6 @@
+"""
+core/maimemo_api.py: 墨墨背单词 OpenAPI 封装与请求重试。
+"""
 # -*- coding: utf-8 -*-
 """
 墨墨背单词 OpenAPI 封装调用库

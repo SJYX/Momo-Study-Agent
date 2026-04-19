@@ -1,3 +1,6 @@
+"""
+core/db_manager.py: 兼容旧版数据库管理接口，转发到新 database 分层实现。
+"""
 # -*- coding: utf-8 -*-
 import sqlite3, os, json, re, hashlib, shutil, time, hmac, base64, threading, queue
 from datetime import datetime, timezone, timedelta

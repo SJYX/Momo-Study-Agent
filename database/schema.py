@@ -1,7 +1,10 @@
-# -*- coding: utf-8 -*-
-"""Database schema/migration and initialization layer."""
 
 from __future__ import annotations
+"""
+database/schema.py: 数据库表结构、迁移与初始化逻辑。
+"""
+# -*- coding: utf-8 -*-
+"""Database schema/migration and initialization layer."""
 
 import json
 import os

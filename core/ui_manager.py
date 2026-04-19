@@ -1,3 +1,6 @@
+"""
+core/ui_manager.py: CLI 交互界面，仅负责输入输出与菜单展示。
+"""
 import os
 import msvcrt
 from typing import List

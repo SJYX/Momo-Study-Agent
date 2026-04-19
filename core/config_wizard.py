@@ -1,3 +1,6 @@
+"""
+core/config_wizard.py: 首次配置引导与交互逻辑，负责用户 profile 初始化与敏感信息采集。
+"""
 import os
 import sys
 import requests

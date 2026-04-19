@@ -1,3 +1,6 @@
+"""
+core/sync_manager.py: 后台同步任务调度与队列管理。
+"""
 import queue
 import threading
 from typing import Callable, Optional

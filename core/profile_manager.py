@@ -1,3 +1,6 @@
+"""
+core/profile_manager.py: 用户配置与多账号 profile 管理。
+"""
 import os
 import sys
 import glob

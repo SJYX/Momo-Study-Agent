@@ -1,3 +1,8 @@
+
+from __future__ import annotations
+"""
+database/utils.py: 数据库通用工具与加密、清洗、云端目标发现等辅助逻辑。
+"""
 # -*- coding: utf-8 -*-
 """Shared database utility helpers.
 
@@ -10,8 +15,6 @@ business modules, including:
 - SQLite corruption/error classification helpers
 - broken DB backup helpers
 """
-
-from __future__ import annotations
 
 import base64
 import hashlib

@@ -1,3 +1,6 @@
+"""
+database/legacy.py: 兼容旧版 db_manager 风格接口，转发到新分层实现。
+"""
 # -*- coding: utf-8 -*-
 """Compatibility export surface for legacy db_manager-style call sites.
 

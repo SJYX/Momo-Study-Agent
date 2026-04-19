@@ -1,3 +1,6 @@
+"""
+core/weak_word_filter.py: 易错词筛选与多维度弱词评估。
+"""
 # -*- coding: utf-8 -*-
 """
 薄弱词筛选优化系统

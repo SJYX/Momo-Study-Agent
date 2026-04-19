@@ -1,3 +1,6 @@
+"""
+core/gemini_client.py: Gemini AI 客户端封装，负责与 Gemini API 的交互。
+"""
 from typing import Tuple, Dict, Any, List
 import os
 import json

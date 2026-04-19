@@ -1,3 +1,6 @@
+"""
+core/iteration_manager.py: 智能迭代与批处理调度，管理 AI 生成与批量任务。
+"""
 import json
 import time
 from typing import List, Dict
