@@ -415,14 +415,23 @@ def save_ai_word_notes_batch(notes_data: List[Dict[str, Any]], db_path: Optional
 
 
 def get_unsynced_notes(db_path: Optional[str] = None, _recovery_attempted: bool = False) -> List[Dict[str, Any]]:
-    unsynced_sql = (
-        "SELECT voc_id, spelling, basic_meanings, ielts_focus, collocations, "
+    base_columns = (
+        "voc_id, spelling, basic_meanings, ielts_focus, collocations, "
         "traps, synonyms, discrimination, example_sentences, memory_aid, "
         "word_ratings, raw_full_text, batch_id, original_meanings, "
-        "maimemo_context, it_level, updated_at, content_origin "
+        "maimemo_context, it_level, updated_at"
+    )
+    unsynced_sql = (
+        f"SELECT {base_columns}, content_origin "
         "FROM ai_word_notes "
         "WHERE sync_status = 0 "
         "AND (content_origin IS NULL OR content_origin = 'ai_generated') "
+        "ORDER BY updated_at ASC"
+    )
+    fallback_unsynced_sql = (
+        f"SELECT {base_columns} "
+        "FROM ai_word_notes "
+        "WHERE sync_status = 0 "
         "ORDER BY updated_at ASC"
     )
 
@@ -455,6 +464,46 @@ def get_unsynced_notes(db_path: Optional[str] = None, _recovery_attempted: bool 
         _debug_log(f"获取未同步笔记完成: {len(result)} 条 (仅 ai_generated)", module="database.momo_words")
         return result
     except Exception as e:
+        err_lower = str(e).lower()
+        if "no such column: content_origin" in err_lower and not _recovery_attempted:
+            _debug_log("检测到旧版 schema 缺少 content_origin，回退兼容查询并继续同步", level="WARNING", module="database.momo_words")
+            c2 = None
+            try:
+                path = db_path or DB_PATH
+                c2 = connection._get_read_conn(path)
+                conn_lock2 = connection._get_singleton_conn_op_lock(c2)
+                if conn_lock2 is not None:
+                    with conn_lock2:
+                        cur2 = c2.cursor()
+                        try:
+                            cur2.execute(fallback_unsynced_sql)
+                            rows2 = cur2.fetchall()
+                            result2 = [connection._row_to_dict(cur2, row) for row in rows2]
+                        finally:
+                            cur2.close()
+                        c2.commit()
+                else:
+                    cur2 = c2.cursor()
+                    try:
+                        cur2.execute(fallback_unsynced_sql)
+                        rows2 = cur2.fetchall()
+                        result2 = [connection._row_to_dict(cur2, row) for row in rows2]
+                    finally:
+                        cur2.close()
+                    c2.commit()
+                for row in result2:
+                    row.setdefault("content_origin", "ai_generated")
+                _debug_log(f"获取未同步笔记完成(兼容模式): {len(result2)} 条", module="database.momo_words")
+                return result2
+            except Exception as compat_error:
+                _debug_log(f"旧版 schema 兼容查询失败: {compat_error}", level="WARNING", module="database.momo_words")
+            finally:
+                try:
+                    if c2 is not None and not connection._is_main_write_singleton_conn(c2):
+                        c2.close()
+                except Exception:
+                    pass
+
         if _is_sqlite_data_corruption_error(e):
             path = db_path or DB_PATH
 

@@ -87,6 +87,7 @@ _needs_sync = False
 _last_write_time = 0.0
 _sync_daemon_thread: Optional[threading.Thread] = None
 _sync_daemon_stop_event = threading.Event()
+_is_shutting_down = False
 
 _main_write_conn_singleton: Any = None
 _main_write_conn_lock = threading.Lock()
@@ -858,6 +859,8 @@ def _sync_daemon() -> None:
 
 def _start_writer_daemon() -> None:
     global _writer_daemon_thread
+    if _is_shutting_down:
+        return
     with _writer_daemon_lock:
         if _writer_daemon_thread is None or not _writer_daemon_thread.is_alive():
             _writer_daemon_stop_event.clear()
@@ -868,6 +871,8 @@ def _start_writer_daemon() -> None:
 
 def _start_sync_daemon() -> None:
     global _sync_daemon_thread
+    if _is_shutting_down:
+        return
     with _writer_daemon_lock:
         if _sync_daemon_thread is None or not _sync_daemon_thread.is_alive():
             _sync_daemon_stop_event.clear()
@@ -881,6 +886,7 @@ def _stop_writer_daemon(timeout_seconds: float = 2.0) -> None:
     _writer_daemon_stop_event.set()
     if _writer_daemon_thread and _writer_daemon_thread.is_alive():
         _writer_daemon_thread.join(timeout=timeout_seconds)
+    _writer_daemon_thread = None
 
 
 def _stop_sync_daemon(timeout_seconds: float = 2.0) -> None:
@@ -888,10 +894,16 @@ def _stop_sync_daemon(timeout_seconds: float = 2.0) -> None:
     _sync_daemon_stop_event.set()
     if _sync_daemon_thread and _sync_daemon_thread.is_alive():
         _sync_daemon_thread.join(timeout=timeout_seconds)
+    _sync_daemon_thread = None
 
 
 def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace") -> bool:
-    _start_writer_daemon()
+    writer_alive = bool(_writer_daemon_thread and _writer_daemon_thread.is_alive())
+    if _is_shutting_down and not writer_alive:
+        _debug_log("系统正在关闭且写线程已停止，拒绝新的写入入队请求", level="WARNING")
+        return False
+    if not _is_shutting_down:
+        _start_writer_daemon()
     item = {"op_type": op_type, "sql": sql, "args": args}
     try:
         _write_queue.put(item, timeout=2.0)
@@ -904,7 +916,12 @@ def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or
 def _queue_batch_write_operation(sql: str, args_list: List[Tuple]) -> bool:
     if not args_list:
         return True
-    _start_writer_daemon()
+    writer_alive = bool(_writer_daemon_thread and _writer_daemon_thread.is_alive())
+    if _is_shutting_down and not writer_alive:
+        _debug_log("系统正在关闭且写线程已停止，拒绝新的批量写入入队请求", level="WARNING")
+        return False
+    if not _is_shutting_down:
+        _start_writer_daemon()
     item = {"op_type": "executemany", "sql": sql, "args_list": args_list}
     try:
         _write_queue.put(item, timeout=2.0)
@@ -915,14 +932,18 @@ def _queue_batch_write_operation(sql: str, args_list: List[Tuple]) -> bool:
 
 
 def init_concurrent_system() -> None:
+    global _is_shutting_down
+    _is_shutting_down = False
     _start_writer_daemon()
     _start_sync_daemon()
     _debug_log("并发系统初始化完成", level="INFO")
 
 
 def cleanup_concurrent_system() -> None:
-    _stop_writer_daemon(timeout_seconds=5.0)
-    _stop_sync_daemon(timeout_seconds=2.0)
+    global _is_shutting_down
+    _is_shutting_down = True
+    _stop_sync_daemon(timeout_seconds=3.0)
+    _stop_writer_daemon(timeout_seconds=8.0)
     _close_main_write_conn_singleton()
     _close_hub_write_conn_singleton()
     _debug_log("并发系统清理完成", level="INFO")
@@ -1165,3 +1186,12 @@ def set_runtime_cloud_credentials(url: Optional[str], token: Optional[str], host
     TURSO_DB_URL = (url or "").strip() or None
     TURSO_AUTH_TOKEN = (token or "").strip() or None
     TURSO_DB_HOSTNAME = (hostname or "").strip() or None
+
+
+def set_runtime_db_paths(main_db_path: Optional[str], hub_db_path: Optional[str] = None) -> None:
+    """Allow outer modules to update runtime DB paths after profile selection."""
+    global DB_PATH, HUB_DB_PATH
+    if main_db_path:
+        DB_PATH = str(main_db_path)
+    if hub_db_path:
+        HUB_DB_PATH = str(hub_db_path)

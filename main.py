@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import importlib
 
 # ==============================================================================
 # EARLY BOOTSTRAP: 用户配置热加载 (彻底消灭 subprocess 多进程套娃)
@@ -45,7 +46,13 @@ from config import (
     MIMO_API_KEY,
     MOMO_TOKEN,
     DATA_DIR,
+    DB_PATH,
+    HUB_DB_PATH,
+    TURSO_DB_URL,
+    TURSO_DB_HOSTNAME,
+    TURSO_AUTH_TOKEN,
 )
+from database import connection as db_connection
 from database.connection import cleanup_concurrent_system, init_concurrent_system
 from database.momo_words import (
     get_local_word_note,
@@ -58,6 +65,7 @@ from database.momo_words import (
     save_ai_word_note,
 )
 from database.schema import init_db
+from database import schema as db_schema
 from database.utils import clean_for_maimemo
 from core.iteration_manager import IterationManager
 from core.log_config import get_full_config
@@ -141,6 +149,27 @@ class StudyFlowManager:
         self.logger = setup_logger(user, environment=self.environment, config_file=self.config_file)
         self.session_id = str(uuid.uuid4())
         self.logger.set_context(session_id=self.session_id)
+
+        # 将最终用户配置显式同步到 database 运行态，避免落到 default 库
+        db_connection.set_runtime_db_paths(DB_PATH, HUB_DB_PATH)
+        db_connection.set_runtime_cloud_credentials(
+            TURSO_DB_URL,
+            TURSO_AUTH_TOKEN,
+            TURSO_DB_HOSTNAME,
+        )
+        db_schema.set_runtime_db_path(DB_PATH)
+
+        active_user = os.getenv("MOMO_USER") or ACTIVE_USER
+        cloud_host = TURSO_DB_HOSTNAME or (TURSO_DB_URL or "")
+        cloud_host = str(cloud_host).replace("https://", "").replace("libsql://", "")
+        cloud_db_name = ""
+        if cloud_host:
+            cloud_db_name = cloud_host.split(".", 1)[0]
+        self.logger.info(
+            f"[Boot] active_user={active_user}, db_path={DB_PATH}, "
+            f"cloud_host={cloud_host or 'local-only'}, cloud_db_name={cloud_db_name or 'n/a'}",
+            module="main",
+        )
 
         self.momo = MaiMemoAPI(MOMO_TOKEN)
         self.ai_client = _build_ai_client()
@@ -251,7 +280,12 @@ def run(environment=None, config_file=None):
         manager.run()
     except KeyboardInterrupt:
         if manager and getattr(manager, "logger", None):
-            manager.logger.info("用户手动退出", module="main")
+            try:
+                manager.logger.info("用户手动退出", module="main")
+            except KeyboardInterrupt:
+                pass
+            except Exception:
+                pass
     except Exception as e:
         if manager and getattr(manager, "logger", None):
             manager.logger.error(f"意外崩溃: {e}", exc_info=True, module="main")
@@ -262,6 +296,23 @@ def run(environment=None, config_file=None):
 
 
 if __name__ == "__main__":
+    # 确保 main.py 早期用户选择后，所有模块拿到同一份最终 config。
+    import config as _runtime_config
+    _runtime_config = importlib.reload(_runtime_config)
+    globals()["ACTIVE_USER"] = _runtime_config.ACTIVE_USER
+    globals()["DB_PATH"] = _runtime_config.DB_PATH
+    globals()["HUB_DB_PATH"] = _runtime_config.HUB_DB_PATH
+    globals()["TURSO_DB_URL"] = _runtime_config.TURSO_DB_URL
+    globals()["TURSO_DB_HOSTNAME"] = _runtime_config.TURSO_DB_HOSTNAME
+    globals()["TURSO_AUTH_TOKEN"] = _runtime_config.TURSO_AUTH_TOKEN
+    db_connection.set_runtime_db_paths(_runtime_config.DB_PATH, _runtime_config.HUB_DB_PATH)
+    db_connection.set_runtime_cloud_credentials(
+        _runtime_config.TURSO_DB_URL,
+        _runtime_config.TURSO_AUTH_TOKEN,
+        _runtime_config.TURSO_DB_HOSTNAME,
+    )
+    db_schema.set_runtime_db_path(_runtime_config.DB_PATH)
+
     parser = argparse.ArgumentParser(description="墨墨背单词AI助记系统")
     parser.add_argument(
         "--env",

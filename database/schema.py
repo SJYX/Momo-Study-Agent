@@ -22,6 +22,16 @@ _table_exists_cache: Dict[str, bool] = {}
 _HUB_INIT_STATE_TTL_SECONDS = int(os.getenv("HUB_INIT_STATE_TTL_SECONDS", "600"))
 _HUB_SCHEMA_VERSION = os.getenv("HUB_SCHEMA_VERSION", "1")
 _hub_init_state_cache: Dict[str, Any] = {"expire_at": 0.0, "state": None}
+_MAIN_INIT_STATE_TTL_SECONDS = int(os.getenv("MAIN_INIT_STATE_TTL_SECONDS", "600"))
+_MAIN_SCHEMA_VERSION = os.getenv("MAIN_SCHEMA_VERSION", "1")
+_main_init_state_cache: Dict[str, Any] = {"expire_at": 0.0, "state": None}
+
+
+def set_runtime_db_path(main_db_path: Optional[str]) -> None:
+    """Allow outer modules to update runtime main DB path after profile selection."""
+    global DB_PATH
+    if main_db_path:
+        DB_PATH = str(main_db_path)
 
 
 def _get_table_exists_cache() -> Dict[str, bool]:
@@ -32,6 +42,56 @@ def _hub_init_state_path() -> str:
     marker_dir = os.path.join(DATA_DIR, "db_init_markers")
     os.makedirs(marker_dir, exist_ok=True)
     return os.path.join(marker_dir, "hub_init_state.json")
+
+
+def _main_init_state_path() -> str:
+    marker_dir = os.path.join(DATA_DIR, "db_init_markers")
+    os.makedirs(marker_dir, exist_ok=True)
+    return os.path.join(marker_dir, "main_init_state.json")
+
+
+def _load_main_init_state(force_refresh: bool = False) -> Optional[dict]:
+    now = time.time()
+    if not force_refresh and _main_init_state_cache.get("state") and now < _main_init_state_cache.get("expire_at", 0.0):
+        return _main_init_state_cache["state"]
+
+    path = _main_init_state_path()
+    if not os.path.exists(path):
+        _main_init_state_cache["state"] = None
+        _main_init_state_cache["expire_at"] = now + _MAIN_INIT_STATE_TTL_SECONDS
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if isinstance(state, dict):
+            _main_init_state_cache["state"] = state
+            _main_init_state_cache["expire_at"] = now + _MAIN_INIT_STATE_TTL_SECONDS
+            return state
+    except Exception as e:
+        _debug_log(f"读取主库初始化状态失败: {e}", level="WARNING", module="database.schema")
+
+    _main_init_state_cache["state"] = None
+    _main_init_state_cache["expire_at"] = now + _MAIN_INIT_STATE_TTL_SECONDS
+    return None
+
+
+def _save_main_init_state(state: dict) -> None:
+    path = _main_init_state_path()
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+        _main_init_state_cache["state"] = state
+        _main_init_state_cache["expire_at"] = time.time() + _MAIN_INIT_STATE_TTL_SECONDS
+    except Exception as e:
+        _debug_log(f"保存主库初始化状态失败: {e}", level="WARNING", module="database.schema")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 def _load_hub_init_state(force_refresh: bool = False) -> Optional[dict]:
@@ -95,6 +155,20 @@ def _hub_init_state_is_fresh(hub_fp: str) -> bool:
     return (time.time() - last_success_at) <= _HUB_INIT_STATE_TTL_SECONDS
 
 
+def _main_init_state_is_fresh(main_fp: str) -> bool:
+    state = _load_main_init_state()
+    if not state:
+        return False
+    if state.get("main_fp") != main_fp:
+        return False
+    if state.get("schema_version") != _MAIN_SCHEMA_VERSION:
+        return False
+    last_success_at = float(state.get("last_success_at", 0.0) or 0.0)
+    if not last_success_at:
+        return False
+    return (time.time() - last_success_at) <= _MAIN_INIT_STATE_TTL_SECONDS
+
+
 def _get_db_init_marker_path(db_type: str, db_fingerprint: Optional[str] = None) -> str:
     marker_dir = os.path.join(DATA_DIR, "db_init_markers")
     os.makedirs(marker_dir, exist_ok=True)
@@ -125,6 +199,21 @@ def _check_table_exists(cursor: Any, table_name: str, db_type: str = "main", cac
     exists = cursor.fetchone() is not None
     _table_exists_cache[cache_key] = exists
     return exists
+
+
+def _get_table_columns(cursor: Any, table_name: str) -> set:
+    try:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        rows = cursor.fetchall()
+        cols = set()
+        for row in rows:
+            try:
+                cols.add(str(row[1]))
+            except Exception:
+                pass
+        return cols
+    except Exception:
+        return set()
 
 
 def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
@@ -172,7 +261,7 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
         "error_msg TEXT, ai_results_json TEXT)"
     )
 
-    for t, c, d in [
+    pending_columns = [
         ("ai_word_notes", "it_level", "INTEGER DEFAULT 0"),
         ("ai_word_notes", "it_history", "TEXT"),
         ("ai_word_notes", "prompt_tokens", "INTEGER DEFAULT 0"),
@@ -189,13 +278,21 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
         ("ai_word_notes", "sync_status", "INTEGER DEFAULT 0"),
         ("ai_word_notes", "updated_at", "TIMESTAMP"),
         ("processed_words", "updated_at", "TIMESTAMP"),
-    ]:
+    ]
+    table_columns_cache: Dict[str, set] = {}
+    for t, c, d in pending_columns:
+        existing_cols = table_columns_cache.get(t)
+        if existing_cols is None:
+            existing_cols = _get_table_columns(cur, t)
+            table_columns_cache[t] = existing_cols
+        if c in existing_cols:
+            continue
         try:
             cur.execute(f"ALTER TABLE {t} ADD COLUMN {c} {d}")
+            existing_cols.add(c)
             _debug_log(f"列添加成功: {t}.{c}", module="database.schema")
         except Exception as e:
-            if "duplicate column name" not in str(e).lower():
-                _debug_log(f"列添加失败: {t}.{c} -> {e}", level="WARNING", module="database.schema")
+            _debug_log(f"列添加失败: {t}.{c} -> {e}", level="WARNING", module="database.schema")
 
     if skip_migrations:
         return
@@ -281,29 +378,63 @@ def init_db(db_path: Optional[str] = None) -> None:
     if is_cloud_configured:
         try:
             main_fp = _main_db_fingerprint(path)
-            if _is_db_initialized("main", main_fp):
-                _debug_log("云端数据库已初始化（通过标记文件），跳过检查", module="database.schema")
+            if _main_init_state_is_fresh(main_fp):
+                _debug_log("主库已在有效缓存窗口内初始化，跳过重复 schema 校验", module="database.schema")
+                hub_start = time.time()
+                hub_ok = init_users_hub_tables()
+                if hub_ok:
+                    _debug_log("Hub 数据库初始化完成", start_time=hub_start, module="database.schema")
+                else:
+                    _debug_log("Hub 数据库初始化失败（已记录原因）", start_time=hub_start, level="WARNING", module="database.schema")
+                return
+
+            has_marker = _is_db_initialized("main", main_fp)
+            if has_marker:
+                _debug_log("云端数据库已初始化（通过标记文件），执行轻量 schema 校验", module="database.schema")
+
+            replica_file_missing = not os.path.exists(path)
+            replica_meta_missing = not os.path.exists(f"{path}-info")
+            if replica_file_missing or replica_meta_missing:
+                _debug_log(
+                    "首次同步云端数据库到本地副本，可能需要一些时间，请耐心等待...",
+                    level="INFO",
+                    module="database.schema",
+                )
+
+            cloud_start = time.time()
+            if is_main_db:
+                cc = connection._get_main_write_conn_singleton(do_sync=False)
             else:
-                cloud_start = time.time()
-                if is_main_db:
-                    cc = connection._get_main_write_conn_singleton(do_sync=False)
-                else:
-                    cc = connection._get_conn(path, do_sync=False)
-                _debug_log("云端数据库连接完成", start_time=cloud_start, module="database.schema")
+                cc = connection._get_conn(path, do_sync=False)
+            _debug_log("云端数据库连接完成", start_time=cloud_start, module="database.schema")
+            _debug_log("开始执行主库 schema 校验与补齐...", module="database.schema")
 
-                ccur = cc.cursor()
-                table_exists = _check_table_exists(ccur, "processed_words", "main", cache_scope=main_fp)
+            ccur = cc.cursor()
+            table_exists = _check_table_exists(ccur, "processed_words", "main", cache_scope=main_fp)
 
-                with connection._main_write_conn_op_lock:
-                    _create_tables(ccur, skip_migrations=True)
-                    cc.commit()
+            schema_start = time.time()
+            with connection._main_write_conn_op_lock:
+                _create_tables(ccur, skip_migrations=True)
+                cc.commit()
 
-                if table_exists:
-                    _debug_log("云端数据库 schema 校验与补齐完成（跳过数据回填）", module="database.schema")
-                else:
-                    _debug_log("云端数据库存储初始化完成（跳过迁移）", module="database.schema")
+            if table_exists:
+                _debug_log("云端数据库 schema 校验与补齐完成（跳过数据回填）", start_time=schema_start, module="database.schema")
+            else:
+                _debug_log("云端数据库存储初始化完成（跳过迁移）", start_time=schema_start, module="database.schema")
 
-                _mark_db_initialized("main", main_fp)
+            if replica_file_missing or replica_meta_missing:
+                _debug_log("云端数据库本地副本就绪", start_time=cloud_start, level="INFO", module="database.schema")
+
+            _mark_db_initialized("main", main_fp)
+            _save_main_init_state(
+                {
+                    "main_fp": main_fp,
+                    "schema_version": _MAIN_SCHEMA_VERSION,
+                    "last_success_at": time.time(),
+                    "last_checked_at": time.time(),
+                    "mode": "cloud",
+                }
+            )
         except Exception as e:
             _debug_log(f"云端数据库初始化失败 (可能网络不通或凭据过期): {e}", start_time=start_time, level="WARNING", module="database.schema")
     else:
@@ -314,6 +445,16 @@ def init_db(db_path: Optional[str] = None) -> None:
             lc.commit()
             lc.close()
             _debug_log("本地数据库初始化/迁移完成", start_time=start_time, module="database.schema")
+            main_fp = _main_db_fingerprint(path)
+            _save_main_init_state(
+                {
+                    "main_fp": main_fp,
+                    "schema_version": _MAIN_SCHEMA_VERSION,
+                    "last_success_at": time.time(),
+                    "last_checked_at": time.time(),
+                    "mode": "local",
+                }
+            )
         except Exception as e:
             _debug_log(f"本地数据库初始化失败: {e}", start_time=start_time, level="WARNING", module="database.schema")
 
