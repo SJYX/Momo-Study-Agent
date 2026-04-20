@@ -9,10 +9,12 @@
 - 正常业务日志使用 `get_logger()`。
 - 需要结构化输出时，保持 `module` 字段稳定。
 - 不要在核心业务里用 `print()` 替代日志。
+- 终端面向用户的文案优先用可操作语句；内部排障细节（如状态码、入队命中）优先放 `DEBUG`。
 
 ## 核心能力
 
-- 结构化输出：`StructuredFormatter`
+- 结构化输出：`StructuredFormatter`（文件）
+- 控制台可读输出：`[LEVEL] message`（终端）
 - 异步记录：`AsyncLogger`
 - 性能耗时：`log_performance()`
 - 初始化入口：`setup_logger()`

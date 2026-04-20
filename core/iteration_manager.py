@@ -40,21 +40,21 @@ class IterationManager:
         user_stats = filter._get_user_stats()
         dynamic_threshold = filter.get_dynamic_threshold(user_stats)
 
-        self.logger.info(f"用户统计: {user_stats}", module="iteration_manager", function="run_iteration")
-        self.logger.info(f"动态阈值: {dynamic_threshold}", module="iteration_manager", function="run_iteration")
+        self.logger.debug(f"用户统计: {user_stats}", module="iteration_manager", function="run_iteration")
+        self.logger.debug(f"动态阈值: {dynamic_threshold}", module="iteration_manager", function="run_iteration")
 
         # 按分数获取薄弱词（推荐分数 >= 50）
         weak_words = filter.get_weak_words_by_score(min_score=50.0, limit=100)
 
         # 备选 1：如果按分数没抓到，尝试按类别抓取紧急和一般词
         if not weak_words:
-            self.logger.info("  [Fallback] 高薄弱分筛选结果为空，尝试按分类筛选...", module="iteration_manager", function="run_iteration")
+            self.logger.debug("  [Fallback] 高薄弱分筛选结果为空，尝试按分类筛选...", module="iteration_manager", function="run_iteration")
             categorized = filter.get_weak_words_by_category(dynamic_threshold)
             weak_words = categorized['urgent'] + categorized['normal']
 
         # 备选 2：如果还是没抓到，使用底层的直接数据库查询（忽略 review_count 门槛）
         if not weak_words:
-            self.logger.info("  [Fallback] 分类筛选结果为空，尝试基础数据库扫描...", module="iteration_manager", function="run_iteration")
+            self.logger.debug("  [Fallback] 分类筛选结果为空，尝试基础数据库扫描...", module="iteration_manager", function="run_iteration")
             weak_words = self._get_weak_words_from_db(dynamic_threshold)
 
         if not weak_words:
@@ -76,7 +76,7 @@ class IterationManager:
             spell = w["spelling"]
             it_level = w.get("it_level", 0)
 
-            self.logger.info(f"处理 [{spell}] (Level {it_level})...", module="iteration_manager", function="run_iteration")
+            self.logger.debug(f"处理 [{spell}] (Level {it_level})...", module="iteration_manager", function="run_iteration")
 
             try:
                 if it_level == 0:
@@ -90,11 +90,11 @@ class IterationManager:
                     current_fam = w["familiarity_short"]
 
                     if current_fam <= last_fam + 0.1:  # 几乎没进步或退步
-                        self.logger.info(f"  [Re-generate] {spell} 熟悉度无明显提升 ({last_fam} -> {current_fam})，触发强力重炼", module="iteration_manager", function="run_iteration")
+                        self.logger.debug(f"  [Re-generate] {spell} 熟悉度无明显提升 ({last_fam} -> {current_fam})，触发强力重炼", module="iteration_manager", function="run_iteration")
                         self._handle_level_2_refinement(w)
                         stats['success'] += 1
                     else:
-                        self.logger.info(f"  [Wait] {spell} 熟悉度有提升 ({last_fam} -> {current_fam})，保持观察", module="iteration_manager", function="run_iteration")
+                        self.logger.debug(f"  [Wait] {spell} 熟悉度有提升 ({last_fam} -> {current_fam})，保持观察", module="iteration_manager", function="run_iteration")
                         stats['skipped'] += 1
 
                 stats['processed'] += 1
@@ -136,7 +136,7 @@ class IterationManager:
         new_words = [w for w in self.notepad_additions if w not in existing_words]
         
         if not new_words:
-            self.logger.info("云词本包含所有薄弱词，无需追加。", module="iteration_manager", function="_sync_weak_words_notepad")
+            self.logger.debug("云词本包含所有薄弱词，无需追加。", module="iteration_manager", function="_sync_weak_words_notepad")
             return
             
         merged_content = "\n".join(existing_words + new_words)

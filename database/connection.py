@@ -900,7 +900,7 @@ def _stop_sync_daemon(timeout_seconds: float = 2.0) -> None:
 def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace") -> bool:
     writer_alive = bool(_writer_daemon_thread and _writer_daemon_thread.is_alive())
     if _is_shutting_down and not writer_alive:
-        _debug_log("系统正在关闭且写线程已停止，拒绝新的写入入队请求", level="WARNING")
+        _debug_log("系统正在关闭且写线程已停止，拒绝新的写入入队请求", level="DEBUG")
         return False
     if not _is_shutting_down:
         _start_writer_daemon()
@@ -918,7 +918,7 @@ def _queue_batch_write_operation(sql: str, args_list: List[Tuple]) -> bool:
         return True
     writer_alive = bool(_writer_daemon_thread and _writer_daemon_thread.is_alive())
     if _is_shutting_down and not writer_alive:
-        _debug_log("系统正在关闭且写线程已停止，拒绝新的批量写入入队请求", level="WARNING")
+        _debug_log("系统正在关闭且写线程已停止，拒绝新的批量写入入队请求", level="DEBUG")
         return False
     if not _is_shutting_down:
         _start_writer_daemon()

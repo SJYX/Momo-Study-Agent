@@ -204,7 +204,7 @@ class StudyFlowManager:
     def run(self):
         while True:
             # 刷新任务数量
-            self.logger.info("[菜单] 正在刷新任务状态...", module="main")
+            self.logger.debug("[菜单] 正在刷新任务状态...", module="main")
             today_items = []
             future_items = []
             try:

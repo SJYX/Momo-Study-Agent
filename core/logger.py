@@ -19,6 +19,7 @@ import re
 
 # Global singleton for ContextLogger
 _global_context_logger = None
+_LOGGER_NAME = "momo"
 
 def force_utf8_console():
     """Force UTF-8 encoding for console output on Windows."""
@@ -470,6 +471,8 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
     env_level_name = os.getenv("LOG_LEVEL")
     configured_level_name = env_level_name or config.get("log_level", "INFO")
     global_level = level_map.get(str(configured_level_name).upper(), logging.INFO)
+    console_level = level_map.get(str(config.get("console_level", "INFO")).upper(), global_level)
+    file_level = level_map.get(str(config.get("file_level", "DEBUG")).upper(), logging.DEBUG)
 
     # 强制控制台使用UTF-8编码（Windows）
     if config.get("force_utf8_console", True):
@@ -487,8 +490,9 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
 
     log_file = os.path.join(config["log_dir"], f"{username}.log")
 
-    # 获取根日志记录器
-    logger = logging.getLogger()
+    # 使用项目命名 logger，避免 root logger 混入第三方噪音
+    logger = logging.getLogger(_LOGGER_NAME)
+    logger.propagate = False
     logger.setLevel(global_level)
 
     # 检查并更新文件处理器（支持热切换用户）
@@ -543,14 +547,18 @@ def setup_logger(username: str, log_dir: str = None, use_structured: bool = None
         encoding=config["encoding"]
     )
     file_handler.setFormatter(file_formatter)
-    file_handler.setLevel(logging.NOTSET)
+    file_handler.setLevel(file_level)
     logger.addHandler(file_handler)
 
     # Handler 2: 控制台输出
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(logging.NOTSET)
+    console_handler.setLevel(console_level)
     logger.addHandler(console_handler)
+
+    # 降噪第三方库日志，避免污染终端用户视图
+    for noisy_logger in ("urllib3", "requests", "httpx", "httpcore"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     # 设置异步日志
     async_logger = None
@@ -636,5 +644,7 @@ def get_logger():
     if _global_context_logger is None:
         # If setup_logger hasn't been called yet, create a basic ContextLogger
         # This ensures get_logger() works even if called before setup_logger()
-        _global_context_logger = ContextLogger(logging.getLogger())
+        base = logging.getLogger(_LOGGER_NAME)
+        base.propagate = False
+        _global_context_logger = ContextLogger(base)
     return _global_context_logger

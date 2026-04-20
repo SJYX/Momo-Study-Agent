@@ -50,14 +50,14 @@ set LOG_LEVEL=DEBUG && python main.py
 
 ```bash
 # 格式: "module1:LEVEL1,module2:LEVEL2,..."
-export LOG_MODULE_LEVELS="db_manager:WARNING,mimo:DEBUG,maimemo_api:ERROR"
+export LOG_MODULE_LEVELS="database.connection:WARNING,sync_manager:DEBUG,maimemo_api:ERROR"
 ```
 
 **示例：**
 ```bash
-# 仅调试 db_manager 模块，其他模块用全局 INFO 级别
+# 仅调试 sync_manager 模块，其他模块用全局 INFO 级别
 export LOG_LEVEL=INFO
-export LOG_MODULE_LEVELS="db_manager:DEBUG"
+export LOG_MODULE_LEVELS="sync_manager:DEBUG"
 python main.py
 ```
 
@@ -201,11 +201,11 @@ LOG_MODULE_LEVELS=db_manager:DEBUG,mimo:WARNING
 3. **环境变量大小写** - 推荐使用大写，但也支持小写（自动转换）
 4. **单一入口** - 日志级别由 `core/logger.py` 统一解释和过滤，不再从 `config.py` 读取冗余副本
 5. **性能调优** - 生产环境建议 WARNING 以上，开发环境可用 DEBUG
-6. **日志持久化** - 所有日志同时输出到控制台和日志文件
+6. **日志持久化** - 控制台和文件可配置不同级别（`console_level` / `file_level`）
 
 ## 实现对应
 
-- `StructuredFormatter`：控制台/文件输出的结构化 JSON 格式。
+- `StructuredFormatter`：文件输出的结构化 JSON 格式。
 - `AsyncLogger`：`use_async=True` 时启用的异步队列。
 - `setup_logger()`：统一初始化入口，承接环境配置。
 - `log_performance()`：当前实现以显式传入 logger 或 logger 工厂为主。

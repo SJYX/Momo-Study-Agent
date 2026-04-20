@@ -265,7 +265,7 @@ class StudyWorkflow:
             )
 
     def _run_ai_batch(self, batch_no, total_batches, batch_spells):
-        self.logger.info(
+        self.logger.debug(
             f"[Pipeline] {self._format_words_preview(batch_spells)} - 1. 开始请求 AI 助记 (批次 {batch_no}/{total_batches})"
         )
         results, metadata = self.ai_client.generate_mnemonics(batch_spells)
@@ -335,7 +335,7 @@ class StudyWorkflow:
                     futures.append((fut, batch, start_pos, batch_no, batch_spells))
                     start_pos += len(batch)
 
-                self.logger.info(f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。")
+                self.logger.debug(f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。", module="study_workflow")
 
                 for fut, batch, start_pos, batch_no, batch_spells in futures:
                     results, metadata = fut.result()

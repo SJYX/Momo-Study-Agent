@@ -136,7 +136,7 @@ class SyncManager:
                     self._defer_maimemo_conflict(item, "当前状态已是冲突态")
                     continue
                 if current_status != 0:
-                    self.logger.info(f"ℹ️ {spell} 当前sync_status={current_status}，跳过重复同步")
+                    self.logger.debug(f"[内部] {spell} 当前sync_status={current_status}，跳过重复同步", module="sync_manager")
                     continue
 
                 try:
@@ -166,7 +166,7 @@ class SyncManager:
                             self.logger.warning(f"⚠️ {spell} 已同步，但缓存更新失败: {cache_error}")
                         ok = mark_note_synced(voc_id)
                         if not ok:
-                            self.logger.warning(f"⚠️ {spell} sync_status=1 写回未命中")
+                            self.logger.debug(f"[内部] {spell} sync_status=1 写回未命中", module="sync_manager")
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
                     elif sync_status == 2:
                         try:
@@ -179,7 +179,7 @@ class SyncManager:
                             self.logger.warning(f"⚠️ {spell} 冲突态缓存更新失败: {cache_error}")
                         ok = set_note_sync_status(voc_id, 2)
                         if not ok:
-                            self.logger.warning(f"⚠️ {spell} sync_status=2 写回未命中")
+                            self.logger.debug(f"[内部] {spell} sync_status=2 写回未命中", module="sync_manager")
                         self.logger.warning(f"[Pipeline] ⚠️ {spell} - 4. 墨墨同步提示: 发现已存在的不一致释义，已标记冲突")
                     else:
                         reason = ""
@@ -190,7 +190,7 @@ class SyncManager:
                         if reason in {"invalid_res_id", "common_invalid_res_id"}:
                             ok = set_note_sync_status(voc_id, 2)
                             if not ok:
-                                self.logger.warning(f"⚠️ {spell} 非法 voc_id 状态写回未命中")
+                                self.logger.debug(f"[内部] {spell} 非法 voc_id 状态写回未命中", module="sync_manager")
                             self.logger.warning(f"⚠️ {spell} voc_id={voc_id} 在墨墨侧非法，已标记为冲突并停止重试")
                             continue
 
