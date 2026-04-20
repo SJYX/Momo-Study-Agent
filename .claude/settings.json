@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "E:\\MOMO_Script"
+    ],
+    "allow": [
+      "Bash(python tools/check_docs_quality.py)"
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+requests
+google-genai
+python-dotenv
+pytest
+pytest-mock
+json-repair
+libsql
+PyYAML

@@ -1,0 +1,5 @@
+custom_feature:
+  enabled: true
+  threshold: 0.5
+log_dir: custom_logs
+use_structured: false
