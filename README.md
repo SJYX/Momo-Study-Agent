@@ -11,7 +11,6 @@
 ├── core/         # 业务核心：AI、同步、主流程、日志、用户与迭代引擎
 │   ├── config_wizard.py         # 首次配置引导与交互
 │   ├── constants.py             # 全局常量定义
-│   ├── db_manager.py            # 旧版数据库管理（已拆分，兼容保留）
 │   ├── exceptions.py            # 业务异常类型
 │   ├── gemini_client.py         # Gemini AI 客户端
 │   ├── iteration_manager.py     # 智能迭代与批处理调度

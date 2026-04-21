@@ -125,7 +125,7 @@ flowchart TD
 2. `core/profile_manager.py`：理解用户选择与现有用户分支。
 3. `core/config_wizard.py`：分析新用户创建、云数据库启用与 Hub 初始化分支。
 4. `main.py`：查看运行时菜单与主流程分支。
-5. `database/connection.py` + `database/momo_words.py`：掌握单例连接、写队列、云/本地写入分支与 `sync_databases()` 实现（`core/db_manager.py` 是兼容 facade，不推荐读）。
+5. `database/connection.py` + `database/momo_words.py`：掌握单例连接、写队列、云/本地写入分支与 `sync_databases()` 实现（`core/db_manager.py` 已于 2026-04-22 删除；老调用点见 `database/legacy.py` 门面）。
 6. `core/iteration_manager.py`：理解 AI 迭代决策分支。
 
 ---

@@ -35,7 +35,7 @@ Momo Study Agent 是一个基于墨墨背单词 OpenAPI 的**多用户 AI 助记
 | 持久层 | `database/hub_users.py` | Hub 用户元数据与加密凭据 |
 | 持久层 | `database/schema.py` | 建表、`ALTER TABLE` 平滑升级、Hub 初始化 |
 | 持久层 | `database/utils.py` | 加密、时区时间戳、错误分类 |
-| 兼容 | `core/db_manager.py` | 3972 行兼容 facade，**新代码请直连 `database/` 子模块** |
+| 持久层（可选门面）| `database/legacy.py` | `from database.legacy import X` 作为老 `core.db_manager` 调用点的过渡 drop-in（re-export 所有子模块） |
 | 日志 | `core/logger.py` + `core/log_config.py` | 结构化 JSON、异步写入、性能统计 |
 | 体检 | `tools/preflight_check.py` | 启动前连通性 + 凭据校验（text/json 双输出） |
 

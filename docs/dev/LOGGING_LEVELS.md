@@ -196,10 +196,7 @@ LOG_MODULE_LEVELS=db_manager:DEBUG,mimo:WARNING
 
 ## 注意事项
 
-1. **模块名匹配** - `LOG_MODULE_LEVELS` 中的模块名应与代码中 `module` 参数一致。当前代码库并存两套 key：
-   - 新代码（推荐）：`database.momo_words`、`database.connection`、`database.schema`、`database.hub_users`、`database.utils`
-   - 旧 facade（`core/db_manager.py`）：沿用 `db_manager`
-   - 示例：`LOG_MODULE_LEVELS="database.momo_words:DEBUG,database.connection:INFO"`
+1. **模块名匹配** - `LOG_MODULE_LEVELS` 中的模块名应与代码中 `module` 参数一致。当前代码库使用：`database.momo_words`、`database.connection`、`database.schema`、`database.hub_users`、`database.utils`（注：`core/db_manager.py` 已于 2026-04-22 删除，过去用过的 `db_manager` module key 不再出现；如沿用 `database.legacy` 门面，其内部仍走 `database.*` module key）。示例：`LOG_MODULE_LEVELS="database.momo_words:DEBUG,database.connection:INFO"`
 2. **优先级顺序** - 模块级别 > 全局级别 > 默认 INFO
 3. **环境变量大小写** - 推荐使用大写，但也支持小写（自动转换）
 4. **单一入口** - 日志级别由 `core/logger.py` 统一解释和过滤，不再从 `config.py` 读取冗余副本

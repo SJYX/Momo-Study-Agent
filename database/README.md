@@ -2,7 +2,7 @@
 
 This package splits the old `db_manager.py` into clear layers while preserving runtime behavior and improving safety in Embedded Replica mode.
 
-> `core/db_manager.py` remains as a 3972-line compatibility facade for legacy callers, but all new code should depend on the submodules below directly.
+> `core/db_manager.py` has been removed (2026-04-22). Legacy callers can import from `database/legacy.py`, which re-exports all symbols from the five submodules below as a drop-in facade. New code should depend on the specific submodules directly.
 
 ## Why This Refactor
 

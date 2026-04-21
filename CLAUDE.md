@@ -24,7 +24,7 @@
 | AI 生成 | `core/gemini_client.py` / `core/mimo_client.py` | 复用 `requests.Session` |
 | 智能迭代 | `core/iteration_manager.py` + `core/weak_word_filter.py` | 薄弱词必须走多维评分 |
 | 同步后台 | `core/sync_manager.py` | 墨墨释义同步队列 |
-| 数据库读写 | `database/momo_words.py`（业务）、`database/connection.py`（连接+写队列+同步守护）、`database/schema.py`（表） | **新代码直连 `database/`**；`core/db_manager.py` 是 3972 行兼容 facade，只读不写 |
+| 数据库读写 | `database/momo_words.py`（业务）、`database/connection.py`（连接+写队列+同步守护）、`database/schema.py`（表） | **直连 `database/`**；老调用点可通过 `database.legacy` 过渡 |
 | 配置加载 | `config.py` | `ACTIVE_USER` 是**模块级全局**，改动影响面大 |
 | 多用户 profile | `core/profile_manager.py` / `core/config_wizard.py` | 凭据永远只写 `data/profiles/<user>.env` |
 | 日志 | `core/logger.py` + `core/log_config.py` | 业务层禁 `print()` |

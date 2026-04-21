@@ -10,7 +10,7 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 
 1. `main.py`：主流程编排，负责菜单、任务分发、退出收尾。
 2. `core/study_workflow.py`：业务核心总线（AI 并发、任务过滤、批量落库投递）。
-3. `database/connection.py` + `database/momo_words.py`：持久层读写入口（单例连接 + 写队列 + SQL 业务函数）。注：`core/db_manager.py` 是 3972 行兼容 facade，**新代码请直连 `database/` 子模块**。
+3. `database/connection.py` + `database/momo_words.py`：持久层读写入口（单例连接 + 写队列 + SQL 业务函数）。老调用点可通过 `database/legacy.py` 门面过渡。
 4. `core/maimemo_api.py`：墨墨 API 封装与限流控制。
 5. `docs/dev/AUTO_SYNC.md`：同步链路、前后台边界、退出策略。
 
@@ -25,10 +25,12 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 > 本节每次发版或大 PR 合入后更新；`CLAUDE.md` 的「当前状态」以此为准。
 
 - **版本**：1.0.0；Python 3.12+。
-- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；`core/db_manager.py` 保留为 3972 行兼容 facade，新代码直接依赖 `database/` 包的 5 个子模块。
+- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；**`core/db_manager.py` 已于 2026-04-22 移除**——所有持久层操作一律经 `database/` 包 5 个子模块（老调用点可经 `database/legacy.py` 门面过渡）。
 - **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定（feat/high-perf-sync 已合回 main）。
 - **正在进行**：Web 前端界面初版（`feat/web-ui` 分支，方案见 `docs/dev/WEB_UI_PLAN.md`）。
-- **最近变更**：2026-04-21 文档大清理（归档 8 份已完成 PHASE/FIX 文档、architecture 三合一为 `ARCHITECTURE.md`、`CLAUDE.md` 升级为 AI 会话首页）。
+- **最近变更**：
+  - 2026-04-22 彻底删除 `core/db_manager.py`（3972 行僵尸副本）；顺带修 `database/legacy.py` + `database/hub_users.py` 的 `__future__` 位置 bug。
+  - 2026-04-21 文档大清理（归档 8 份已完成 PHASE/FIX 文档、architecture 三合一为 `ARCHITECTURE.md`、`CLAUDE.md` 升级为 AI 会话首页）。
 - **近期不碰**：`docs/prompts/`（生产 prompt）、`docs/api/`（API 参考）。
 
 ## 1. 核心架构与边界
@@ -52,13 +54,13 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
   - 职责：隔离终端 UI 输入输出交互，统一状态格式呈现。
 - 后台同步：`core/sync_manager.py`
   - 职责：高性能后台同步队列维护、墨墨同步网络调度及冲突回写处理。
-- 持久层：`database/` 包（**不再是 `core/db_manager.py`**）
+- 持久层：`database/` 包（5 个子模块）
   - `database/connection.py`：Embedded Replica 单例连接、写队列、后台写守护线程、后台云同步线程。
   - `database/momo_words.py`：主库业务 SQL（word notes、processed、progress、`sync_databases` / `sync_hub_databases`）。
   - `database/hub_users.py`：Hub 用户业务 SQL。
   - `database/schema.py`：建表与迁移（`_create_tables` / `init_db`）。
   - `database/utils.py`：加密、时间戳、错误分类等底层工具。
-  - `core/db_manager.py`：3972 行**兼容 facade**，只为老调用点留命；新代码统一走上面 5 个子模块。
+  - `database/legacy.py`：兼容门面，re-export 全部子模块——老调用点可 `from database.legacy import X` 过渡（新代码请直接依赖具体子模块）。
   - 具体运行期铁律（游标协议、自愈、PRAGMA、批量重试）见 [`../../database/README.md`](../../database/README.md)。
 - API 层：`core/maimemo_api.py`
   - 职责：墨墨 OpenAPI 封装；频控、重试、超时和错误归一。

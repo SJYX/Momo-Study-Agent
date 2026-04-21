@@ -56,7 +56,7 @@ from config import DB_PATH
 conn = _get_read_conn(DB_PATH)  # 自动路由：有云端配置→Embedded Replica，无则纯本地 SQLite
 ```
 
-> 旧代码中 `from core.db_manager import _get_conn` 的写法仍可用（走兼容 facade），但**新代码请直接从 `database/` 子模块导入**。详细运行期守则见 [`../../database/README.md`](../../database/README.md) 的 Runtime Iron Rules。
+> `core/db_manager.py` 已于 2026-04-22 删除；老调用点如仍在用 `from core.db_manager import X` 写法，请改为 `from database.legacy import X`（drop-in 过渡门面），或**直接从 `database/` 具体子模块导入**。运行期守则见 [`../../database/README.md`](../../database/README.md) 的 Runtime Iron Rules。
 
 ### Turso 云数据库配置
 
