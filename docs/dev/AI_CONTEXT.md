@@ -9,15 +9,27 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 如果你是第一次接触本仓库，请按这个顺序理解系统：
 
 1. `main.py`：主流程编排，负责菜单、任务分发、退出收尾。
-2. `core/db_manager.py`：唯一 SQL 写入入口，承接本地持久化和同步状态机。
-3. `core/maimemo_api.py`：墨墨 API 封装与限流控制。
-4. `docs/dev/AUTO_SYNC.md`：同步链路、前后台边界、退出策略。
+2. `core/study_workflow.py`：业务核心总线（AI 并发、任务过滤、批量落库投递）。
+3. `database/connection.py` + `database/momo_words.py`：持久层读写入口（单例连接 + 写队列 + SQL 业务函数）。注：`core/db_manager.py` 是 3972 行兼容 facade，**新代码请直连 `database/` 子模块**。
+4. `core/maimemo_api.py`：墨墨 API 封装与限流控制。
+5. `docs/dev/AUTO_SYNC.md`：同步链路、前后台边界、退出策略。
 
 目标不是先记住所有细节，而是先抓住三件事：
 
 - 主线程只做“快路径”，网络和重活在后台。
 - 数据先落本地再异步上云，任何时刻都要可恢复。
 - Hub 库与个人库严格隔离，不混用职责和数据。
+
+## 0.5 当前状态快照
+
+> 本节每次发版或大 PR 合入后更新；`CLAUDE.md` 的「当前状态」以此为准。
+
+- **版本**：1.0.0；Python 3.12+。
+- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；`core/db_manager.py` 保留为 3972 行兼容 facade，新代码直接依赖 `database/` 包的 5 个子模块。
+- **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定（feat/high-perf-sync 已合回 main）。
+- **正在进行**：Web 前端界面初版（`feat/web-ui` 分支，方案见 `docs/dev/WEB_UI_PLAN.md`）。
+- **最近变更**：2026-04-21 文档大清理（归档 8 份已完成 PHASE/FIX 文档、architecture 三合一为 `ARCHITECTURE.md`、`CLAUDE.md` 升级为 AI 会话首页）。
+- **近期不碰**：`docs/prompts/`（生产 prompt）、`docs/api/`（API 参考）。
 
 ## 1. 核心架构与边界
 
@@ -40,8 +52,14 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
   - 职责：隔离终端 UI 输入输出交互，统一状态格式呈现。
 - 后台同步：`core/sync_manager.py`
   - 职责：高性能后台同步队列维护、墨墨同步网络调度及冲突回写处理。
-- 持久层：`core/db_manager.py`
-  - 职责：唯一 SQL 写入入口；维护 `sync_status`；处理 SQLite/Turso 双轨行为。
+- 持久层：`database/` 包（**不再是 `core/db_manager.py`**）
+  - `database/connection.py`：Embedded Replica 单例连接、写队列、后台写守护线程、后台云同步线程。
+  - `database/momo_words.py`：主库业务 SQL（word notes、processed、progress、`sync_databases` / `sync_hub_databases`）。
+  - `database/hub_users.py`：Hub 用户业务 SQL。
+  - `database/schema.py`：建表与迁移（`_create_tables` / `init_db`）。
+  - `database/utils.py`：加密、时间戳、错误分类等底层工具。
+  - `core/db_manager.py`：3972 行**兼容 facade**，只为老调用点留命；新代码统一走上面 5 个子模块。
+  - 具体运行期铁律（游标协议、自愈、PRAGMA、批量重试）见 [`../../database/README.md`](../../database/README.md)。
 - API 层：`core/maimemo_api.py`
   - 职责：墨墨 OpenAPI 封装；频控、重试、超时和错误归一。
 - LLM 层：`core/*_client.py`
