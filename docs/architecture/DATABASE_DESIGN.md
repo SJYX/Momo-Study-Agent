@@ -102,6 +102,6 @@ WHERE sync_status = 0 AND content_origin = 'ai_generated'
 
 ## 相关文档
 
-- [DATA_FLOW.md](DATA_FLOW.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
 - [../dev/AUTO_SYNC.md](../dev/AUTO_SYNC.md)
 - [../dev/CONTRIBUTING.md](../dev/CONTRIBUTING.md)

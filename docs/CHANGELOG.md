@@ -2,6 +2,45 @@
 
 记录 Momo Study Agent 项目文档的变更历史。
 
+## 2026-04-21
+
+### 文档大清理（docs/cleanup 分支）
+
+完整方案与执行结果见 [`history/phases/DOCS_CLEANUP_PLAN.md`](history/phases/DOCS_CLEANUP_PLAN.md)。
+
+**归档到 `docs/history/phases/`**（脱离活动目录，AI 会话不再误读为当前任务）：
+- `PHASE_2_WRITE_SIMPLIFICATION.md`、`PHASE_3_SYNC_OPTIMIZATION.md`、`PHASE_4_TESTING_VALIDATION.md`
+- `EMBEDDED_REPLICAS_PHASE_0_2_COMPLETION.md`、`EMBEDDED_REPLICAS_MIGRATION.md`（从 `architecture/` 移入）
+- `OPEN_SOURCE_TRANSITION_PLAN.md`
+- `WAL_CONFLICT_FIX.md`、`CONCURRENCY_REFACTOR.md`（从 `docs/` 根移入）
+- 新增 `history/phases/README.md` 索引，列每份归档的历史意义 + 当前代码替代位置。
+
+**合并与重写：**
+- `architecture/OVERVIEW.md` + `SYSTEM_ARCHITECTURE.md` + `DATA_FLOW.md` 三合一为 `architecture/ARCHITECTURE.md`（含从 CONCURRENCY_REFACTOR 提炼的并发模型段 + 从 EMBEDDED_REPLICAS_MIGRATION 提炼的同步模型段）。
+- `database/README.md` 去掉头部孤悬的次级标题，将游标协议/写事务/GC hack 重组为 Runtime Iron Rules 小节；新增"本地 WAL 并发配置"与"批量写入重试守则"两节，吸收原 WAL_CONFLICT_FIX 的 PRAGMA 精华。
+- `CLAUDE.md`（项目根）从 30 行指针页升级为 ~100 行 AI 会话首页：当前状态 / 模块地图 / 三条红线 / 找东西 / 调试定位 / 常用命令。
+
+**断片修复：**
+- `architecture/LOG_SYSTEM.md`：删除头部 9 行残余"Phase 3 运维优化总结"。
+- `architecture/decision_flow.md`：§7 补齐缺失的大标题与 §7.1 向导分支小节；指向已删文档的链接替换为 `ARCHITECTURE.md`。
+- `dev/AUTO_SYNC.md`：把错位到"本地并发写入配置"节后面的"### Hub 库"挪回"## 同步范围"。
+
+**引用修复（活文档 → `database/` 真实位置）：**
+- `dev/CONTRIBUTING.md`：`_row_to_dict` / `_get_conn` / `get_timestamp_with_tz` / `_create_tables` 导入与归属全部改指到 `database.connection` / `database.utils` / `database.schema`。
+- `dev/LOGGING_LEVELS.md`：3 处 `_debug_log` 导入改 `database.utils`；补充新/旧两套 logger module key 说明。
+- `dev/AUTO_SYNC.md`、`architecture/decision_flow.md`：描述性引用一并指向真实位置。
+- 活文档中保留的 `core/db_manager.py` 说明均明确标注为"兼容 facade，新代码请直连 `database/`"。
+
+**删除：**
+- `docs/DOCUMENT_INDEX.md`（索引漏列 10+ 文件、维护成本高；AI_CONTEXT + CLAUDE + README 已是 SSoT）。
+- `docs/dev/NEW_USER_ZERO_CREDENTIAL_PLAN.md`（5 行纯指针 stub，完整版已在 `history/`）。
+
+**约束精化：**
+- `dev/AI_CONTEXT.md` 顶部新增 §0.5 当前状态快照；§0 与 §2 的持久层引用从单一 `core/db_manager.py` 改为 `database/` 5 子模块分层说明。
+- `dev/AI_CONTEXT.md §6` 重写：§6.1 影响矩阵分"必改"与"视情况改"；§6.2 拆分 commit 级（py_compile + 红线自查）与 PR 级（pytest + 文档同步）检查；§6.3 新增 CLAUDE.md 与 AI_CONTEXT.md 边界声明（防止双 SSoT 漂移）。
+
+**注**：历史文档中 `history/DOCS_OPTIMIZATION_SUMMARY.md` 与 `history/DOCS_COMPLETION_SUMMARY.md` 里仍引用 `DOCUMENT_INDEX.md`，保留不改（它们是 2026-04-12 的时间胶囊，不应追溯修改）。
+
 ## 2026-04-17
 
 ### Embedded Replicas 迁移收口（Phase 3/4）
