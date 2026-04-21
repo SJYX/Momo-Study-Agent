@@ -30,12 +30,8 @@ get_logger().debug("详细耗时: 120ms")
 ### 查询结果映射
 
 ```python
-# ❌ 错误：不要把云连接写法和本地 SQLite 写法混为一谈
-conn.row_factory = sqlite3.Row
-result = dict(row)
-
-# ✅ 正确：使用兼容函数
-from core.db_manager import _row_to_dict
+# 业务代码统一从 database/ 导入：查询结果映射走 _row_to_dict
+from database.connection import _row_to_dict
 cur.execute("SELECT ...")
 row = cur.fetchone()
 result = _row_to_dict(cur, row) if row else None
@@ -43,7 +39,7 @@ result = _row_to_dict(cur, row) if row else None
 
 ### 新增字段
 
-只在 `db_manager._create_tables()` 中添加，并在函数末尾追加兼容升级：
+只在 `database/schema.py` 的 `_create_tables()` 中添加，并在函数末尾追加兼容升级：
 
 ```python
 try:
@@ -55,9 +51,12 @@ except Exception:
 ### 获取连接
 
 ```python
-from core.db_manager import _get_conn, DB_PATH
-conn = _get_conn(DB_PATH)  # 自动路由：有网→Turso，无网→本地 SQLite
+from database.connection import _get_read_conn
+from config import DB_PATH
+conn = _get_read_conn(DB_PATH)  # 自动路由：有云端配置→Embedded Replica，无则纯本地 SQLite
 ```
+
+> 旧代码中 `from core.db_manager import _get_conn` 的写法仍可用（走兼容 facade），但**新代码请直接从 `database/` 子模块导入**。详细运行期守则见 [`../../database/README.md`](../../database/README.md) 的 Runtime Iron Rules。
 
 ### Turso 云数据库配置
 
@@ -83,7 +82,7 @@ python scripts/init_hub.py
 所有数据库时间字段遵循以下规则：
 
 ```python
-from core.db_manager import get_timestamp_with_tz
+from database.utils import get_timestamp_with_tz
 
 # ✓ 正确：带时区的 ISO 8601 格式
 created_at = get_timestamp_with_tz()  # 输出：2026-04-11T14:30:45+08:00

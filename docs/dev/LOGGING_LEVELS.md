@@ -66,7 +66,7 @@ python main.py
 ### 基础调用（默认 DEBUG 级别）
 
 ```python
-from core.db_manager import _debug_log
+from database.utils import _debug_log
 
 # 最简单的调用方式（自动 DEBUG 级别）
 _debug_log("数据库初始化完成")
@@ -196,7 +196,10 @@ LOG_MODULE_LEVELS=db_manager:DEBUG,mimo:WARNING
 
 ## 注意事项
 
-1. **模块名匹配** - `LOG_MODULE_LEVELS` 中的模块名应与代码中 `module` 参数一致
+1. **模块名匹配** - `LOG_MODULE_LEVELS` 中的模块名应与代码中 `module` 参数一致。当前代码库并存两套 key：
+   - 新代码（推荐）：`database.momo_words`、`database.connection`、`database.schema`、`database.hub_users`、`database.utils`
+   - 旧 facade（`core/db_manager.py`）：沿用 `db_manager`
+   - 示例：`LOG_MODULE_LEVELS="database.momo_words:DEBUG,database.connection:INFO"`
 2. **优先级顺序** - 模块级别 > 全局级别 > 默认 INFO
 3. **环境变量大小写** - 推荐使用大写，但也支持小写（自动转换）
 4. **单一入口** - 日志级别由 `core/logger.py` 统一解释和过滤，不再从 `config.py` 读取冗余副本
@@ -221,7 +224,7 @@ LOG_MODULE_LEVELS=db_manager:DEBUG,mimo:WARNING
 
 ```python
 # 在你的模块中导入
-from core.db_manager import _debug_log
+from database.utils import _debug_log
 
 # 在适当位置调用
 _debug_log("模块初始化完成", level="INFO", module="my_module")
@@ -231,7 +234,7 @@ _debug_log("模块初始化完成", level="INFO", module="my_module")
 
 ```python
 # my_module.py
-from core.db_manager import _debug_log as _log
+from database.utils import _debug_log as _log
 
 def log_info(msg, start_time=None):
     _log(msg, start_time=start_time, level="INFO", module="my_module")

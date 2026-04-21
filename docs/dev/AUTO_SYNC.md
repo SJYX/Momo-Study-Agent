@@ -180,6 +180,6 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 
 ## 关键约束
 
-1. `db_manager` 同步函数内部不负责 UI 展示，不直接输出进度条
+1. `database/momo_words.py::sync_databases` 等同步函数内部不负责 UI 展示，不直接输出进度条
 2. 展示层在 `main.py`，通过回调解耦同步逻辑和交互表现
 3. 同步失败应记录日志并尽量收尾，避免阻断退出流程

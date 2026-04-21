@@ -149,24 +149,43 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 
 ## 6. 文档与交付契约
 
-代码变更必须形成文档闭环。
+代码变更必须形成文档闭环，但**不是每次改动都要动一堆文档**——按实际影响精准匹配即可。
 
 ### 6.1 变更影响矩阵
 
-- 同步逻辑、异步队列、并发策略
-  - 必查：`docs/dev/AUTO_SYNC.md`、`README.md`
-- 数据库字段、环境变量、用户隔离机制
-  - 必查：`docs/dev/QUICK_START.md`、`README.md`
-- 系统级规则、反模式、新模块边界
-  - 必查：`docs/dev/AI_CONTEXT.md`
+| 你改了什么 | 必改（行为一致性） | 视情况改（讲清楚为什么） |
+| --- | --- | --- |
+| 同步逻辑 / 异步队列 / 并发策略 / WAL 配置 | `docs/dev/AUTO_SYNC.md`、`database/README.md` Runtime Iron Rules | `docs/architecture/ARCHITECTURE.md`（图改了才动） |
+| 数据库表结构 / 新字段 / 迁移 | `docs/architecture/DATABASE_DESIGN.md` | `docs/architecture/ARCHITECTURE.md`（只影响表时不用动） |
+| 环境变量 / 用户 profile 机制 / 凭证 | `.env.example`、`docs/architecture/decision_flow.md` | `README.md`（新手路径变了才动） |
+| 系统级规则 / 反模式 / 新模块边界 / 红线 | `docs/dev/AI_CONTEXT.md`（本文件） | `CLAUDE.md`（地图变了才动，规则不搬家） |
+| LLM / Prompt 格式 / AI 客户端 | `docs/dev/CONTRIBUTING.md` 的 AI 客户端扩展规范 | `docs/prompts/*.md`（只改版本时不用动规范） |
 
-### 6.2 提交前检查
+**改动范围判断法**：如果只是实现细节（比如调整内部函数、加日志、改性能），**不碰文档**；如果改变了"外部可观测行为"（接口、配置、约束、流程），才按上表同步。
 
-- 是否违反 MUST 规则（尤其是 Prompt 外置、Hub/个人库隔离）
-- 是否补齐了受影响文档
+### 6.2 检查清单
+
+**Commit 级（每次提交前，1 秒内）：**
+
+- 是否违反 MUST 规则（尤其是 Prompt 外置、Hub/个人库隔离、写队列）
 - 是否使用结构化日志而非 `print()`
+- 语法 OK：`python -m py_compile <改动文件>`
+
+**PR 级（合并前，30 秒～1 分钟）：**
+
+- 上表中"必改"的文档是否已同步更新
 - 数据库改动是否具备向后兼容迁移
-- 默认回归口径是否通过：`python -m pytest tests/ -v --tb=short -m "not slow"`
+- 默认回归口径通过：`python -m pytest tests/ -v --tb=short -m "not slow"`
+- 提交信息列出受影响文档清单（评审可追踪）
+
+### 6.3 CLAUDE.md 与 AI_CONTEXT.md 的边界
+
+防止双 SSoT 漂移：
+
+- **CLAUDE.md**（项目根目录）= **AI 会话首页**，只承载"地图、当前状态快照、三条红线摘要、调试入口"。它不保存规则全文。
+- **AI_CONTEXT.md**（本文件）= **规则与架构契约的唯一事实来源**。所有 MUST / 反模式 / 数据流边界都在这里。
+- CLAUDE.md 的"三条红线"是本文件 §3 的 TL;DR；当 §3 内容有变时，**顺手同步 CLAUDE.md 摘要**。不要在 CLAUDE.md 里新增 AI_CONTEXT 没有的规则。
+- AI_CONTEXT §0.5 "当前状态快照"是版本/阶段字段的 SSoT；CLAUDE.md 的当前状态段落从这里同步。
 
 ## 7. 协作语气与执行期望
 
