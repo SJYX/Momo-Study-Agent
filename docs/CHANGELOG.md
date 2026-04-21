@@ -2,6 +2,16 @@
 
 记录 Momo Study Agent 项目文档的变更历史。
 
+## 2026-04-22
+
+### 彻底删除 core/db_manager.py（~3972 行）
+
+- 业务代码自 Phase 0-4 迁移完成后已全部切到 `database/` 包的 5 个子模块（`connection/momo_words/hub_users/schema/utils`），`core/db_manager.py` 实际上是**重构期未删除的旧副本**——与 `database/connection.py` 共有 30+ 个同名函数。正式从仓库移除，消除双份实现混淆。
+- 顺带修复 `database/legacy.py` 与 `database/hub_users.py` 的 `__future__` import 位置 bug（两个文件各有双 docstring 结构，导致 `import database.legacy` 立即 SyntaxError）。修复后 `database/legacy.py` 成为真正可用的过渡门面——老调用点可 `from database.legacy import X` drop-in 替代 `from core.db_manager import X`；`tests/core/test_db_manager.py` 之前因此挂掉无法 collect，现已恢复 27 个测试的收集能力。
+- scratch/ 下 21 个历史一次性脚本（12 个 import `core.db_manager` + 9 个把 `core/db_manager.py` 当作操作目标的编码修复/hotfix/patch 工具）本地清除，因 scratch/ 在 `.gitignore` 内不产生 commit。
+- 文档全量清理：CLAUDE.md / AI_CONTEXT（§0 §0.5 §2）/ database/README.md / ARCHITECTURE.md / decision_flow §8 / CONTRIBUTING §获取连接 / LOGGING_LEVELS §注意事项 / README 目录树 里所有"3972 行兼容 facade"措辞替换为"已于 2026-04-22 移除；老调用点可经 `database/legacy.py` 门面过渡"。
+- 顺带修 `.gitignore` 的 UTF-16 坏行，并新增 `.claude/` 与 `.codex/` 规则（AI/agent 工具本地私有状态，含认证 token，永不追踪）。
+
 ## 2026-04-21
 
 ### 文档大清理（docs/cleanup 分支）
