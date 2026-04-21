@@ -92,10 +92,18 @@ flowchart TD
 
 ## 6. 相关文档
 
-- [OVERVIEW.md](OVERVIEW.md)
-- [DATA_FLOW.md](DATA_FLOW.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
 - [../dev/AI_CONTEXT.md](../dev/AI_CONTEXT.md)
-- 新用户可直接在向导中配置云数据库。
+- [../dev/AUTO_SYNC.md](../dev/AUTO_SYNC.md)
+
+---
+
+## 7. 配置与凭证分支
+
+### 7.1 首次配置向导分支
+
+- 新用户可直接在向导中配置云数据库；也可"先保存后校验"或选择跳过，后续再补。
+- 向导内凭证校验返回结构化结果（`ok/category/detail`），便于前端/日志辨识失败原因。
 
 ### 7.2 云数据库启用分支
 

@@ -1,12 +1,3 @@
-# 日志系统优化完成总结
-
-## 🎉 Phase 3 运维优化 - 全部完成！
-
-### ✅ 已完成的任务：
-
-#### 任务7 - 配置管理 ✅
-- **YAML-based配置系统**: 创建了完整的配置管理系统
-- **环境特定配置**: 支持development/staging/production环境
 # 日志系统设计
 
 > 架构层只保留日志系统的定位与分层说明。实现细节请看 [../dev/LOGGING.md](../dev/LOGGING.md)。
@@ -33,4 +24,4 @@
 ## 相关文档
 
 - [../dev/LOGGING.md](../dev/LOGGING.md)
-- [OVERVIEW.md](OVERVIEW.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)

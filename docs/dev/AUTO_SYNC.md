@@ -100,6 +100,16 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 - `ai_batches`
 - `system_config`
 
+### Hub 库（`sync_hub_databases`）
+
+- `users`
+- `user_stats`
+- `user_auth`
+- `user_sessions`
+- `user_sync_history`
+- `admin_logs`
+- `user_credentials`
+
 ### 队列状态持久化（`ai_word_notes.sync_status`）
 
 **关键设计：** `sync_status` 仅表示**当前用户对该单词的云端同步状态**，与**内容来源**完全独立。
@@ -153,15 +163,7 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 - 所有写入（除了事务锁紧情况）均被封装成消息投递入队。
 - （底层兜底）本地 SQLite 连接仍保持 `WAL` 模式、`synchronous=NORMAL` 与超时 `timeout=20.0s` 配置。
 
-### Hub 库（`sync_hub_databases`）
-
-- `users`
-- `user_stats`
-- `user_auth`
-- `user_sessions`
-- `user_sync_history`
-- `admin_logs`
-- `user_credentials`
+具体 PRAGMA 值与批量重试守则见 [`../../database/README.md`](../../database/README.md) 的 Runtime Iron Rules §6-§7。
 
 ## 返回值约定
 
