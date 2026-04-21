@@ -1,8 +1,8 @@
-"""
-database/hub_users.py: Hub 用户业务逻辑，含加密存储、会话与统计。
+"""database/hub_users.py — Hub 用户业务逻辑，含加密存储、会话与统计。
+
+Hub database business logic (users/sessions/stats/admin logs).
 """
 # -*- coding: utf-8 -*-
-"""Hub database business logic (users/sessions/stats/admin logs)."""
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional

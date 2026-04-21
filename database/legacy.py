@@ -1,12 +1,12 @@
-"""
-database/legacy.py: 兼容旧版 db_manager 风格接口，转发到新分层实现。
-"""
-# -*- coding: utf-8 -*-
-"""Compatibility export surface for legacy db_manager-style call sites.
+"""database/legacy.py — 兼容旧版 db_manager 风格接口，转发到新分层实现。
 
 This module intentionally re-exports symbols from the new database package
-without requiring any `db_manager` imports.
+without requiring any `core.db_manager` imports. Legacy callers migrating
+from `from core.db_manager import X` can switch to `from database.legacy import X`
+as a drop-in replacement; new code should depend on the specific database
+submodules directly.
 """
+# -*- coding: utf-8 -*-
 
 from __future__ import annotations
 
