@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 @router.get("/summary")
 async def stats_summary(user: str = Depends(get_active_user)):
     """返回系统聚合统计信息。"""
-    from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_conn
+    from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
     conn = _get_read_conn(DB_PATH)
     conn_lock = _get_singleton_conn_op_lock(conn)
@@ -75,7 +75,7 @@ async def stats_summary(user: str = Depends(get_active_user)):
                 cur.close()
             conn.commit()
     finally:
-        if not _is_main_write_conn(conn):
+        if not _is_main_write_singleton_conn(conn):
             conn.close()
 
     # 同步队列深度（通过 SyncManager 获取，但这里直接查 pending notes）

@@ -79,18 +79,19 @@ python -m tools.preflight_check --user <username> --format json
 # 主程序（CLI）
 python main.py
 
-# Web 后端（与 CLI 互斥，共享进程锁）
-python -m web.backend --user <username>
+# Web 一键启动（生产模式：自动构建前端 → FastAPI 托管）
+python scripts/start_web.py
+make web
 
-# Web 前端开发服务器
-cd web/frontend && npm run dev
-
-# Web 前端构建（生产包 → web/frontend/dist/）
-cd web/frontend && npm run build
+# Web 一键启动（开发模式：后端 + 前端 dev server 并行）
+python scripts/start_web.py --dev
+make web-dev
 
 # Makefile 快捷
-make web-dev      # 启动后端（热重载）
-make web-build    # 构建前端
+make web          # 生产模式一键启动
+make web-dev      # 开发模式一键启动
+make web-build    # 仅构建前端
+make web-backend  # 仅启动后端（高级用法）
 
 # 默认回归（PR 级）
 python -m pytest tests/ -v --tb=short -m "not slow"
