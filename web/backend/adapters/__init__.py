@@ -1,0 +1,1 @@
+# web/backend/adapters — Web 层适配器
