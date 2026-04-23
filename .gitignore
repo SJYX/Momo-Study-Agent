@@ -83,3 +83,8 @@ desktop.ini
 # AI / agent tool local state (private; never track)
 .claude/
 .codex/
+
+# Node.js (Web frontend)
+node_modules/
+package-lock.json
+web/frontend/dist/
