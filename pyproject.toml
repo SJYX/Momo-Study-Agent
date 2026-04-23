@@ -29,6 +29,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "sse-starlette>=2.0.0",
+    "pydantic>=2.0.0",
+]
 dev = [
     "ruff>=0.3.0",
     "mypy>=1.8.0",
@@ -48,6 +54,10 @@ momo = "main:main"
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*", "config*", "web*", "database*", "compat*"]
+exclude = ["tests*", "scripts*", "tools*", "data*", "logs*", "scratch*", "docs*"]
 
 # ============================================================================
 # Ruff Configuration - 超快的 Python Linter & Formatter

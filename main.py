@@ -69,51 +69,9 @@ from core.ui_manager import CLIUIManager
 
 # ==============================================================================
 # 进程锁机制：跨终端物理防多开 (防御 WalConflict 的最后防线)
+# 从 web/backend/lock.py 导入共享实现
 # ==============================================================================
-_process_lock_fd = None
-
-def acquire_process_lock():
-    """获取文件排他锁，确保系统内只有一个进程在操作数据库"""
-    global _process_lock_fd
-    lock_file = os.path.join(DATA_DIR, ".process.lock")
-    os.makedirs(DATA_DIR, exist_ok=True)
-    
-    try:
-        if os.name == 'nt':  # Windows 系统底层锁
-            import msvcrt
-            _process_lock_fd = os.open(lock_file, os.O_RDWR | os.O_CREAT | os.O_TRUNC)
-            msvcrt.locking(_process_lock_fd, msvcrt.LK_NBLCK, 1)
-        else:  # Unix/Linux/Mac 系统底层锁
-            import fcntl
-            _process_lock_fd = os.open(lock_file, os.O_RDWR | os.O_CREAT | os.O_TRUNC)
-            fcntl.flock(_process_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (IOError, OSError):
-        print(f"\n❌ [致命错误] 检测到程序已经在运行中！")
-        print(f"为保护数据库防冲突(WalConflict)，已拦截本次启动。")
-        print(f"如确信无其他进程运行，请手动删除锁文件: {lock_file}\n")
-        sys.exit(1)
-        
-    def release_process_lock():
-        """释放锁文件"""
-        global _process_lock_fd
-        if _process_lock_fd is not None:
-            try:
-                if os.name == 'nt':
-                    import msvcrt
-                    os.lseek(_process_lock_fd, 0, os.SEEK_SET)
-                    msvcrt.locking(_process_lock_fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(_process_lock_fd, fcntl.LOCK_UN)
-                os.close(_process_lock_fd)
-                if os.path.exists(lock_file):
-                    os.remove(lock_file)
-            except Exception:
-                pass
-            _process_lock_fd = None
-
-    # 注册退出钩子，确保进程死亡时释放锁
-    atexit.register(release_process_lock)
+from web.backend.lock import acquire_process_lock, release_process_lock
 
 
 def _build_ai_client():
