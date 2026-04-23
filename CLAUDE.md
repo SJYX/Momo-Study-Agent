@@ -3,13 +3,14 @@
 > 这里是 AI 助手进入项目的**第一页**：拿到地图 / 现状 / 红线摘要 / 调试入口。
 > 完整规则（MUST 清单、反模式、数据流）在 [`docs/dev/AI_CONTEXT.md`](docs/dev/AI_CONTEXT.md)——**那才是规则的唯一事实来源**。
 
-## 当前状态（2026-04-21）
+## 当前状态（2026-04-23）
 
 - 版本 1.0.0，Python 3.12+，Windows 优先。
 - CLI 为主入口（`python main.py`），Web 前端初版在 `feat/web-ui` 分支（方案见 `docs/dev/WEB_UI_PLAN.md`）。
+- **Web UI Phase 0–5 已完成**：后端 FastAPI + 前端 React SPA，启动方式 `python -m web.backend --user <name>`。
 - 数据层：Embedded Replicas 迁移已完成（Phase 0–4），`conn.sync()` 取代手工增量；持久逻辑拆到 `database/` 包。
 - 并发层：单写守护线程 + 进程锁稳定（feat/high-perf-sync 已合回 main）。
-- 近期完成：2026-04-21 文档大清理（归档已完成 PHASE 文档、architecture 三合一）。
+- 近期完成：2026-04-23 Web UI Phase 4（单词库/同步状态/体检/用户向导）+ Phase 5（打包/错误态/文档）。
 
 > 版本与阶段字段的 SSoT 是 `docs/dev/AI_CONTEXT.md §0.5`；本段与其保持同步。
 
@@ -30,6 +31,8 @@
 | 日志 | `core/logger.py` + `core/log_config.py` | 业务层禁 `print()` |
 | 体检 | `tools/preflight_check.py` | 支持 text / json 双输出 |
 | Prompts | `docs/prompts/*.md` | 不要硬编码到 Python 字符串 |
+| Web 后端 | `web/backend/` | FastAPI ASGI；与 CLI 共享进程锁（互斥） |
+| Web 前端 | `web/frontend/` | React + Vite + TypeScript SPA |
 
 ## 三条红线（违反即停）
 
@@ -73,8 +76,21 @@
 python -m tools.preflight_check --user <username>
 python -m tools.preflight_check --user <username> --format json
 
-# 主程序
+# 主程序（CLI）
 python main.py
+
+# Web 后端（与 CLI 互斥，共享进程锁）
+python -m web.backend --user <username>
+
+# Web 前端开发服务器
+cd web/frontend && npm run dev
+
+# Web 前端构建（生产包 → web/frontend/dist/）
+cd web/frontend && npm run build
+
+# Makefile 快捷
+make web-dev      # 启动后端（热重载）
+make web-build    # 构建前端
 
 # 默认回归（PR 级）
 python -m pytest tests/ -v --tb=short -m "not slow"

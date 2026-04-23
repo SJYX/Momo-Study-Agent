@@ -69,7 +69,16 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 - 业务引擎：`core/iteration_manager.py`
   - 职责：重炼/选优链路与薄弱词迭代。
 - 基建层：`config.py`, `core/logger.py`, `core/log_config.py`
-  - 职责：多用户隔离、配置装载、结构化日志配置。
+   - 职责：多用户隔离、配置装载、结构化日志配置。
+- Web 层：`web/` 包（`feat/web-ui` 分支）
+   - `web/backend/`：FastAPI ASGI 后端，复用 `core/*` + `database/*`，不改其签名/语义。
+   - `web/backend/app.py`：FastAPI 工厂 + lifespan + 生产模式静态文件托管。
+   - `web/backend/routers/`：REST 端点（session/study/words/sync/users/preflight/stats/tasks）。
+   - `web/backend/tasks.py`：TaskRegistry + SSE 进度推送。
+   - `web/backend/logger_bridge.py`：日志 tee 到任务事件队列。
+   - `web/frontend/`：React + Vite + TypeScript SPA。
+   - **关键约束**：Web 后端与 CLI 共享 `process.lock`（互斥）；`core/*` 和 `database/*` 不做任何为 Web 的签名变更。
+
 
 ## 3. MUST 级架构契约（违反即视为严重问题）
 

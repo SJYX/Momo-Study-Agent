@@ -335,18 +335,26 @@ class StudyWorkflow:
                     futures.append((fut, batch, start_pos, batch_no, batch_spells))
                     start_pos += len(batch)
 
-                self.logger.info(f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。")
+                self.logger.info(
+                    f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。",
+                    event="batch_start",
+                    progress={"current": 0, "total": total_pending, "batches": total_batches},
+                )
 
                 for fut, batch, start_pos, batch_no, batch_spells in futures:
                     results, metadata = fut.result()
                     if not results:
                         self.logger.warning(
-                            f"⚠️ AI 批次 {batch_no}/{total_batches} 返回空结果，已跳过: {self._format_words_preview(batch_spells)}"
+                            f"⚠️ AI 批次 {batch_no}/{total_batches} 返回空结果，已跳过: {self._format_words_preview(batch_spells)}",
+                            event="batch_error",
+                            progress={"batch_no": batch_no, "total_batches": total_batches},
                         )
                         continue
 
                     self.logger.info(
-                        f"[Pipeline] {self._format_words_preview(batch_spells)} - 2. AI 助记处理成功 (耗时: {metadata.get('total_latency_ms', 0)}ms，返回 {len(results)} 条)"
+                        f"[Pipeline] {self._format_words_preview(batch_spells)} - 2. AI 助记处理成功 (耗时: {metadata.get('total_latency_ms', 0)}ms，返回 {len(results)} 条)",
+                        event="batch_done",
+                        progress={"batch_no": batch_no, "total_batches": total_batches, "words": len(batch), "total": total_pending},
                     )
 
                     bid = str(uuid.uuid4())
