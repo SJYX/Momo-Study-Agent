@@ -1,0 +1,2481 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "MOMO Study Agent Web UI",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/session": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Get Session",
+        "description": "返回当前锁定用户、AI 配置摘要。",
+        "operationId": "get_session_api_session_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_SessionInfo_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Task Status",
+        "description": "查询任务状态。",
+        "operationId": "get_task_status_api_tasks__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskStatusResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/events": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Task Events",
+        "description": "SSE 进度流：订阅任务事件直到任务结束。",
+        "operationId": "task_events_api_tasks__task_id__events_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/cancel": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Cancel Task",
+        "description": "取消一个运行中的任务。",
+        "operationId": "cancel_task_api_tasks__task_id__cancel_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskCancelResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/preflight": {
+      "get": {
+        "tags": [
+          "preflight"
+        ],
+        "summary": "Preflight",
+        "description": "运行环境体检，返回检查项列表。",
+        "operationId": "preflight_api_preflight_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PreflightResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/study/today": {
+      "get": {
+        "tags": [
+          "study"
+        ],
+        "summary": "Get Today",
+        "description": "获取今日任务列表。",
+        "operationId": "get_today_api_study_today_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TodayItemsResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/study/future": {
+      "get": {
+        "tags": [
+          "study"
+        ],
+        "summary": "Get Future",
+        "description": "获取未来 N 天的学习计划。",
+        "operationId": "get_future_api_study_future_get",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 30,
+              "minimum": 1,
+              "default": 7,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_FutureItemsResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/study/process": {
+      "post": {
+        "tags": [
+          "study"
+        ],
+        "summary": "Process Today",
+        "description": "触发今日任务处理，立即返回 task_id，后台异步执行。",
+        "operationId": "process_today_api_study_process_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskRunResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/study/process-future": {
+      "post": {
+        "tags": [
+          "study"
+        ],
+        "summary": "Process Future",
+        "description": "触发未来计划处理，立即返回 task_id。",
+        "operationId": "process_future_api_study_process_future_post",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 30,
+              "minimum": 1,
+              "default": 7,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskRunResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/study/iterate": {
+      "post": {
+        "tags": [
+          "study"
+        ],
+        "summary": "Iterate",
+        "description": "触发智能迭代，立即返回 task_id。",
+        "operationId": "iterate_api_study_iterate_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskRunResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/words": {
+      "get": {
+        "tags": [
+          "words"
+        ],
+        "summary": "List Words",
+        "description": "分页列出 ai_word_notes，支持搜索和筛选。",
+        "operationId": "list_words_api_words_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "sync_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sync Status"
+            }
+          },
+          {
+            "name": "it_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "It Level"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_WordsListResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/words/{voc_id}": {
+      "get": {
+        "tags": [
+          "words"
+        ],
+        "summary": "Get Word Detail",
+        "description": "获取单个单词的完整笔记详情。",
+        "operationId": "get_word_detail_api_words__voc_id__get",
+        "parameters": [
+          {
+            "name": "voc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Voc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_WordNoteDetail_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "words"
+        ],
+        "summary": "Update Word Note",
+        "description": "编辑单词笔记的 memory_aid 字段。",
+        "operationId": "update_word_note_api_words__voc_id__put",
+        "parameters": [
+          {
+            "name": "voc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Voc Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/words/{voc_id}/iterations": {
+      "get": {
+        "tags": [
+          "words"
+        ],
+        "summary": "Get Word Iterations",
+        "description": "获取单词的迭代历史。",
+        "operationId": "get_word_iterations_api_words__voc_id__iterations_get",
+        "parameters": [
+          {
+            "name": "voc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Voc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_WordIterationsResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats/summary": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Stats Summary",
+        "description": "返回系统聚合统计信息。",
+        "operationId": "stats_summary_api_stats_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_StatsSummary_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/status": {
+      "get": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Sync Status",
+        "description": "返回同步队列深度和最近的冲突记录（sync_status=2）。",
+        "operationId": "sync_status_api_sync_status_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_SyncStatusResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/flush": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Flush Sync",
+        "description": "触发一次立即收尾同步。",
+        "operationId": "flush_sync_api_sync_flush_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_SyncFlushResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/retry": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Retry Conflicts",
+        "description": "重试所有冲突的同步项（sync_status=2），将其重新入队。",
+        "operationId": "retry_conflicts_api_sync_retry_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_SyncRetryResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "List Users",
+        "description": "列出本机所有 profile 用户。",
+        "operationId": "list_users_api_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_UsersListResponse_"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/validate": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Validate Config",
+        "description": "验证配置项（墨墨 Token / AI Key 等），返回校验结果。\n\nbody: {\"field\": \"momo_token\"|\"mimo_api_key\"|\"gemini_api_key\", \"value\": \"...\"}",
+        "operationId": "validate_config_api_users_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_ValidateResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/wizard": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Wizard Create",
+        "description": "单页表单一次提交创建新用户 profile。\n\nbody: {\n    \"username\": \"xxx\",\n    \"momo_token\": \"...\",\n    \"ai_provider\": \"mimo\"|\"gemini\"|\"\",\n    \"ai_api_key\": \"...\",\n    \"user_email\": \"...\"   // optional\n}",
+        "operationId": "wizard_create_api_users_wizard_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WizardCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_WizardCreateResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/{username}": {
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Delete User",
+        "description": "删除本地 profile（不能删除当前活跃用户）。",
+        "operationId": "delete_user_api_users__username__delete",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Username"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{full_path}": {
+      "get": {
+        "summary": "Spa Catch All",
+        "operationId": "spa_catch_all__full_path__get",
+        "parameters": [
+          {
+            "name": "full_path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Full Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "default": "UNKNOWN"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiError"
+      },
+      "ApiResponse_FutureItemsResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FutureItemsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[FutureItemsResponse]"
+      },
+      "ApiResponse_PreflightResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreflightResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[PreflightResponse]"
+      },
+      "ApiResponse_SessionInfo_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[SessionInfo]"
+      },
+      "ApiResponse_StatsSummary_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StatsSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[StatsSummary]"
+      },
+      "ApiResponse_SyncFlushResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncFlushResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[SyncFlushResponse]"
+      },
+      "ApiResponse_SyncRetryResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncRetryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[SyncRetryResponse]"
+      },
+      "ApiResponse_SyncStatusResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[SyncStatusResponse]"
+      },
+      "ApiResponse_TaskCancelResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCancelResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[TaskCancelResponse]"
+      },
+      "ApiResponse_TaskRunResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskRunResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[TaskRunResponse]"
+      },
+      "ApiResponse_TaskStatusResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[TaskStatusResponse]"
+      },
+      "ApiResponse_TodayItemsResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TodayItemsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[TodayItemsResponse]"
+      },
+      "ApiResponse_UsersListResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsersListResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[UsersListResponse]"
+      },
+      "ApiResponse_ValidateResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[ValidateResponse]"
+      },
+      "ApiResponse_WizardCreateResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WizardCreateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[WizardCreateResponse]"
+      },
+      "ApiResponse_WordIterationsResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WordIterationsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[WordIterationsResponse]"
+      },
+      "ApiResponse_WordNoteDetail_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WordNoteDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[WordNoteDetail]"
+      },
+      "ApiResponse_WordsListResponse_": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WordsListResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[WordsListResponse]"
+      },
+      "FutureItemsResponse": {
+        "properties": {
+          "days": {
+            "type": "integer",
+            "title": "Days",
+            "default": 7
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TodayItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "title": "FutureItemsResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PreflightCheck": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "blocking": {
+            "type": "boolean",
+            "title": "Blocking"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "fix_hint": {
+            "type": "string",
+            "title": "Fix Hint"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "ok",
+          "status",
+          "blocking",
+          "category",
+          "detail",
+          "fix_hint"
+        ],
+        "title": "PreflightCheck"
+      },
+      "PreflightResponse": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "root_dir": {
+            "type": "string",
+            "title": "Root Dir"
+          },
+          "profile_path": {
+            "type": "string",
+            "title": "Profile Path"
+          },
+          "force_cloud_mode": {
+            "type": "boolean",
+            "title": "Force Cloud Mode"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightCheck"
+            },
+            "type": "array",
+            "title": "Checks"
+          },
+          "blocking_items": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightCheck"
+            },
+            "type": "array",
+            "title": "Blocking Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "root_dir",
+          "profile_path",
+          "force_cloud_mode",
+          "ok"
+        ],
+        "title": "PreflightResponse"
+      },
+      "SessionInfo": {
+        "properties": {
+          "active_user": {
+            "type": "string",
+            "title": "Active User"
+          },
+          "ai_provider": {
+            "type": "string",
+            "title": "Ai Provider"
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "db_path": {
+            "type": "string",
+            "title": "Db Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active_user",
+          "ai_provider",
+          "batch_size",
+          "dry_run",
+          "db_path"
+        ],
+        "title": "SessionInfo"
+      },
+      "StatsSummary": {
+        "properties": {
+          "total_words": {
+            "type": "integer",
+            "title": "Total Words",
+            "default": 0
+          },
+          "processed_words": {
+            "type": "integer",
+            "title": "Processed Words",
+            "default": 0
+          },
+          "ai_batches": {
+            "type": "integer",
+            "title": "Ai Batches",
+            "default": 0
+          },
+          "ai_notes_count": {
+            "type": "integer",
+            "title": "Ai Notes Count",
+            "default": 0
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens",
+            "default": 0
+          },
+          "avg_latency_ms": {
+            "type": "number",
+            "title": "Avg Latency Ms",
+            "default": 0.0
+          },
+          "sync_queue_depth": {
+            "type": "integer",
+            "title": "Sync Queue Depth",
+            "default": 0
+          },
+          "weak_words_count": {
+            "type": "integer",
+            "title": "Weak Words Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "StatsSummary"
+      },
+      "SyncConflict": {
+        "properties": {
+          "voc_id": {
+            "type": "string",
+            "title": "Voc Id"
+          },
+          "spelling": {
+            "type": "string",
+            "title": "Spelling",
+            "default": ""
+          },
+          "basic_meanings": {
+            "type": "string",
+            "title": "Basic Meanings",
+            "default": ""
+          },
+          "sync_status": {
+            "type": "integer",
+            "title": "Sync Status",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "voc_id"
+        ],
+        "title": "SyncConflict"
+      },
+      "SyncFlushResponse": {
+        "properties": {
+          "flushed": {
+            "type": "boolean",
+            "title": "Flushed",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "SyncFlushResponse"
+      },
+      "SyncRetryResponse": {
+        "properties": {
+          "retried": {
+            "type": "integer",
+            "title": "Retried",
+            "default": 0
+          },
+          "total_conflicts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Conflicts"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "title": "SyncRetryResponse"
+      },
+      "SyncStatusResponse": {
+        "properties": {
+          "queue_depth": {
+            "type": "integer",
+            "title": "Queue Depth",
+            "default": 0
+          },
+          "conflict_count": {
+            "type": "integer",
+            "title": "Conflict Count",
+            "default": 0
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/SyncConflict"
+            },
+            "type": "array",
+            "title": "Conflicts"
+          }
+        },
+        "type": "object",
+        "title": "SyncStatusResponse"
+      },
+      "TaskCancelResponse": {
+        "properties": {
+          "canceled": {
+            "type": "boolean",
+            "title": "Canceled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "TaskCancelResponse"
+      },
+      "TaskRunResponse": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "word_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Word Count"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "title": "TaskRunResponse"
+      },
+      "TaskStatusResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At",
+            "default": 0.0
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status"
+        ],
+        "title": "TaskStatusResponse"
+      },
+      "TodayItem": {
+        "properties": {
+          "voc_id": {
+            "type": "string",
+            "title": "Voc Id"
+          },
+          "voc_spelling": {
+            "type": "string",
+            "title": "Voc Spelling"
+          },
+          "voc_meanings": {
+            "type": "string",
+            "title": "Voc Meanings",
+            "default": ""
+          },
+          "review_count": {
+            "type": "integer",
+            "title": "Review Count",
+            "default": 0
+          },
+          "familiarity_short": {
+            "type": "number",
+            "title": "Familiarity Short",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "voc_id",
+          "voc_spelling"
+        ],
+        "title": "TodayItem"
+      },
+      "TodayItemsResponse": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TodayItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "title": "TodayItemsResponse"
+      },
+      "UserProfile": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "ai_provider": {
+            "type": "string",
+            "title": "Ai Provider",
+            "default": ""
+          },
+          "has_momo_token": {
+            "type": "boolean",
+            "title": "Has Momo Token",
+            "default": false
+          },
+          "has_ai_key": {
+            "type": "boolean",
+            "title": "Has Ai Key",
+            "default": false
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "title": "UserProfile"
+      },
+      "UsersListResponse": {
+        "properties": {
+          "users": {
+            "items": {
+              "$ref": "#/components/schemas/UserProfile"
+            },
+            "type": "array",
+            "title": "Users"
+          },
+          "active_user": {
+            "type": "string",
+            "title": "Active User"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active_user"
+        ],
+        "title": "UsersListResponse"
+      },
+      "ValidateRequest": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "field",
+          "value"
+        ],
+        "title": "ValidateRequest"
+      },
+      "ValidateResponse": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "valid": {
+            "type": "boolean",
+            "title": "Valid"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "field",
+          "valid",
+          "message"
+        ],
+        "title": "ValidateResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WizardCreateRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "momo_token": {
+            "type": "string",
+            "title": "Momo Token"
+          },
+          "ai_provider": {
+            "type": "string",
+            "title": "Ai Provider"
+          },
+          "ai_api_key": {
+            "type": "string",
+            "title": "Ai Api Key"
+          },
+          "user_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "momo_token",
+          "ai_provider",
+          "ai_api_key"
+        ],
+        "title": "WizardCreateRequest"
+      },
+      "WizardCreateResponse": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "profile_path": {
+            "type": "string",
+            "title": "Profile Path"
+          },
+          "cloud_configured": {
+            "type": "boolean",
+            "title": "Cloud Configured",
+            "default": false
+          },
+          "validation": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WizardValidationResult"
+            },
+            "type": "object",
+            "title": "Validation"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "profile_path",
+          "message"
+        ],
+        "title": "WizardCreateResponse"
+      },
+      "WizardValidationResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "title": "WizardValidationResult"
+      },
+      "WordIteration": {
+        "properties": {
+          "voc_id": {
+            "type": "string",
+            "title": "Voc Id"
+          },
+          "iteration_type": {
+            "type": "string",
+            "title": "Iteration Type"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score",
+            "default": 0.0
+          },
+          "justification": {
+            "type": "string",
+            "title": "Justification",
+            "default": ""
+          },
+          "tags": {
+            "type": "string",
+            "title": "Tags",
+            "default": ""
+          },
+          "refined_content": {
+            "type": "string",
+            "title": "Refined Content",
+            "default": ""
+          },
+          "raw_response": {
+            "type": "string",
+            "title": "Raw Response",
+            "default": ""
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "voc_id",
+          "iteration_type"
+        ],
+        "title": "WordIteration"
+      },
+      "WordIterationsResponse": {
+        "properties": {
+          "voc_id": {
+            "type": "string",
+            "title": "Voc Id"
+          },
+          "iterations": {
+            "items": {
+              "$ref": "#/components/schemas/WordIteration"
+            },
+            "type": "array",
+            "title": "Iterations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "voc_id"
+        ],
+        "title": "WordIterationsResponse"
+      },
+      "WordNoteDetail": {
+        "properties": {
+          "voc_id": {
+            "type": "string",
+            "title": "Voc Id"
+          },
+          "spelling": {
+            "type": "string",
+            "title": "Spelling",
+            "default": ""
+          },
+          "basic_meanings": {
+            "type": "string",
+            "title": "Basic Meanings",
+            "default": ""
+          },
+          "memory_aid": {
+            "type": "string",
+            "title": "Memory Aid",
+            "default": ""
+          },
+          "it_level": {
+            "type": "integer",
+            "title": "It Level",
+            "default": 0
+          },
+          "sync_status": {
+            "type": "integer",
+            "title": "Sync Status",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At",
+            "default": ""
+          },
+          "ielts_focus": {
+            "type": "string",
+            "title": "Ielts Focus",
+            "default": ""
+          },
+          "collocations": {
+            "type": "string",
+            "title": "Collocations",
+            "default": ""
+          },
+          "traps": {
+            "type": "string",
+            "title": "Traps",
+            "default": ""
+          },
+          "synonyms": {
+            "type": "string",
+            "title": "Synonyms",
+            "default": ""
+          },
+          "discrimination": {
+            "type": "string",
+            "title": "Discrimination",
+            "default": ""
+          },
+          "example_sentences": {
+            "type": "string",
+            "title": "Example Sentences",
+            "default": ""
+          },
+          "word_ratings": {
+            "type": "string",
+            "title": "Word Ratings",
+            "default": ""
+          },
+          "tags": {
+            "type": "string",
+            "title": "Tags",
+            "default": ""
+          },
+          "raw_full_text": {
+            "type": "string",
+            "title": "Raw Full Text",
+            "default": ""
+          },
+          "it_history": {
+            "type": "string",
+            "title": "It History",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "voc_id"
+        ],
+        "title": "WordNoteDetail"
+      },
+      "WordNoteSummary": {
+        "properties": {
+          "voc_id": {
+            "type": "string",
+            "title": "Voc Id"
+          },
+          "spelling": {
+            "type": "string",
+            "title": "Spelling",
+            "default": ""
+          },
+          "basic_meanings": {
+            "type": "string",
+            "title": "Basic Meanings",
+            "default": ""
+          },
+          "memory_aid": {
+            "type": "string",
+            "title": "Memory Aid",
+            "default": ""
+          },
+          "it_level": {
+            "type": "integer",
+            "title": "It Level",
+            "default": 0
+          },
+          "sync_status": {
+            "type": "integer",
+            "title": "Sync Status",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "voc_id"
+        ],
+        "title": "WordNoteSummary"
+      },
+      "WordsListResponse": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 50
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WordNoteSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "title": "WordsListResponse"
+      }
+    }
+  }
+}

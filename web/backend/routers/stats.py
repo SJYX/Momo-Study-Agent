@@ -9,12 +9,12 @@ from fastapi import APIRouter, Depends
 
 from config import DB_PATH
 from web.backend.deps import get_active_user
-from web.backend.schemas import ok_response, error_response
+from web.backend.schemas import ApiResponse, StatsSummary, ok_response, error_response
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 
-@router.get("/summary")
+@router.get("/summary", response_model=ApiResponse[StatsSummary])
 async def stats_summary(user: str = Depends(get_active_user)):
     """返回系统聚合统计信息。"""
     from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn

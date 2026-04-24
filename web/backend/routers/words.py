@@ -13,12 +13,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from config import DB_PATH
 from web.backend.deps import get_active_user
-from web.backend.schemas import ok_response, error_response
+from web.backend.schemas import (
+    ApiResponse,
+    WordIterationsResponse,
+    WordNoteDetail,
+    WordsListResponse,
+    error_response,
+    ok_response,
+)
 
 router = APIRouter(prefix="/api/words", tags=["words"])
 
 
-@router.get("")
+@router.get("", response_model=ApiResponse[WordsListResponse])
 async def list_words(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -92,7 +99,7 @@ async def list_words(
     }, user_id=user)
 
 
-@router.get("/{voc_id}")
+@router.get("/{voc_id}", response_model=ApiResponse[WordNoteDetail])
 async def get_word_detail(voc_id: str, user: str = Depends(get_active_user)):
     """获取单个单词的完整笔记详情。"""
     from database.momo_words import get_local_word_note
@@ -116,27 +123,17 @@ async def update_word_note(
 
     try:
         from database.connection import _queue_write_operation
+        from database.utils import get_timestamp_with_tz
 
-        def _update():
-            from config import DB_PATH
-            import sqlite3
-            conn = sqlite3.connect(DB_PATH)
-            try:
-                conn.execute(
-                    "UPDATE ai_word_notes SET memory_aid = ? WHERE voc_id = ?",
-                    (memory_aid, voc_id),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-
-        _queue_write_operation(_update)
+        sql = "UPDATE ai_word_notes SET memory_aid = ?, updated_at = ? WHERE voc_id = ?"
+        args = (memory_aid, get_timestamp_with_tz(), str(voc_id))
+        _queue_write_operation(sql, args, op_type="insert_or_replace")
         return ok_response({"updated": True, "voc_id": voc_id}, user_id=user)
     except Exception as e:
         return error_response("UPDATE_ERROR", str(e), user_id=user)
 
 
-@router.get("/{voc_id}/iterations")
+@router.get("/{voc_id}/iterations", response_model=ApiResponse[WordIterationsResponse])
 async def get_word_iterations(voc_id: str, user: str = Depends(get_active_user)):
     """获取单词的迭代历史。"""
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn

@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "gen:types": "python ../../scripts/generate_frontend_types.py --output src/api/types.ts",
+    "gen:openapi": "python ../../scripts/export_web_openapi.py --output src/api/openapi.json",
+    "sync:api": "npm run gen:types && npm run gen:openapi"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.2",

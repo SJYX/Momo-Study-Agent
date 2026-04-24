@@ -1,6 +1,8 @@
 import os
 import sys
 import argparse
+import runpy
+from pathlib import Path
 
 # ==============================================================================
 # EARLY BOOTSTRAP: 用户配置热加载 (彻底消灭 subprocess 多进程套娃)
@@ -219,7 +221,20 @@ def run(environment=None, config_file=None):
             manager.shutdown()
 
 
-if __name__ == "__main__":
+def web_main():
+    """CLI 子命令入口：momo web ..."""
+    project_root = Path(__file__).resolve().parent
+    script_path = project_root / "scripts" / "start_web.py"
+    runpy.run_path(str(script_path), run_name="__main__")
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "web":
+        # 支持：momo web [args...]
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        web_main()
+        return
+
     parser = argparse.ArgumentParser(description="墨墨背单词AI助记系统")
     parser.add_argument(
         "--env",
@@ -231,3 +246,7 @@ if __name__ == "__main__":
 
     # 执行主程序
     run(environment=args.env, config_file=args.config)
+
+
+if __name__ == "__main__":
+    main()

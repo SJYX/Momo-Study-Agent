@@ -13,6 +13,7 @@ export default function FuturePlan() {
   const [error, setError] = useState('')
   const [processing, setProcessing] = useState(false)
   const setActiveTask = useTaskStore(s => s.setActiveTask)
+  const items = data?.items ?? []
 
   const load = () => {
     setError('')
@@ -55,7 +56,7 @@ export default function FuturePlan() {
 
       {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4">{error}</div>}
 
-      {data && data.items.length > 0 && (
+      {data && items.length > 0 && (
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50"><tr>
@@ -63,7 +64,7 @@ export default function FuturePlan() {
               <th className="text-left px-4 py-2 font-medium text-gray-600">单词</th>
               <th className="text-left px-4 py-2 font-medium text-gray-600">释义</th>
             </tr></thead>
-            <tbody>{data.items.map((item, i) => (
+            <tbody>{items.map((item, i) => (
               <tr key={item.voc_id} className="border-t hover:bg-gray-50">
                 <td className="px-4 py-2 text-gray-400">{i + 1}</td>
                 <td className="px-4 py-2 font-medium">{item.voc_spelling}</td>
@@ -73,7 +74,7 @@ export default function FuturePlan() {
           </table>
         </div>
       )}
-      {data && data.items.length === 0 && <div className="text-center py-12 text-gray-400">未来 {days} 天无待处理单词</div>}
+      {data && items.length === 0 && <div className="text-center py-12 text-gray-400">未来 {days} 天无待处理单词</div>}
     </div>
   )
 }

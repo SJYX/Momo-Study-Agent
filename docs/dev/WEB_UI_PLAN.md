@@ -210,7 +210,10 @@ MOMO_Script/
 所有接口：
 - 短期内**不鉴权**，但 `uvicorn` 绑定 `127.0.0.1` 避免外网访问。
 - 响应统一：`{ok: bool, data: ..., error?: {code, message}}`。
-- Pydantic `schemas.py` 单文件集中定义，方便后续 `openapi-typescript` 生成前端类型。
+- 前后端类型单一事实源：`web/backend/schemas.py`。
+- 生成命令（在 `web/frontend` 下）：`npm run sync:api`
+  - 生成 `src/api/types.ts`：`python ../../scripts/generate_frontend_types.py`
+  - 导出 OpenAPI：`python ../../scripts/export_web_openapi.py`
 
 ---
 

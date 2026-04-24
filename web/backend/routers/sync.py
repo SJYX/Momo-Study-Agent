@@ -12,12 +12,19 @@ from fastapi import APIRouter, Depends, Query
 
 from config import DB_PATH
 from web.backend.deps import get_active_user, get_workflow
-from web.backend.schemas import ok_response, error_response
+from web.backend.schemas import (
+    ApiResponse,
+    SyncFlushResponse,
+    SyncRetryResponse,
+    SyncStatusResponse,
+    error_response,
+    ok_response,
+)
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 
-@router.get("/status")
+@router.get("/status", response_model=ApiResponse[SyncStatusResponse])
 async def sync_status(
     limit: int = Query(default=20, ge=1, le=100),
     user: str = Depends(get_active_user),
@@ -73,7 +80,7 @@ async def sync_status(
     }, user_id=user)
 
 
-@router.post("/flush")
+@router.post("/flush", response_model=ApiResponse[SyncFlushResponse])
 async def flush_sync(
     user: str = Depends(get_active_user),
     workflow=Depends(get_workflow),
@@ -86,7 +93,7 @@ async def flush_sync(
         return error_response("SYNC_FLUSH_ERROR", str(e), user_id=user)
 
 
-@router.post("/retry")
+@router.post("/retry", response_model=ApiResponse[SyncRetryResponse])
 async def retry_conflicts(
     user: str = Depends(get_active_user),
     workflow=Depends(get_workflow),

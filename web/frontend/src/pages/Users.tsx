@@ -42,6 +42,7 @@ export default function Users() {
 
   // Delete state
   const [deleting, setDeleting] = useState<string | null>(null)
+  const users = data?.users ?? []
 
   const load = () => {
     setLoading(true)
@@ -142,7 +143,7 @@ export default function Users() {
 
       {data && (
         <div className="space-y-3 max-w-2xl">
-          {data.users.map((u: UserProfile) => (
+          {users.map((u: UserProfile) => (
             <div key={u.username} className={`bg-white rounded-lg shadow p-4 flex items-center gap-4 ${u.is_active ? 'ring-2 ring-blue-500' : ''}`}>
               <div className="bg-gray-100 p-3 rounded-full">
                 <User size={20} className="text-gray-600" />
@@ -176,7 +177,7 @@ export default function Users() {
               )}
             </div>
           ))}
-          {data.users.length === 0 && (
+          {users.length === 0 && (
             <div className="text-center py-8 text-gray-400">暂无用户，点击"创建用户"开始</div>
           )}
         </div>
@@ -317,13 +318,13 @@ export default function Users() {
                     <div className="mb-2"><span className="font-medium">用户名:</span> {wizResult.username}</div>
                     <div className="mb-2"><span className="font-medium">云端数据库:</span> {wizResult.cloud_configured ? '✅ 已配置' : '❌ 未配置（本地模式）'}</div>
 
-                    {Object.keys(wizResult.validation).length > 0 && (
+                    {(wizResult.validation && Object.keys(wizResult.validation).length > 0) && (
                       <div>
                         <span className="font-medium">验证结果:</span>
                         <ul className="mt-1 space-y-1">
-                          {Object.entries(wizResult.validation).map(([field, vr]) => (
+                          {Object.entries(wizResult.validation ?? {}).map(([field, vr]) => (
                             <li key={field} className={vr.ok ? 'text-green-600' : 'text-red-600'}>
-                              {vr.ok ? '✅' : '❌'} {field}: {vr.detail || (vr.ok ? '通过' : '失败')}
+                              {vr.ok ? '✅' : '❌'} {field}: {typeof vr.detail === 'string' ? vr.detail : (vr.ok ? '通过' : '失败')}
                             </li>
                           ))}
                         </ul>

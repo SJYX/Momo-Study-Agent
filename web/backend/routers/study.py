@@ -23,12 +23,19 @@ from web.backend.deps import (
     get_task_registry,
     get_workflow,
 )
-from web.backend.schemas import ok_response, error_response
+from web.backend.schemas import (
+    ApiResponse,
+    FutureItemsResponse,
+    TaskRunResponse,
+    TodayItemsResponse,
+    error_response,
+    ok_response,
+)
 
 router = APIRouter(prefix="/api/study", tags=["study"])
 
 
-@router.get("/today")
+@router.get("/today", response_model=ApiResponse[TodayItemsResponse])
 async def get_today(user: str = Depends(get_active_user), momo=Depends(get_momo_api)):
     """获取今日任务列表。"""
     try:
@@ -39,7 +46,7 @@ async def get_today(user: str = Depends(get_active_user), momo=Depends(get_momo_
         return error_response("MAIMO_API_ERROR", str(e), user_id=user)
 
 
-@router.get("/future")
+@router.get("/future", response_model=ApiResponse[FutureItemsResponse])
 async def get_future(
     days: int = Query(default=7, ge=1, le=30),
     user: str = Depends(get_active_user),
@@ -69,7 +76,7 @@ async def get_future(
         return error_response("MAIMO_API_ERROR", str(e), user_id=user)
 
 
-@router.post("/process")
+@router.post("/process", response_model=ApiResponse[TaskRunResponse])
 async def process_today(
     user: str = Depends(get_active_user),
     momo=Depends(get_momo_api),
@@ -98,7 +105,7 @@ async def process_today(
     return ok_response({"task_id": task_id, "word_count": len(items)}, user_id=user)
 
 
-@router.post("/process-future")
+@router.post("/process-future", response_model=ApiResponse[TaskRunResponse])
 async def process_future(
     days: int = Query(default=7, ge=1, le=30),
     user: str = Depends(get_active_user),
@@ -142,7 +149,7 @@ async def process_future(
     return ok_response({"task_id": task_id, "word_count": len(records), "days": days}, user_id=user)
 
 
-@router.post("/iterate")
+@router.post("/iterate", response_model=ApiResponse[TaskRunResponse])
 async def iterate(
     user: str = Depends(get_active_user),
     ai_client=Depends(get_ai_client),

@@ -26,6 +26,9 @@ export default function WordLibrary() {
   const [detailTab, setDetailTab] = useState<'note' | 'iterations'>('note')
   const [iterations, setIterations] = useState<WordIteration[]>([])
   const [loadingIterations, setLoadingIterations] = useState(false)
+  const total = data?.total ?? 0
+  const pageSize = data?.page_size ?? 30
+  const items = data?.items ?? []
 
   const load = useCallback(() => {
     const params = new URLSearchParams({ page: String(page), page_size: '30' })
@@ -95,7 +98,7 @@ export default function WordLibrary() {
     finally { setSaving(false) }
   }
 
-  const totalPages = data ? Math.ceil(data.total / data.page_size) : 0
+  const totalPages = data ? Math.ceil(total / pageSize) : 0
 
   return (
     <div className="p-6">
@@ -156,7 +159,7 @@ export default function WordLibrary() {
 
       {data && (
         <>
-          <div className="text-sm text-gray-500 mb-2">共 {data.total} 条记录</div>
+          <div className="text-sm text-gray-500 mb-2">共 {total} 条记录</div>
           <div className="bg-white rounded-lg shadow overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-gray-50"><tr>
@@ -167,8 +170,9 @@ export default function WordLibrary() {
                 <th className="text-left px-4 py-2 font-medium text-gray-600">创建时间</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">操作</th>
               </tr></thead>
-              <tbody>{data.items.map(w => {
-                const sync = SYNC_LABELS[w.sync_status] || SYNC_LABELS[0]
+              <tbody>{items.map(w => {
+                const syncStatus = typeof w.sync_status === 'number' ? w.sync_status : 0
+                const sync = SYNC_LABELS[syncStatus] || SYNC_LABELS[0]
                 return (
                   <tr key={w.voc_id} className="border-t hover:bg-gray-50">
                     <td className="px-4 py-2 font-medium">{w.spelling}</td>

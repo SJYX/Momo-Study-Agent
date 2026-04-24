@@ -45,7 +45,7 @@ export function useTaskStream({ taskId, enabled = true, onEvent, onDone }: UseTa
       try {
         const data: TaskEvent = JSON.parse(e.data)
         setEvents(prev => [...prev, data])
-        if (data.status) {
+        if (typeof data.status === 'string') {
           setStatus(data.status)
           onEvent?.(data)
           if (['done', 'error', 'canceled'].includes(data.status)) {
@@ -70,7 +70,7 @@ export function useTaskStream({ taskId, enabled = true, onEvent, onDone }: UseTa
       try {
         const data: TaskEvent = JSON.parse(e.data)
         setEvents(prev => [...prev, data])
-        if (data.type === 'status' && data.status) {
+        if (data.type === 'status' && typeof data.status === 'string') {
           setStatus(data.status)
           if (['done', 'error', 'canceled'].includes(data.status)) {
             onDone?.(data.status)

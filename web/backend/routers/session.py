@@ -6,12 +6,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from web.backend.deps import get_active_user
-from web.backend.schemas import SessionInfo, ok_response
+from web.backend.schemas import ApiResponse, SessionInfo, ok_response
 
 router = APIRouter(prefix="/api", tags=["session"])
 
 
-@router.get("/session")
+@router.get("/session", response_model=ApiResponse[SessionInfo])
 async def get_session(user: str = Depends(get_active_user)):
     """返回当前锁定用户、AI 配置摘要。"""
     from config import AI_PROVIDER, BATCH_SIZE, DRY_RUN, DB_PATH

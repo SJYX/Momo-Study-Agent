@@ -10,6 +10,8 @@ export default function Preflight() {
   const [data, setData] = useState<PreflightResponse | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const checks = data?.checks ?? []
+  const blockingCount = data?.blocking_items?.length ?? 0
 
   const load = () => {
     setLoading(true)
@@ -53,10 +55,10 @@ export default function Preflight() {
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <div className={`px-4 py-3 border-b font-medium ${data.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
             <Shield size={16} className="inline mr-2" />
-            {data.ok ? '环境就绪' : `存在 ${data.blocking_items.length} 个阻断项`}
+            {data.ok ? '环境就绪' : `存在 ${blockingCount} 个阻断项`}
           </div>
           <div className="divide-y">
-            {data.checks.map((check) => (
+            {checks.map((check) => (
               <div key={check.name} className="px-4 py-3 flex items-start gap-3">
                 <StatusIcon check={check} />
                 <div className="flex-1 min-w-0">

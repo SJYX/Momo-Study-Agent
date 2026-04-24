@@ -6,9 +6,8 @@ info/warning/error 调用都把事件推入对应任务的 asyncio.Queue。
 """
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 class LoggerBridge:
@@ -44,13 +43,13 @@ class LoggerBridge:
                 orig(msg, **kwargs)
 
                 # 如果有 task_id 上下文，推入事件队列
-                ctx = getattr(logger, "_context", {}) or {}
+                ctx = getattr(logger, "context", {}) or {}
                 task_id = ctx.get("task_id")
                 if not task_id:
                     return
 
                 rec = self._registry.get(task_id)
-                if rec is None or rec.event_queue is None:
+                if rec is None:
                     return
 
                 event = {
@@ -60,21 +59,19 @@ class LoggerBridge:
                     "module": kwargs.get("module", ""),
                     "ts": time.time(),
                 }
-                # 如果有 extra 结构化事件字段，一并传递
+                # 兼容两种写法：
+                # 1) logger.info(msg, event="...", progress={...})
+                # 2) logger.info(msg, extra={"event":"...", "progress": {...}})
+                extra_payload = kwargs.get("extra")
+                if isinstance(extra_payload, dict):
+                    for key in ("event", "progress", "data"):
+                        if key in extra_payload:
+                            event[key] = extra_payload[key]
                 for key in ("event", "progress", "data"):
                     if key in kwargs:
                         event[key] = kwargs[key]
 
-                try:
-                    if rec.event_queue.full():
-                        # 丢弃最老的非关键日志，腾出空间
-                        try:
-                            rec.event_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                    rec.event_queue.put_nowait(event)
-                except (asyncio.QueueFull, RuntimeError):
-                    pass
+                self._registry.push_event(task_id, event)
 
             return proxy
 

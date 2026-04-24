@@ -13,12 +13,21 @@ import os
 from fastapi import APIRouter, Depends, Path
 
 from web.backend.deps import get_active_user
-from web.backend.schemas import ok_response, error_response
+from web.backend.schemas import (
+    ApiResponse,
+    UsersListResponse,
+    ValidateRequest,
+    ValidateResponse,
+    WizardCreateRequest,
+    WizardCreateResponse,
+    error_response,
+    ok_response,
+)
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-@router.get("")
+@router.get("", response_model=ApiResponse[UsersListResponse])
 async def list_users(user: str = Depends(get_active_user)):
     """列出本机所有 profile 用户。"""
     from config import PROFILES_DIR
@@ -62,14 +71,14 @@ async def list_users(user: str = Depends(get_active_user)):
     return ok_response({"users": result, "active_user": user}, user_id=user)
 
 
-@router.post("/validate")
-async def validate_config(body: dict, user: str = Depends(get_active_user)):
+@router.post("/validate", response_model=ApiResponse[ValidateResponse])
+async def validate_config(body: ValidateRequest, user: str = Depends(get_active_user)):
     """验证配置项（墨墨 Token / AI Key 等），返回校验结果。
 
     body: {"field": "momo_token"|"mimo_api_key"|"gemini_api_key", "value": "..."}
     """
-    field = body.get("field", "")
-    value = body.get("value", "")
+    field = body.field
+    value = body.value
 
     if not field or not value:
         return error_response("INVALID_INPUT", "field 和 value 不能为空", user_id=user)
@@ -107,8 +116,8 @@ async def validate_config(body: dict, user: str = Depends(get_active_user)):
         return ok_response({"field": field, "valid": False, "message": str(e)[:200]}, user_id=user)
 
 
-@router.post("/wizard")
-async def wizard_create(body: dict, user: str = Depends(get_active_user)):
+@router.post("/wizard", response_model=ApiResponse[WizardCreateResponse])
+async def wizard_create(body: WizardCreateRequest, user: str = Depends(get_active_user)):
     """单页表单一次提交创建新用户 profile。
 
     body: {
@@ -122,11 +131,11 @@ async def wizard_create(body: dict, user: str = Depends(get_active_user)):
     from config import PROFILES_DIR
     from core.config_wizard import ConfigWizard
 
-    username = (body.get("username") or "").strip().lower()
-    momo_token = body.get("momo_token", "")
-    ai_provider = body.get("ai_provider", "")
-    ai_api_key = body.get("ai_api_key", "")
-    user_email = body.get("user_email", "") or f"{username}@momo-local"
+    username = (body.username or "").strip().lower()
+    momo_token = body.momo_token
+    ai_provider = body.ai_provider
+    ai_api_key = body.ai_api_key
+    user_email = body.user_email or f"{username}@momo-local"
 
     if not username:
         return error_response("INVALID_INPUT", "用户名不能为空", user_id=user)

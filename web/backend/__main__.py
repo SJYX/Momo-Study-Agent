@@ -13,6 +13,9 @@ import os
 import sys
 import io
 import platform
+import threading
+import time
+import webbrowser
 
 # Windows 控制台 UTF-8 编码修复
 if platform.system() == "Windows":
@@ -30,6 +33,7 @@ def main():
     parser.add_argument("--env", choices=["development", "staging", "production"],
                         default=os.getenv("MOMO_ENV", "development"))
     parser.add_argument("--reload", action="store_true", help="开发模式热重载")
+    parser.add_argument("--open-browser", action="store_true", help="启动后自动打开浏览器")
     args = parser.parse_args()
 
     # 1. 设置用户
@@ -61,6 +65,15 @@ def main():
     print(f"   地址: http://{args.host}:{args.port}")
     print(f"   健康检查: http://{args.host}:{args.port}/api/health")
     print(f"   按 Ctrl+C 停止\n")
+
+    if args.open_browser:
+        def _open():
+            time.sleep(1.0)
+            try:
+                webbrowser.open(f"http://{args.host}:{args.port}")
+            except Exception:
+                pass
+        threading.Thread(target=_open, daemon=True).start()
 
     # 3. 启动 uvicorn
     import uvicorn

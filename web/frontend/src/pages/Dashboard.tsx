@@ -57,13 +57,13 @@ export default function Dashboard() {
       {stats && (
         <div className="mt-6 bg-white rounded-lg shadow p-4">
           <h3 className="font-medium mb-2">AI 调用统计</h3>
-          <div className="grid grid-cols-3 gap-4 text-sm">
-            <div><span className="text-gray-500">总批次：</span>{stats.ai_batches}</div>
-            <div><span className="text-gray-500">总 Tokens：</span>{stats.total_tokens.toLocaleString()}</div>
-            <div><span className="text-gray-500">平均延迟：</span>{stats.avg_latency_ms}ms</div>
+            <div className="grid grid-cols-3 gap-4 text-sm">
+              <div><span className="text-gray-500">总批次：</span>{stats.ai_batches}</div>
+              <div><span className="text-gray-500">总 Tokens：</span>{(stats.total_tokens ?? 0).toLocaleString()}</div>
+              <div><span className="text-gray-500">平均延迟：</span>{stats.avg_latency_ms}ms</div>
+            </div>
           </div>
-        </div>
-      )}
+        )}
     </div>
   )
 }

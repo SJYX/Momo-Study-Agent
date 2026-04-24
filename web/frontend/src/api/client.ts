@@ -50,3 +50,9 @@ export async function apiPost<T = unknown>(
     body: body ? JSON.stringify(body) : undefined,
   })
 }
+
+export async function apiDelete<T = unknown>(url: string): Promise<ApiResponse<T>> {
+  return apiClient<T>(url, {
+    method: 'DELETE',
+  })
+}

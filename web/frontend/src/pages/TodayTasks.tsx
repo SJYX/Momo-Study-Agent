@@ -12,6 +12,7 @@ export default function TodayTasks() {
   const [error, setError] = useState('')
   const [processing, setProcessing] = useState(false)
   const setActiveTask = useTaskStore(s => s.setActiveTask)
+  const items = data?.items ?? []
 
   const load = () => {
     apiClient<TodayItemsResponse>('/api/study/today')
@@ -54,7 +55,7 @@ export default function TodayTasks() {
 
       {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4">{error}</div>}
 
-      {data && data.items.length > 0 && (
+      {data && items.length > 0 && (
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
@@ -65,7 +66,7 @@ export default function TodayTasks() {
               </tr>
             </thead>
             <tbody>
-              {data.items.map((item, i) => (
+              {items.map((item, i) => (
                 <tr key={item.voc_id} className="border-t hover:bg-gray-50">
                   <td className="px-4 py-2 text-gray-400">{i + 1}</td>
                   <td className="px-4 py-2 font-medium">{item.voc_spelling}</td>
@@ -77,7 +78,7 @@ export default function TodayTasks() {
         </div>
       )}
 
-      {data && data.items.length === 0 && (
+      {data && items.length === 0 && (
         <div className="text-center py-12 text-gray-400">🎉 今日无待处理单词</div>
       )}
     </div>

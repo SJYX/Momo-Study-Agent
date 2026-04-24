@@ -10,12 +10,12 @@ import os
 from fastapi import APIRouter, Depends
 
 from web.backend.deps import get_active_user
-from web.backend.schemas import ok_response
+from web.backend.schemas import ApiResponse, PreflightResponse, ok_response
 
 router = APIRouter(prefix="/api", tags=["preflight"])
 
 
-@router.get("/preflight")
+@router.get("/preflight", response_model=ApiResponse[PreflightResponse])
 async def preflight(user: str = Depends(get_active_user)):
     """运行环境体检，返回检查项列表。"""
     from core.preflight import run_preflight
