@@ -51,6 +51,16 @@ export async function apiPost<T = unknown>(
   })
 }
 
+export async function apiPut<T = unknown>(
+  url: string,
+  body?: unknown,
+): Promise<ApiResponse<T>> {
+  return apiClient<T>(url, {
+    method: 'PUT',
+    body: body ? JSON.stringify(body) : undefined,
+  })
+}
+
 export async function apiDelete<T = unknown>(url: string): Promise<ApiResponse<T>> {
   return apiClient<T>(url, {
     method: 'DELETE',

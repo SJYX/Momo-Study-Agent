@@ -2,6 +2,7 @@
 web/backend/routers/users.py: 用户管理端点。
 
 GET  /api/users              — 本机 profile 列表
+PUT  /api/users/active       — 切换当前活跃用户
 POST /api/users/wizard       — 创建新用户（单页表单一次提交）
 POST /api/users/validate     — 验证配置项
 DELETE /api/users/{username}  — 删除本地 profile
@@ -69,6 +70,27 @@ async def list_users(user: str = Depends(get_active_user)):
         })
 
     return ok_response({"users": result, "active_user": user}, user_id=user)
+
+
+@router.put("/active", response_model=ApiResponse[dict])
+async def switch_active_user(
+    username: str,
+    user: str = Depends(get_active_user),
+):
+    """切换当前活跃用户（PUT /api/users/active?username=xxx）。"""
+    from config import PROFILES_DIR
+
+    # 校验目标用户存在
+    profile_path = os.path.join(PROFILES_DIR, f"{username.lower()}.env")
+    if not os.path.exists(profile_path):
+        return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
+
+    os.environ["MOMO_USER"] = username.lower()
+
+    return ok_response({
+        "active_user": username.lower(),
+        "message": f"已切换到用户 '{username}'",
+    }, user_id=username.lower())
 
 
 @router.post("/validate", response_model=ApiResponse[ValidateResponse])

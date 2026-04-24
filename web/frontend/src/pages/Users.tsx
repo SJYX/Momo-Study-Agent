@@ -2,7 +2,7 @@
  * pages/Users.tsx — 用户设置：profile 列表 + 创建向导 + 删除。
  */
 import { useEffect, useState } from 'react'
-import { apiClient, apiPost } from '../api/client'
+import { apiClient, apiPost, apiPut } from '../api/client'
 import type {
   UsersListResponse,
   UserProfile,
@@ -42,6 +42,7 @@ export default function Users() {
 
   // Delete state
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [switching, setSwitching] = useState<string | null>(null)
   const users = data?.users ?? []
 
   const load = () => {
@@ -99,6 +100,18 @@ export default function Users() {
     }
   }
 
+  const handleSwitch = async (username: string) => {
+    setSwitching(username)
+    try {
+      await apiPut(`/api/users/active?username=${encodeURIComponent(username)}`)
+      load() // refresh list to show new active user
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSwitching(null)
+    }
+  }
+
   const handleDelete = async (username: string) => {
     if (!confirm(`确认删除用户 "${username}" 的本地 profile？此操作不可恢复。`)) return
     setDeleting(username)
@@ -144,14 +157,31 @@ export default function Users() {
       {data && (
         <div className="space-y-3 max-w-2xl">
           {users.map((u: UserProfile) => (
-            <div key={u.username} className={`bg-white rounded-lg shadow p-4 flex items-center gap-4 ${u.is_active ? 'ring-2 ring-blue-500' : ''}`}>
+            <div
+              key={u.username}
+              className={`bg-white rounded-lg shadow p-4 flex items-center gap-4 transition-all ${
+                u.is_active
+                  ? 'ring-2 ring-blue-500 cursor-default'
+                  : 'cursor-pointer hover:ring-2 hover:ring-blue-300 hover:shadow-md'
+              } ${switching === u.username ? 'opacity-60' : ''}`}
+              onClick={() => {
+                if (!u.is_active && !switching) handleSwitch(u.username)
+              }}
+            >
               <div className="bg-gray-100 p-3 rounded-full">
-                <User size={20} className="text-gray-600" />
+                {switching === u.username ? (
+                  <Loader2 size={20} className="text-blue-500 animate-spin" />
+                ) : (
+                  <User size={20} className="text-gray-600" />
+                )}
               </div>
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{u.username}</span>
                   {u.is_active && <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">当前</span>}
+                  {!u.is_active && switching === u.username && (
+                    <span className="text-xs text-blue-500">切换中...</span>
+                  )}
                 </div>
                 <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
                   <span>AI: {u.ai_provider || '未配置'}</span>
@@ -167,7 +197,7 @@ export default function Users() {
               </div>
               {!u.is_active && (
                 <button
-                  onClick={() => handleDelete(u.username)}
+                  onClick={e => { e.stopPropagation(); handleDelete(u.username) }}
                   disabled={deleting === u.username}
                   className="text-red-400 hover:text-red-600 disabled:opacity-40"
                   title="删除用户"
