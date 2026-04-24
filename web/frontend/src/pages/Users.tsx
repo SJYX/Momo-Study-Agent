@@ -104,6 +104,8 @@ export default function Users() {
     setSwitching(username)
     try {
       await apiPut(`/api/users/active?username=${encodeURIComponent(username)}`)
+      // Notify all other pages to reload for the new user
+      window.dispatchEvent(new CustomEvent('active-user-changed', { detail: { username } }))
       load() // refresh list to show new active user
     } catch (e) {
       setError(String(e))

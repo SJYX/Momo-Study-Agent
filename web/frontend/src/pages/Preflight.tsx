@@ -1,8 +1,9 @@
 /**
  * pages/Preflight.tsx — 体检：一键运行 preflight 检查。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiClient } from '../api/client'
+import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import type { PreflightResponse, PreflightCheck } from '../api/types'
 import { Shield, CheckCircle2, XCircle, RefreshCw, Loader2 } from 'lucide-react'
 
@@ -13,16 +14,17 @@ export default function Preflight() {
   const checks = data?.checks ?? []
   const blockingCount = data?.blocking_items?.length ?? 0
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
     setError('')
     apiClient<PreflightResponse>('/api/preflight')
       .then(r => setData(r.data))
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false))
-  }
+  }, [])
 
-  useEffect(load, [])
+  useEffect(() => { load() }, [load])
+  useOnActiveUserChanged(load)
 
   const StatusIcon = ({ check }: { check: PreflightCheck }) => {
     if (check.ok) return <CheckCircle2 size={16} className="text-green-500" />

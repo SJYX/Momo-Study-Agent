@@ -1,8 +1,9 @@
 /**
  * pages/TodayTasks.tsx — 今日任务列表 + 触发处理。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiClient, apiPost } from '../api/client'
+import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { useTaskStore } from '../stores/tasks'
 import type { TodayItemsResponse, TaskSubmitResponse } from '../api/types'
 import { PlayCircle, Loader2 } from 'lucide-react'
@@ -14,13 +15,14 @@ export default function TodayTasks() {
   const setActiveTask = useTaskStore(s => s.setActiveTask)
   const items = data?.items ?? []
 
-  const load = () => {
+  const load = useCallback(() => {
     apiClient<TodayItemsResponse>('/api/study/today')
       .then(r => setData(r.data))
       .catch(e => setError(String(e)))
-  }
+  }, [])
 
-  useEffect(load, [])
+  useEffect(() => { load() }, [load])
+  useOnActiveUserChanged(load)
 
   const handleProcess = async () => {
     setProcessing(true)

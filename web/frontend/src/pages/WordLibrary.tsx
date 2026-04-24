@@ -3,6 +3,7 @@
  */
 import { useEffect, useState, useCallback } from 'react'
 import { apiClient } from '../api/client'
+import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import type { WordsListResponse, WordNoteDetail, WordIterationsResponse, WordIteration } from '../api/types'
 import { Search, ChevronLeft, ChevronRight, Eye, X, Save, Loader2, History } from 'lucide-react'
 
@@ -41,6 +42,7 @@ export default function WordLibrary() {
   }, [page, search, filterSync, filterLevel])
 
   useEffect(load, [load])
+  useOnActiveUserChanged(load)
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()

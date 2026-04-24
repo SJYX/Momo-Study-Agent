@@ -1,8 +1,9 @@
 /**
  * pages/FuturePlan.tsx — 未来计划：选择天数预览 + 触发处理。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiClient, apiPost } from '../api/client'
+import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { useTaskStore } from '../stores/tasks'
 import type { FutureItemsResponse, TaskSubmitResponse } from '../api/types'
 import { PlayCircle, Loader2, Search } from 'lucide-react'
@@ -15,14 +16,15 @@ export default function FuturePlan() {
   const setActiveTask = useTaskStore(s => s.setActiveTask)
   const items = data?.items ?? []
 
-  const load = () => {
+  const load = useCallback(() => {
     setError('')
     apiClient<FutureItemsResponse>(`/api/study/future?days=${days}`)
       .then(r => setData(r.data))
       .catch(e => setError(String(e)))
-  }
+  }, [days])
 
-  useEffect(load, [days]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [load])
+  useOnActiveUserChanged(load)
 
   const handleProcess = async () => {
     if (!data?.items?.length) return

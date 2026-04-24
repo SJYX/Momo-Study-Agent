@@ -1,8 +1,9 @@
 /**
  * pages/Dashboard.tsx — 仪表盘：展示核心统计卡片。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiClient } from '../api/client'
+import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import type { StatsSummary, SessionInfo } from '../api/types'
 import { BookOpen, Brain, Zap, AlertTriangle, Database, Clock } from 'lucide-react'
 
@@ -11,7 +12,7 @@ export default function Dashboard() {
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [error, setError] = useState('')
 
-  useEffect(() => {
+  const load = useCallback(() => {
     apiClient<StatsSummary>('/api/stats/summary')
       .then(r => setStats(r.data))
       .catch(e => setError(String(e)))
@@ -19,6 +20,9 @@ export default function Dashboard() {
       .then(r => setSession(r.data))
       .catch(() => {})
   }, [])
+
+  useEffect(() => { load() }, [load])
+  useOnActiveUserChanged(load)
 
   const cards = stats ? [
     { label: '总单词数', value: stats.total_words, icon: BookOpen, color: 'bg-blue-500' },

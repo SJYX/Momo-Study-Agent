@@ -1,8 +1,9 @@
 /**
  * pages/SyncStatus.tsx — 同步状态：队列深度 + 冲突列表 + 重试。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiClient, apiPost } from '../api/client'
+import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import type { SyncStatusResponse } from '../api/types'
 import { RefreshCcw, Loader2, AlertTriangle, RotateCcw } from 'lucide-react'
 
@@ -16,13 +17,14 @@ export default function SyncStatus() {
   const conflictCount = data?.conflict_count ?? 0
   const conflicts = data?.conflicts ?? []
 
-  const load = () => {
+  const load = useCallback(() => {
     apiClient<SyncStatusResponse>('/api/sync/status')
       .then(r => setData(r.data))
       .catch(e => setError(String(e)))
-  }
+  }, [])
 
-  useEffect(load, [])
+  useEffect(() => { load() }, [load])
+  useOnActiveUserChanged(load)
 
   const handleFlush = async () => {
     setFlushing(true)
