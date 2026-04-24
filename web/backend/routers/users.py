@@ -93,13 +93,19 @@ async def switch_active_user(
     new_user = _cfg.switch_user(username.lower())
     _deps._active_user = new_user
 
-    # 关闭旧数据库连接单例，下次访问自动重建为新用户的库
+    # 重建数据库连接单例（新用户新 DB）
     try:
         from database.connection import cleanup_concurrent_system, init_concurrent_system
         cleanup_concurrent_system()
         init_concurrent_system()
     except Exception:
-        pass  # 非致命，连接下次请求时会自动重建
+        pass
+
+    # 重建 momo_api / ai_client / workflow 内部引用
+    try:
+        _deps.reload_user_services()
+    except Exception:
+        pass
 
     return ok_response({
         "active_user": username.lower(),

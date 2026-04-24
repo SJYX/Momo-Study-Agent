@@ -74,6 +74,48 @@ def cleanup_deps():
 # ---------------------------------------------------------------------------
 # Depends 函数（路由层使用）
 # ---------------------------------------------------------------------------
+def reload_user_services():
+    """用户切换后重建 momo_api / ai_client 等服务单例。"""
+    global _momo_api, _ai_client
+
+    import config as _cfg
+
+    # 重建 MaiMemoAPI（token 变了）
+    old_momo = _momo_api
+    try:
+        from core.maimemo_api import MaiMemoAPI
+        _momo_api = MaiMemoAPI(_cfg.MOMO_TOKEN)
+    except Exception:
+        _momo_api = None
+    if old_momo and hasattr(old_momo, "close"):
+        try:
+            old_momo.close()
+        except Exception:
+            pass
+
+    # 重建 AI client（provider / key 可能变了）
+    old_ai = _ai_client
+    try:
+        if _cfg.AI_PROVIDER == "mimo":
+            from core.mimo_client import MimoClient
+            _ai_client = MimoClient(_cfg.MIMO_API_KEY)
+        else:
+            from core.gemini_client import GeminiClient
+            _ai_client = GeminiClient(_cfg.GEMINI_API_KEY)
+    except Exception:
+        _ai_client = None
+    if old_ai and hasattr(old_ai, "close"):
+        try:
+            old_ai.close()
+        except Exception:
+            pass
+
+    # 更新 workflow 的内部引用
+    if _workflow:
+        _workflow.momo_api = _momo_api
+        _workflow.ai_client = _ai_client
+
+
 def get_active_user() -> str:
     """当前锁定用户。短期进程级常量；Phase 6 改为 JWT 解析。"""
     return _active_user or "default"
