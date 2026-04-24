@@ -216,3 +216,45 @@ def get_force_cloud_mode():
 
 FORCE_CLOUD_MODE = get_force_cloud_mode()
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 运行时用户切换 (Runtime User Switch)
+# ──────────────────────────────────────────────────────────────────────────────
+def switch_user(username: str) -> str:
+    """热切换当前用户：重新加载 profile env 并更新模块级变量。
+
+    调用后 config.AI_PROVIDER / DB_PATH / MOMO_TOKEN 等立即生效。
+    返回规范化后的用户名。
+    """
+    global ACTIVE_USER, MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY
+    global AI_PROVIDER, DB_PATH, TEST_DB_PATH, TURSO_DB_URL, TURSO_AUTH_TOKEN
+
+    # 1. 清除旧的用户隔离环境变量
+    for key in USER_SCOPED_KEYS:
+        os.environ.pop(key, None)
+
+    # 2. 设置新用户并加载 profile
+    normalized, profile_env = _resolve_profile_env_path(username)
+    if not normalized:
+        normalized = "default"
+
+    os.environ["MOMO_USER"] = normalized
+    if profile_env:
+        load_dotenv(profile_env, override=True)
+
+    # 3. 重新加载全局 .env（保留全局配置）
+    if os.path.exists(global_env_path):
+        load_dotenv(global_env_path, override=False)
+
+    # 4. 更新模块级变量
+    ACTIVE_USER = normalized
+    MOMO_TOKEN = os.getenv("MOMO_TOKEN")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    MIMO_API_KEY = os.getenv("MIMO_API_KEY")
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "mimo")
+    TURSO_DB_URL = os.getenv("TURSO_DB_URL")
+    TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+    DB_PATH, TEST_DB_PATH = _resolve_user_db_paths(normalized)
+
+    return normalized
+

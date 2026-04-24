@@ -81,16 +81,17 @@ async def switch_active_user(
 
     更新环境变量 + deps 模块级 _active_user，使后续请求识别新用户。
     """
-    from config import PROFILES_DIR
+    import config as _cfg
     import web.backend.deps as _deps
 
     # 校验目标用户存在
-    profile_path = os.path.join(PROFILES_DIR, f"{username.lower()}.env")
+    profile_path = os.path.join(_cfg.PROFILES_DIR, f"{username.lower()}.env")
     if not os.path.exists(profile_path):
         return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
 
-    os.environ["MOMO_USER"] = username.lower()
-    _deps._active_user = username.lower()
+    # 热切换用户：更新 env + config 模块级变量 + deps
+    new_user = _cfg.switch_user(username.lower())
+    _deps._active_user = new_user
 
     return ok_response({
         "active_user": username.lower(),
