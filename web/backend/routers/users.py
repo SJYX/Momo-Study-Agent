@@ -77,8 +77,12 @@ async def switch_active_user(
     username: str,
     user: str = Depends(get_active_user),
 ):
-    """切换当前活跃用户（PUT /api/users/active?username=xxx）。"""
+    """切换当前活跃用户（PUT /api/users/active?username=xxx）。
+
+    更新环境变量 + deps 模块级 _active_user，使后续请求识别新用户。
+    """
     from config import PROFILES_DIR
+    import web.backend.deps as _deps
 
     # 校验目标用户存在
     profile_path = os.path.join(PROFILES_DIR, f"{username.lower()}.env")
@@ -86,6 +90,7 @@ async def switch_active_user(
         return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
 
     os.environ["MOMO_USER"] = username.lower()
+    _deps._active_user = username.lower()
 
     return ok_response({
         "active_user": username.lower(),
