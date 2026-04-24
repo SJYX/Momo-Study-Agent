@@ -256,5 +256,12 @@ def switch_user(username: str) -> str:
     TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
     DB_PATH, TEST_DB_PATH = _resolve_user_db_paths(normalized)
 
+    # Also update database.connection's cached DB_PATH
+    try:
+        import database.connection as _db_conn
+        _db_conn.DB_PATH = DB_PATH
+    except Exception:
+        pass
+
     return normalized
 

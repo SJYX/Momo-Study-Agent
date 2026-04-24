@@ -22,7 +22,11 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from config import DB_PATH, HUB_DB_PATH, TURSO_HUB_AUTH_TOKEN, TURSO_HUB_DB_URL
+import config as _config
+DB_PATH = _config.DB_PATH
+HUB_DB_PATH = _config.HUB_DB_PATH
+TURSO_HUB_AUTH_TOKEN = _config.TURSO_HUB_AUTH_TOKEN
+TURSO_HUB_DB_URL = _config.TURSO_HUB_DB_URL
 
 try:
     import libsql

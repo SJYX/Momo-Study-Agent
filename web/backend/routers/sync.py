@@ -10,7 +10,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from config import DB_PATH
+import config
 from web.backend.deps import get_active_user, get_workflow
 from web.backend.schemas import (
     ApiResponse,
@@ -41,7 +41,7 @@ async def sync_status(
         queue_depth = 0
 
     # 冲突列表 (sync_status = 2)
-    conn = _get_read_conn(DB_PATH)
+    conn = _get_read_conn(config.DB_PATH)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
     conflicts = []
@@ -102,7 +102,7 @@ async def retry_conflicts(
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
     from database.utils import clean_for_maimemo
 
-    conn = _get_read_conn(DB_PATH)
+    conn = _get_read_conn(config.DB_PATH)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
     conflicts = []

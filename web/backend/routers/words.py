@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from config import DB_PATH
+import config
 from web.backend.deps import get_active_user
 from web.backend.schemas import (
     ApiResponse,
@@ -37,7 +37,7 @@ async def list_words(
     """分页列出 ai_word_notes，支持搜索和筛选。"""
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
-    conn = _get_read_conn(DB_PATH)
+    conn = _get_read_conn(config.DB_PATH)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 
@@ -138,7 +138,7 @@ async def get_word_iterations(voc_id: str, user: str = Depends(get_active_user))
     """获取单词的迭代历史。"""
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
-    conn = _get_read_conn(DB_PATH)
+    conn = _get_read_conn(config.DB_PATH)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 

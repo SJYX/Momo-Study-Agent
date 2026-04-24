@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from config import DB_PATH
+import config
 from web.backend.deps import get_active_user
 from web.backend.schemas import ApiResponse, StatsSummary, ok_response, error_response
 
@@ -19,7 +19,7 @@ async def stats_summary(user: str = Depends(get_active_user)):
     """返回系统聚合统计信息。"""
     from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
-    conn = _get_read_conn(DB_PATH)
+    conn = _get_read_conn(config.DB_PATH)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 
