@@ -3,6 +3,7 @@
  */
 import { useEffect, useState } from 'react'
 import { apiClient, apiPost, apiPut } from '../api/client'
+import { useProfileStore } from '../stores/profile'
 import type {
   UsersListResponse,
   UserProfile,
@@ -104,9 +105,9 @@ export default function Users() {
     setSwitching(username)
     try {
       await apiPut(`/api/users/active?username=${encodeURIComponent(username)}`)
-      // Notify all other pages to reload for the new user
+      useProfileStore.getState().setActiveProfile(username)
       window.dispatchEvent(new CustomEvent('active-user-changed', { detail: { username } }))
-      load() // refresh list to show new active user
+      load()
     } catch (e) {
       setError(String(e))
     } finally {
@@ -144,7 +145,7 @@ export default function Users() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold">用户设置</h2>
-          <p className="text-gray-500">{data ? `当前用户: ${data.active_user}` : loading ? '加载中...' : ''}</p>
+          <p className="text-gray-500">{data ? `当前用户: ${data.active_profile}` : loading ? '加载中...' : ''}</p>
         </div>
         <button
           onClick={() => setWizardStep('form')}

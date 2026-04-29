@@ -37,7 +37,7 @@ export default function Dashboard() {
     <div className="p-6">
       <h2 className="text-2xl font-bold mb-1">仪表盘</h2>
       <p className="text-gray-500 mb-6">
-        {session ? `用户: ${session.active_user} · AI: ${session.ai_provider}` : '加载中...'}
+        {session ? `Profile: ${session.active_profile}` : '加载中...'}
       </p>
 
       {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4">{error}</div>}

@@ -11,11 +11,10 @@ export interface ApiResponse<T = unknown> {
 }
 
 export interface SessionInfo {
-  active_user: string
-  ai_provider: string
-  batch_size: number
-  dry_run: boolean
-  db_path: string
+  active_profile: string
+  available_profiles: string[]
+  server_time: string
+  host_binding: string
 }
 
 export interface HealthInfo {
@@ -178,7 +177,7 @@ export interface UserProfile {
 
 export interface UsersListResponse {
   users?: UserProfile[]
-  active_user: string
+  active_profile: string
 }
 
 export interface WizardCreateRequest {
