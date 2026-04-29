@@ -48,11 +48,10 @@ def error_response(code: str, message: str, user_id: str = "") -> dict:
 # /api/session
 # ---------------------------------------------------------------------------
 class SessionInfo(BaseModel):
-    active_user: str
-    ai_provider: str
-    batch_size: int
-    dry_run: bool
-    db_path: str
+    active_profile: str
+    available_profiles: list[str] = Field(default_factory=list)
+    server_time: str
+    host_binding: str = "127.0.0.1"
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +237,7 @@ class UserProfile(BaseModel):
 
 class UsersListResponse(BaseModel):
     users: list[UserProfile] = Field(default_factory=list)
-    active_user: str
+    active_profile: str
 
 
 class ValidateRequest(BaseModel):

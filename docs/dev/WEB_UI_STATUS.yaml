@@ -2,7 +2,7 @@ meta:
   project: momo-web-ui
   plan_file: docs/dev/WEB_UI_EXEC_PLAN.md
   owner: 112560
-  last_updated: 2026-04-29
+  last_updated: 2026-04-30
   status: in_progress
 
 principles:
@@ -13,9 +13,9 @@ principles:
   - 再做视觉美化
 
 current:
-  phase: P0
-  in_progress: P0-T1
-  summary: 用户入口 + 请求级 profile 上下文基础
+  phase: P1
+  in_progress: P1-T1
+  summary: Profile 隔离与并发基础（UserContextManager 代码已完成，启动阻塞问题待修）
 
 phase_plan:
   P0:
@@ -679,14 +679,24 @@ phase_plan:
           - P1-T2
 
 blocked: []
-done: []
+done:
+  - P0-T1
+  - P0-T2
+  - P0-T3
+  - P0-T4
+  - P0-T5
+  - P0-T6
 
 next_actions:
-  - 执行 P0-T1 创建 UserGateway 页面骨架
-  - 执行 P0-T2 active profile 持久化
-  - 执行 P0-T3 路由守卫
+  - 执行 P1-T1 实现 UserContextManager 基础结构
+  - 执行 P1-T2 实现两层锁机制
+  - 执行 P1-T3 TaskRegistry 按 profile 隔离
+  - 执行 P1-T4 SSE 按 profile + task_id 隔离
 
 notes:
   - 第一阶段默认仅绑定 127.0.0.1，不开放公网
   - 第一阶段不做登录/鉴权，但必须保留 auth/tenant 扩展位
   - 行级进度先在 Today/Future/Iteration 落地，再扩展到类似列表场景
+  - P0 已完成全部 6 个任务（UserGateway/Profile store/路由守卫/X-Momo-Profile header/Session API 改造/SSE 重置）
+  - P1-T1 代码已完成（user_context.py + deps.py 改造 + app.py lifespan 改造），但启动后端口未绑定，疑似同步任务阻塞事件循环
+  - lock.py 已加入 PID 检测 + 自动恢复机制

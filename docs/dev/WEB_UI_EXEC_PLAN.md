@@ -154,7 +154,8 @@
 - 基本 Dashboard
 
 ## 12. 当前状态
-- 当前阶段：`P0`
-- 当前焦点：`用户入口 + 请求级 profile 上下文`
+- 当前阶段：`P1`
+- 当前焦点：`Profile 隔离与并发基础`
 - 当前原则：`先不串用户/不写坏数据/不串任务，再做视觉美化`
+- P0 已完成：UserGateway 向导、profile store、路由守卫、X-Momo-Profile header、session/users API 改造、SSE 重置
 

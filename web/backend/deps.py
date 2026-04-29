@@ -1,145 +1,119 @@
 """
-web/backend/deps.py: FastAPI 依赖注入 — 单例资源在 lifespan 里创建，请求中用 Depends 注入。
+web/backend/deps.py: FastAPI 依赖注入 — 请求级 profile 上下文。
 
-第一期：单用户模式（进程启动时锁定 ACTIVE_USER）。
-Phase 6：替换为 JWT / Session 级别的多租户注入。
+P0-P1 改造：从单用户全局单例改为按 X-Momo-Profile header 解析的 profile 级上下文。
+保留原有 get_* 函数签名，router 层无需改动。
 """
 from __future__ import annotations
 
-import os
 from typing import Optional
 
-from fastapi import Depends, Request
+from fastapi import Header, Request
 
 # ---------------------------------------------------------------------------
 # 模块级单例（由 app.py lifespan 负责初始化 & 清理）
 # ---------------------------------------------------------------------------
-_active_user: Optional[str] = None
-_logger = None
-_momo_api = None
-_ai_client = None
-_workflow = None
-_iteration_manager = None
-_task_registry = None
-_logger_bridge = None
-_sync_manager = None
+_context_manager = None  # UserContextManager 实例
+_fallback_user: Optional[str] = None  # 启动时的默认用户（兼容无 header 场景）
 
 
-def init_deps(
-    active_user: str,
-    logger,
-    momo_api,
-    ai_client,
-    workflow,
-    task_registry,
-    logger_bridge,
-):
-    """在 lifespan startup 中调用，注册所有单例。"""
-    global _active_user, _logger, _momo_api, _ai_client
-    global _workflow, _task_registry, _logger_bridge
-    _active_user = active_user
-    _logger = logger
-    _momo_api = momo_api
-    _ai_client = ai_client
-    _workflow = workflow
-    _task_registry = task_registry
-    _logger_bridge = logger_bridge
+def init_deps(context_manager, fallback_user: str = ""):
+    """在 lifespan startup 中调用，注册 UserContextManager。"""
+    global _context_manager, _fallback_user
+    _context_manager = context_manager
+    _fallback_user = fallback_user
 
 
 def cleanup_deps():
-    """在 lifespan shutdown 中调用，释放资源。"""
-    global _workflow, _momo_api, _ai_client, _logger_bridge
-    if _workflow:
-        try:
-            _workflow.shutdown()
-        except Exception:
-            pass
-    if _momo_api and hasattr(_momo_api, "close"):
-        try:
-            _momo_api.close()
-        except Exception:
-            pass
-    if _ai_client and hasattr(_ai_client, "close"):
-        try:
-            _ai_client.close()
-        except Exception:
-            pass
-    if _task_registry:
-        try:
-            _task_registry.shutdown()
-        except Exception:
-            pass
+    """在 lifespan shutdown 中调用，释放所有 profile 资源。"""
+    global _context_manager
+    if _context_manager:
+        _context_manager.cleanup_all()
+        _context_manager = None
+
+
+# ---------------------------------------------------------------------------
+# 内部辅助：解析当前请求的 profile
+# ---------------------------------------------------------------------------
+def _resolve_profile(
+    x_momo_profile: Optional[str] = Header(default=None),
+) -> str:
+    """从 X-Momo-Profile header 解析 profile name，fallback 到启动用户。"""
+    if x_momo_profile:
+        return x_momo_profile.strip().lower()
+    return _fallback_user or "default"
+
+
+def _get_context(profile: str):
+    """从 UserContextManager 获取指定 profile 的上下文。"""
+    if _context_manager is None:
+        raise RuntimeError("UserContextManager 未初始化")
+    return _context_manager.get(profile)
 
 
 # ---------------------------------------------------------------------------
 # Depends 函数（路由层使用）
 # ---------------------------------------------------------------------------
+def get_active_user(
+    x_momo_profile: Optional[str] = Header(default=None),
+) -> str:
+    """当前请求的 profile name。读取 X-Momo-Profile header。"""
+    return _resolve_profile(x_momo_profile)
+
+
+def get_user_context(
+    x_momo_profile: Optional[str] = Header(default=None),
+):
+    """当前请求的完整 UserContext。"""
+    profile = _resolve_profile(x_momo_profile)
+    return _get_context(profile)
+
+
+def get_logger(
+    x_momo_profile: Optional[str] = Header(default=None),
+):
+    ctx = _get_context(_resolve_profile(x_momo_profile))
+    return ctx.logger
+
+
+def get_momo_api(
+    x_momo_profile: Optional[str] = Header(default=None),
+):
+    ctx = _get_context(_resolve_profile(x_momo_profile))
+    return ctx.momo_api
+
+
+def get_ai_client(
+    x_momo_profile: Optional[str] = Header(default=None),
+):
+    ctx = _get_context(_resolve_profile(x_momo_profile))
+    return ctx.ai_client
+
+
+def get_workflow(
+    x_momo_profile: Optional[str] = Header(default=None),
+):
+    ctx = _get_context(_resolve_profile(x_momo_profile))
+    return ctx.workflow
+
+
+def get_task_registry(
+    x_momo_profile: Optional[str] = Header(default=None),
+):
+    ctx = _get_context(_resolve_profile(x_momo_profile))
+    return ctx.task_registry
+
+
+def get_logger_bridge(
+    x_momo_profile: Optional[str] = Header(default=None),
+):
+    ctx = _get_context(_resolve_profile(x_momo_profile))
+    return ctx.logger_bridge
+
+
+# ---------------------------------------------------------------------------
+# 兼容旧接口（已废弃，保留给 users.py 等迁移期间使用）
+# ---------------------------------------------------------------------------
 def reload_user_services():
-    """用户切换后重建 momo_api / ai_client 等服务单例。"""
-    global _momo_api, _ai_client
-
-    import config as _cfg
-
-    # 重建 MaiMemoAPI（token 变了）
-    old_momo = _momo_api
-    try:
-        from core.maimemo_api import MaiMemoAPI
-        _momo_api = MaiMemoAPI(_cfg.MOMO_TOKEN)
-    except Exception:
-        _momo_api = None
-    if old_momo and hasattr(old_momo, "close"):
-        try:
-            old_momo.close()
-        except Exception:
-            pass
-
-    # 重建 AI client（provider / key 可能变了）
-    old_ai = _ai_client
-    try:
-        if _cfg.AI_PROVIDER == "mimo":
-            from core.mimo_client import MimoClient
-            _ai_client = MimoClient(_cfg.MIMO_API_KEY)
-        else:
-            from core.gemini_client import GeminiClient
-            _ai_client = GeminiClient(_cfg.GEMINI_API_KEY)
-    except Exception:
-        _ai_client = None
-    if old_ai and hasattr(old_ai, "close"):
-        try:
-            old_ai.close()
-        except Exception:
-            pass
-
-    # 更新 workflow 的内部引用
-    if _workflow:
-        _workflow.momo_api = _momo_api
-        _workflow.ai_client = _ai_client
-
-
-def get_active_user() -> str:
-    """当前锁定用户。短期进程级常量；Phase 6 改为 JWT 解析。"""
-    return _active_user or "default"
-
-
-def get_logger():
-    return _logger
-
-
-def get_momo_api():
-    return _momo_api
-
-
-def get_ai_client():
-    return _ai_client
-
-
-def get_workflow():
-    return _workflow
-
-
-def get_task_registry():
-    return _task_registry
-
-
-def get_logger_bridge():
-    return _logger_bridge
+    """已废弃：profile 切换现在由 UserContextManager 自动处理。"""
+    pass

@@ -69,7 +69,7 @@ async def list_users(user: str = Depends(get_active_user)):
             "is_active": username == user,
         })
 
-    return ok_response({"users": result, "active_user": user}, user_id=user)
+    return ok_response({"users": result, "active_profile": user}, user_id=user)
 
 
 @router.put("/active", response_model=ApiResponse[dict])
@@ -77,38 +77,28 @@ async def switch_active_user(
     username: str,
     user: str = Depends(get_active_user),
 ):
-    """切换当前活跃用户（PUT /api/users/active?username=xxx）。
+    """预热目标 profile 的上下文（PUT /api/users/active?username=xxx）。
 
-    更新环境变量 + deps 模块级 _active_user，使后续请求识别新用户。
+    前端已通过 X-Momo-Profile header 实现请求级 profile 解析，
+    此端点仅做校验 + 预创建 context，避免首次请求延迟。
     """
     import config as _cfg
-    import web.backend.deps as _deps
 
     # 校验目标用户存在
     profile_path = os.path.join(_cfg.PROFILES_DIR, f"{username.lower()}.env")
     if not os.path.exists(profile_path):
         return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
 
-    # 热切换用户：更新 env + config 模块级变量 + deps
-    new_user = _cfg.switch_user(username.lower())
-    _deps._active_user = new_user
-
-    # 重建数据库连接单例（新用户新 DB）
+    # 预创建 context（如果尚未创建）
     try:
-        from database.connection import cleanup_concurrent_system, init_concurrent_system
-        cleanup_concurrent_system()
-        init_concurrent_system()
-    except Exception:
-        pass
-
-    # 重建 momo_api / ai_client / workflow 内部引用
-    try:
-        _deps.reload_user_services()
-    except Exception:
-        pass
+        import web.backend.deps as _deps
+        if _deps._context_manager:
+            _deps._context_manager.get(username.lower())
+    except Exception as e:
+        return error_response("CONTEXT_ERROR", f"初始化用户上下文失败: {e}", user_id=user)
 
     return ok_response({
-        "active_user": username.lower(),
+        "active_profile": username.lower(),
         "message": f"已切换到用户 '{username}'",
     }, user_id=username.lower())
 

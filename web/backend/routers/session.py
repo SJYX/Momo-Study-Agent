@@ -1,7 +1,9 @@
 """
-web/backend/routers/session.py: GET /api/session — 当前锁定用户信息 + 配置摘要。
+web/backend/routers/session.py: GET /api/session — 当前 profile 信息 + 可用 profile 列表。
 """
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 
@@ -13,13 +15,17 @@ router = APIRouter(prefix="/api", tags=["session"])
 
 @router.get("/session", response_model=ApiResponse[SessionInfo])
 async def get_session(user: str = Depends(get_active_user)):
-    """返回当前锁定用户、AI 配置摘要。"""
-    from config import AI_PROVIDER, BATCH_SIZE, DRY_RUN, DB_PATH
+    """返回当前 profile、可用 profile 列表、服务器时间、绑定地址。"""
+    from config import PROFILES_DIR
+    from core.profile_manager import ProfileManager
+
+    pm = ProfileManager(PROFILES_DIR)
+    profiles = pm.list_profiles()
+
     info = SessionInfo(
-        active_user=user,
-        ai_provider=AI_PROVIDER,
-        batch_size=BATCH_SIZE,
-        dry_run=DRY_RUN,
-        db_path=DB_PATH,
+        active_profile=user,
+        available_profiles=profiles,
+        server_time=datetime.now(timezone.utc).isoformat(),
+        host_binding="127.0.0.1",
     )
     return ok_response(info.model_dump(), user_id=user)
