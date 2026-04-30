@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ 预初始化用户 '{fallback_user}' 失败: {e}")
 
-    # 注册到依赖注入
+    # 注册到依赖注入（fallback_user 仅用于无 header 时的降级，不影响 profile 隔离）
     init_deps(context_manager=context_manager, fallback_user=fallback_user)
 
     print(f"[Web] 后端已启动，默认用户: {fallback_user}")

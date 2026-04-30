@@ -154,8 +154,8 @@
 - 基本 Dashboard
 
 ## 12. 当前状态
-- 当前阶段：`P1`
-- 当前焦点：`Profile 隔离与并发基础`
+- 当前阶段：`P1（暂停）`
+- 当前焦点：`今日收口，等待下次继续处理 UserContext 初始化阻塞`
 - 当前原则：`先不串用户/不写坏数据/不串任务，再做视觉美化`
-- P0 已完成：UserGateway 向导、profile store、路由守卫、X-Momo-Profile header、session/users API 改造、SSE 重置
+- 今日进展（2026-04-30）：`已补齐 POST /api/users 最小接口并接入 UserGateway Step1；P1 验收测试 11 passed`
 

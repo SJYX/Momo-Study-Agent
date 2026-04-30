@@ -177,3 +177,48 @@ def release_process_lock() -> None:
     except Exception:
         pass
     _lock_fd = None
+
+
+# ---------------------------------------------------------------------------
+# Profile 级重任务互斥锁（Web 专用）
+# ---------------------------------------------------------------------------
+import threading as _threading
+
+_profile_locks: dict[str, _threading.Lock] = {}
+_profile_locks_guard = _threading.Lock()
+_profile_lock_holders: dict[str, str] = {}  # profile -> task_id
+
+
+def acquire_profile_lock(profile_name: str, task_id: str) -> bool:
+    """尝试获取 profile 级排他锁。成功返回 True，已被占用返回 False。"""
+    with _profile_locks_guard:
+        if profile_name in _profile_lock_holders:
+            return False
+        if profile_name not in _profile_locks:
+            _profile_locks[profile_name] = _threading.Lock()
+        lock = _profile_locks[profile_name]
+
+    acquired = lock.acquire(blocking=False)
+    if acquired:
+        with _profile_locks_guard:
+            _profile_lock_holders[profile_name] = task_id
+    return acquired
+
+
+def release_profile_lock(profile_name: str) -> None:
+    """释放 profile 级排他锁（幂等）。"""
+    with _profile_locks_guard:
+        _profile_lock_holders.pop(profile_name, None)
+        lock = _profile_locks.get(profile_name)
+
+    if lock is not None:
+        try:
+            lock.release()
+        except RuntimeError:
+            pass  # 未被持有，忽略
+
+
+def get_profile_lock_holder(profile_name: str) -> str | None:
+    """查询当前持有锁的 task_id，无持有者返回 None。"""
+    with _profile_locks_guard:
+        return _profile_lock_holders.get(profile_name)

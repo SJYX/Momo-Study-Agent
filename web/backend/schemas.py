@@ -240,6 +240,16 @@ class UsersListResponse(BaseModel):
     active_profile: str
 
 
+class ProfileCreateRequest(BaseModel):
+    profile_name: str
+
+
+class ProfileCreateResponse(BaseModel):
+    profile_name: str
+    profile_path: str
+    message: str
+
+
 class ValidateRequest(BaseModel):
     field: str
     value: str
@@ -256,6 +266,13 @@ class WizardCreateRequest(BaseModel):
     momo_token: str
     ai_provider: str
     ai_api_key: str
+    user_email: Optional[str] = None
+
+
+class ProfileConfigUpdateRequest(BaseModel):
+    momo_token: Optional[str] = None
+    ai_provider: Optional[str] = None
+    ai_api_key: Optional[str] = None
     user_email: Optional[str] = None
 
 

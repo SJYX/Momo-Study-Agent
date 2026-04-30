@@ -180,6 +180,16 @@ export interface UsersListResponse {
   active_profile: string
 }
 
+export interface ProfileCreateRequest {
+  profile_name: string
+}
+
+export interface ProfileCreateResponse {
+  profile_name: string
+  profile_path: string
+  message: string
+}
+
 export interface WizardCreateRequest {
   username: string
   momo_token: string

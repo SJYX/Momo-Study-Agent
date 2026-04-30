@@ -1,10 +1,13 @@
 {
   "permissions": {
-    "additionalDirectories": [
-      "E:\\MOMO_Script"
-    ],
     "allow": [
       "Bash(python tools/check_docs_quality.py)"
+    ],
+    "additionalDirectories": [
+      "E:\\MOMO_Script"
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
   }
 }

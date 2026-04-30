@@ -7,11 +7,10 @@ POST /api/tasks/{task_id}/cancel  — 取消任务
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from web.backend.deps import get_task_registry
 from web.backend.schemas import (
     ApiResponse,
     TaskCancelResponse,
@@ -23,9 +22,41 @@ from web.backend.schemas import (
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
+def _resolve_registry(profile_query: str = "", x_momo_profile: str | None = None):
+    """任务端点兼容 profile 来源：优先 query，其次 header。"""
+    profile = (profile_query or x_momo_profile or "").strip().lower()
+
+    import web.backend.deps as _deps
+    if _deps._context_manager is None:
+        raise RuntimeError("UserContextManager 未初始化")
+    if not profile:
+        profile = (_deps._fallback_user or "default").strip().lower()
+
+    if hasattr(_deps._context_manager, "has") and not _deps._context_manager.has(profile):
+        return None
+
+    return _deps._context_manager.get(profile).task_registry
+
+
 @router.get("/{task_id}", response_model=ApiResponse[TaskStatusResponse])
-async def get_task_status(task_id: str, registry=Depends(get_task_registry)):
+async def get_task_status(
+    task_id: str,
+    profile: str = Query(default=""),
+    x_momo_profile: str | None = Header(default=None),
+):
     """查询任务状态。"""
+    try:
+        registry = _resolve_registry(profile_query=profile, x_momo_profile=x_momo_profile)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=error_response("CONTEXT_ERROR", f"获取任务上下文失败: {e}"),
+        )
+    if registry is None:
+        return JSONResponse(
+            status_code=404,
+            content=error_response("TASK_NOT_FOUND", f"Task not found: {task_id}"),
+        )
     rec = registry.get(task_id)
     if rec is None:
         return JSONResponse(
@@ -36,8 +67,38 @@ async def get_task_status(task_id: str, registry=Depends(get_task_registry)):
 
 
 @router.get("/{task_id}/events")
-async def task_events(task_id: str, registry=Depends(get_task_registry)):
-    """SSE 进度流：订阅任务事件直到任务结束。"""
+async def task_events(
+    task_id: str,
+    profile: str = Query(default="", description="Profile name (required for SSE, since EventSource cannot set headers)"),
+):
+    """SSE 进度流：订阅任务事件直到任务结束。
+
+    SSE (EventSource) 无法设置自定义 header，因此通过 query param 传递 profile。
+    """
+    # 通过 query param 解析 profile（SSE 无法设置 header）
+    if not profile:
+        return JSONResponse(
+            status_code=400,
+            content=error_response("PROFILE_REQUIRED", "SSE 连接必须通过 ?profile=xxx 指定 profile"),
+        )
+
+    import web.backend.deps as _deps
+    if _deps._context_manager is None:
+        return JSONResponse(
+            status_code=500,
+            content=error_response("CONTEXT_NOT_READY", "UserContextManager 未初始化"),
+        )
+
+    profile = profile.strip().lower()
+    try:
+        ctx = _deps._context_manager.get(profile)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=error_response("CONTEXT_ERROR", f"获取 profile '{profile}' 上下文失败: {e}"),
+        )
+    registry = ctx.task_registry
+
     rec = registry.get(task_id)
     if rec is None:
         return JSONResponse(
@@ -72,8 +133,24 @@ async def task_events(task_id: str, registry=Depends(get_task_registry)):
 
 
 @router.post("/{task_id}/cancel", response_model=ApiResponse[TaskCancelResponse])
-async def cancel_task(task_id: str, registry=Depends(get_task_registry)):
+async def cancel_task(
+    task_id: str,
+    profile: str = Query(default=""),
+    x_momo_profile: str | None = Header(default=None),
+):
     """取消一个运行中的任务。"""
+    try:
+        registry = _resolve_registry(profile_query=profile, x_momo_profile=x_momo_profile)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=error_response("CONTEXT_ERROR", f"获取任务上下文失败: {e}"),
+        )
+    if registry is None:
+        return JSONResponse(
+            status_code=400,
+            content=error_response("TASK_CANCEL_ERROR", "Cannot cancel task (not found or already finished)"),
+        )
     ok = registry.cancel(task_id)
     if not ok:
         return JSONResponse(

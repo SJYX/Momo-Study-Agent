@@ -31,10 +31,16 @@ export function useTaskStream({ taskId, enabled = true, onEvent, onDone }: UseTa
       return
     }
 
+    const profile = localStorage.getItem('momo_active_profile') || ''
+    if (!profile) {
+      setStatus('error')
+      return
+    }
+
     setEvents([])
     setStatus('connecting')
 
-    const url = `/api/tasks/${taskId}/events`
+    const url = `/api/tasks/${taskId}/events?profile=${encodeURIComponent(profile)}`
     const es = new EventSource(url)
     esRef.current = es
 

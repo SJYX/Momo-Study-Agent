@@ -23,6 +23,7 @@ from web.backend.deps import (
     get_task_registry,
     get_workflow,
 )
+from web.backend.lock import acquire_profile_lock, get_profile_lock_holder, release_profile_lock
 from web.backend.schemas import (
     ApiResponse,
     FutureItemsResponse,
@@ -33,6 +34,55 @@ from web.backend.schemas import (
 )
 
 router = APIRouter(prefix="/api/study", tags=["study"])
+
+
+def _submit_with_profile_lock(
+    profile: str,
+    registry,
+    func,
+    event_loop,
+    logger,
+):
+    """提交重任务并在终态自动释放 profile lock。冲突时抛出 HTTPException 409。"""
+    # 先尝试占位（task_id 尚未生成，用占位符）
+    if not acquire_profile_lock(profile, "__pending__"):
+        from fastapi import HTTPException
+        holder = get_profile_lock_holder(profile)
+        raise HTTPException(
+            status_code=409,
+            detail=error_response(
+                "TASK_CONFLICT",
+                f"用户 '{profile}' 已有任务正在运行（{holder}），请等待完成后重试",
+            ),
+        )
+
+    import uuid as _uuid
+    pending_task_id = _uuid.uuid4().hex[:8]  # 临时 ID 用于锁持有标记
+
+    # 更新锁持有者为真实 task_id 占位
+    from web.backend.lock import _profile_locks_guard, _profile_lock_holders
+    with _profile_locks_guard:
+        _profile_lock_holders[profile] = pending_task_id
+
+    def _locked_run():
+        # 切 DB globals 到此 profile 的 context，确保数据库读写不串台
+        from web.backend.user_context import UserContextManager
+        import web.backend.deps as _deps
+        if _deps._context_manager:
+            ctx = _deps._context_manager.get(profile)
+            UserContextManager.prepare_for_task(ctx)
+        try:
+            func()
+        finally:
+            release_profile_lock(profile)
+
+    task_id = registry.submit(_locked_run, event_loop=event_loop, logger=logger)
+
+    # 更新锁持有者为真正的 task_id
+    with _profile_locks_guard:
+        _profile_lock_holders[profile] = task_id
+
+    return task_id
 
 
 @router.get("/today", response_model=ApiResponse[TodayItemsResponse])
@@ -97,10 +147,9 @@ async def process_today(
     loop = asyncio.get_event_loop()
 
     def _run():
-        # logger.task_id 由 TaskRegistry.submit 的 wrapper 自动设置
         workflow.process_word_list(items, "今日任务")
 
-    task_id = registry.submit(_run, event_loop=loop, logger=logger)
+    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger)
 
     return ok_response({"task_id": task_id, "word_count": len(items)}, user_id=user)
 
@@ -144,7 +193,7 @@ async def process_future(
     def _run():
         workflow.process_word_list(records, f"未来 {days} 天计划")
 
-    task_id = registry.submit(_run, event_loop=loop, logger=logger)
+    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger)
 
     return ok_response({"task_id": task_id, "word_count": len(records), "days": days}, user_id=user)
 
@@ -166,6 +215,6 @@ async def iterate(
         manager = IterationManager(ai_client=ai_client, momo_api=momo, logger=logger)
         manager.run_iteration()
 
-    task_id = registry.submit(_run, event_loop=loop, logger=logger)
+    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger)
 
     return ok_response({"task_id": task_id}, user_id=user)

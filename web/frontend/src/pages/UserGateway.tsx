@@ -10,7 +10,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProfileStore } from '../stores/profile'
 import { apiClient, apiPost, apiPut } from '../api/client'
-import type { UsersListResponse, UserProfile, WizardCreateResponse, ValidateResponse } from '../api/types'
+import type { UsersListResponse, UserProfile, ValidateResponse, ProfileCreateResponse } from '../api/types'
 import { User, Plus, ArrowRight, ArrowLeft, Loader2, CheckCircle2, XCircle, SkipForward } from 'lucide-react'
 
 type Step = 'select' | 'configure'
@@ -63,11 +63,8 @@ export default function UserGateway() {
     setCreating(true)
     setError('')
     try {
-      await apiPost<WizardCreateResponse>('/api/users/wizard', {
-        username: name,
-        momo_token: '',
-        ai_provider: '',
-        ai_api_key: '',
+      await apiPost<ProfileCreateResponse>('/api/users', {
+        profile_name: name,
       })
       setConfigName(name)
       setStep('configure')
@@ -79,17 +76,16 @@ export default function UserGateway() {
     }
   }
 
-  // Step 2: 保存配置
+  // Step 2: 保存配置（更新已有 profile）
   const handleSaveConfig = async () => {
     setSaving(true)
     setError('')
     try {
       if (momoToken || provider) {
-        await apiPost<WizardCreateResponse>('/api/users/wizard', {
-          username: configName,
-          momo_token: momoToken,
-          ai_provider: provider,
-          ai_api_key: apiKey,
+        await apiPut(`/api/users/${encodeURIComponent(configName)}/config`, {
+          momo_token: momoToken || undefined,
+          ai_provider: provider || undefined,
+          ai_api_key: apiKey || undefined,
         })
       }
       finishAndEnter(configName)

@@ -16,6 +16,9 @@ from fastapi import APIRouter, Depends, Path
 from web.backend.deps import get_active_user
 from web.backend.schemas import (
     ApiResponse,
+    ProfileCreateRequest,
+    ProfileCreateResponse,
+    ProfileConfigUpdateRequest,
     UsersListResponse,
     ValidateRequest,
     ValidateResponse,
@@ -101,6 +104,40 @@ async def switch_active_user(
         "active_profile": username.lower(),
         "message": f"已切换到用户 '{username}'",
     }, user_id=username.lower())
+
+
+@router.post("", response_model=ApiResponse[ProfileCreateResponse])
+async def create_profile_minimal(body: ProfileCreateRequest, user: str = Depends(get_active_user)):
+    """创建最小 profile（仅 profile_name 必填）。"""
+    from config import PROFILES_DIR
+    from core.config_wizard import ConfigWizard
+
+    profile_name = (body.profile_name or "").strip().lower()
+    if not profile_name:
+        return error_response("INVALID_INPUT", "profile_name 不能为空", user_id=user)
+
+    profile_path = os.path.join(PROFILES_DIR, f"{profile_name}.env")
+    if os.path.exists(profile_path):
+        return error_response("USER_EXISTS", f"用户 '{profile_name}' 已存在", user_id=user)
+
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write(f'USER_EMAIL="{profile_name}@momo-local"\n')
+
+    try:
+        wizard = ConfigWizard(PROFILES_DIR)
+        wizard._init_local_db(profile_name)
+    except Exception as e:
+        return error_response("DB_INIT_ERROR", f"用户已创建但本地数据库初始化失败: {e}", user_id=user)
+
+    return ok_response(
+        {
+            "profile_name": profile_name,
+            "profile_path": profile_path,
+            "message": f"用户 '{profile_name}' 创建成功",
+        },
+        user_id=user,
+    )
 
 
 @router.post("/validate", response_model=ApiResponse[ValidateResponse])
@@ -242,6 +279,65 @@ async def wizard_create(body: WizardCreateRequest, user: str = Depends(get_activ
         "cloud_configured": cloud_configured,
         "validation": validation_results,
         "message": f"用户 '{username}' 创建成功",
+    }, user_id=user)
+
+
+@router.put("/{username}/config", response_model=ApiResponse[dict])
+async def update_profile_config(
+    body: ProfileConfigUpdateRequest,
+    username: str = Path(...),
+    user: str = Depends(get_active_user),
+):
+    """更新已有 profile 的配置项（不重新创建 profile）。
+
+    只更新请求中提供的非 null 字段。
+    """
+    from config import PROFILES_DIR
+
+    username = username.strip().lower()
+    profile_path = os.path.join(PROFILES_DIR, f"{username}.env")
+
+    if not os.path.exists(profile_path):
+        return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
+
+    # 读取现有配置
+    env_data: dict[str, str] = {}
+    with open(profile_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env_data[k.strip()] = v.strip().strip('"').strip("'")
+
+    # 合并更新
+    if body.momo_token is not None:
+        env_data["MOMO_TOKEN"] = body.momo_token
+    if body.ai_provider is not None:
+        env_data["AI_PROVIDER"] = body.ai_provider
+    if body.ai_api_key is not None:
+        provider = body.ai_provider or env_data.get("AI_PROVIDER", "")
+        if provider == "mimo":
+            env_data["MIMO_API_KEY"] = body.ai_api_key
+            env_data.pop("GEMINI_API_KEY", None)
+        elif provider == "gemini":
+            env_data["GEMINI_API_KEY"] = body.ai_api_key
+            env_data.pop("MIMO_API_KEY", None)
+    if body.user_email is not None:
+        env_data["USER_EMAIL"] = body.user_email
+
+    # 写回
+    env_lines = [f'{k}="{v}"' for k, v in env_data.items()]
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(env_lines) + "\n")
+
+    # 清理该 profile 的 context 缓存（下次请求时会重新加载新配置）
+    import web.backend.deps as _deps
+    if _deps._context_manager:
+        _deps._context_manager.cleanup(username)
+
+    return ok_response({
+        "username": username,
+        "message": f"用户 '{username}' 配置已更新",
     }, user_id=user)
 
 
