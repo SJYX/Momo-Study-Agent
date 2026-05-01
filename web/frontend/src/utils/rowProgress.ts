@@ -30,8 +30,11 @@ export function buildRowStatusMap(
   }
 
   for (const ev of events) {
-    if (ev.event === 'row_status') {
-      const rows = (ev.data as { rows?: Array<{ item_id?: string; status?: string; error?: string }> } | undefined)?.rows || []
+    // P4-T1 临时桥接：T2 之前后端仍发 type=log + event=row_status，
+    // 这里先用 unknown 强制读取兼容字段；T3 会改为 if (ev.type === 'row_status')。
+    const evAny = ev as unknown as { event?: string; data?: unknown; type?: string; message?: unknown }
+    if (evAny.event === 'row_status') {
+      const rows = (evAny.data as { rows?: Array<{ item_id?: string; status?: string; error?: string }> } | undefined)?.rows || []
       for (const row of rows) {
         const key = String(row.item_id || '').trim().toLowerCase()
         if (!key || !map[key]) continue
@@ -46,7 +49,7 @@ export function buildRowStatusMap(
     }
 
     if (ev.type !== 'log') continue
-    const msg = String(ev.message || '')
+    const msg = String((ev as unknown as { message?: string }).message || '')
     const words = extractWordsFromMessage(msg)
     if (words.length === 0) continue
 

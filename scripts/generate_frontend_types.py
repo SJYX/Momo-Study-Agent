@@ -23,10 +23,19 @@ MODEL_ORDER = [
     "TodayItem",
     "TodayItemsResponse",
     "FutureItemsResponse",
+    "IterationCandidateItem",
+    "IterationCandidatesResponse",
     "TaskRunResponse",
     "TaskSubmitResponse",
     "TaskStatusResponse",
     "TaskCancelResponse",
+    # Task event union variants — must be declared before TaskEvent itself
+    "RowState",
+    "LogEvent",
+    "StatusEvent",
+    "HeartbeatEvent",
+    "ProgressEvent",
+    "RowStatusEvent",
     "TaskEvent",
     "WordNoteSummary",
     "WordsListResponse",
@@ -40,6 +49,8 @@ MODEL_ORDER = [
     "SyncRetryResponse",
     "UserProfile",
     "UsersListResponse",
+    "ProfileCreateRequest",
+    "ProfileCreateResponse",
     "WizardCreateRequest",
     "WizardValidationResult",
     "WizardCreateResponse",
@@ -68,6 +79,11 @@ def _schema_to_ts(schema: dict[str, Any], defs: dict[str, Any]) -> str:
     if "$ref" in schema:
         return schema["$ref"].split("/")[-1]
 
+    # RootModel discriminated union → emit `A | B | ...`
+    if "oneOf" in schema:
+        parts = [_schema_to_ts(p, defs) for p in schema["oneOf"]]
+        return " | ".join(parts) if parts else "unknown"
+
     if "anyOf" in schema:
         parts = [_schema_to_ts(p, defs) for p in schema["anyOf"]]
         dedup = []
@@ -76,7 +92,13 @@ def _schema_to_ts(schema: dict[str, Any], defs: dict[str, Any]) -> str:
                 dedup.append(p)
         return " | ".join(dedup) if dedup else "unknown"
 
+    # Pydantic Literal["x"] 字段
+    if "const" in schema:
+        return f"'{schema['const']}'"
+
     typ = schema.get("type")
+    if typ == "null":
+        return "null"
     if typ == "string":
         enum = schema.get("enum")
         if enum:

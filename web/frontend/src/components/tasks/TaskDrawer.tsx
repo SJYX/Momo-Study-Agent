@@ -37,8 +37,10 @@ export default function TaskDrawer() {
   const isTerminal = ['done', 'error', 'canceled'].includes(status)
   const canCancel = ['pending', 'running', 'connected', 'connecting'].includes(status)
   const logEvents = events.filter(e => e.type === 'log')
-  const progressEvents = events.filter(e => e.type === 'log' && !!e.event)
-  const latestProgress = progressEvents.length > 0 ? progressEvents[progressEvents.length - 1] : null
+  // P4-T1 临时桥接：在 T2 后端迁移 + T3 重写前，仍按旧的 log.event/log.progress 形态读取。
+  // T3 会改为 events.filter(e => e.type === 'progress')。
+  const progressEvents = events.filter(e => e.type === 'log' && !!(e as unknown as { event?: string }).event)
+  const latestProgress = progressEvents.length > 0 ? (progressEvents[progressEvents.length - 1] as unknown as { progress?: unknown }) : null
   const progressPayload = latestProgress?.progress
   const progressRecord = progressPayload && typeof progressPayload === 'object' ? (progressPayload as Record<string, unknown>) : null
   const progressCurrent = typeof progressRecord?.current === 'number' ? progressRecord.current : null

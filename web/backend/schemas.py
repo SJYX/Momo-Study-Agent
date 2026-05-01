@@ -7,9 +7,9 @@ web/backend/schemas.py: Pydantic 请求/响应模型，与前端 types.ts 对齐
 """
 from __future__ import annotations
 
-from typing import Any, Generic, Literal, Optional, TypeVar
+from typing import Annotated, Any, Generic, Literal, Optional, TypeVar, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 
 T = TypeVar("T")
 
@@ -101,6 +101,19 @@ class FutureItemsResponse(BaseModel):
     items: list[TodayItem] = Field(default_factory=list)
 
 
+class IterationCandidateItem(BaseModel):
+    voc_id: str
+    voc_spelling: str
+    voc_meanings: str = ""
+    it_level: int = 0
+    weak_score: float = 0.0
+
+
+class IterationCandidatesResponse(BaseModel):
+    count: int = 0
+    items: list[IterationCandidateItem] = Field(default_factory=list)
+
+
 class TaskRunResponse(BaseModel):
     task_id: Optional[str] = None
     word_count: Optional[int] = None
@@ -112,18 +125,86 @@ class TaskCancelResponse(BaseModel):
     canceled: bool = True
 
 
-class TaskEvent(BaseModel):
-    type: Literal["log", "status", "heartbeat"]
-    _seq: Optional[int] = None
-    level: Optional[str] = None
-    message: Optional[str] = None
-    module: Optional[str] = None
-    status: Optional[str] = None
+# ---------------------------------------------------------------------------
+# Task event protocol — discriminated union by `type`
+#
+# 5 event variants:
+#   - log         logger 透传（info/warning/error）
+#   - status      任务级状态切换（running/done/error/canceled）
+#   - heartbeat   SSE 保活
+#   - progress    任务级总进度（phase + current/total）
+#   - row_status  行级状态批量回填（list[RowState]）
+#
+# 兼容性元数据：
+#   - _seq:  TaskRegistry._emit_event 注入的全局序号，用于前端去重/排序。
+#           不在 schema 强约束内，但事件 dict 始终带它。
+#   - ts:    服务器时间戳（time.time()）。
+#
+# 协议演进守则：
+#   - 新增 type 必须先扩 union，再让发射方代码生成。
+#   - phase 字符串集合见 docs/dev/EVENT_PROTOCOL.md（待补）。
+# ---------------------------------------------------------------------------
+RowStatus = Literal["pending", "running", "done", "error"]
+TaskStatus = Literal["pending", "running", "done", "error", "canceled"]
+LogLevel = Literal["info", "warning", "error"]
+
+
+class RowState(BaseModel):
+    """行级状态回填的最小单元。"""
+    item_id: str
+    status: RowStatus
+    phase: Optional[str] = None
+    error: Optional[str] = None
+    # V3 行级百分比（current/total 任一缺失视为不展示百分比）
+    current: Optional[int] = None
+    total: Optional[int] = None
+
+
+class LogEvent(BaseModel):
+    type: Literal["log"]
+    level: LogLevel
+    message: str
+    module: str = ""
+    ts: float
+
+
+class StatusEvent(BaseModel):
+    type: Literal["status"]
+    status: TaskStatus
     error: Optional[str] = None
     cancel_requested: Optional[bool] = None
     ts: float
-    event: Optional[str] = None
-    progress: Optional[dict[str, Any]] = None
+
+
+class HeartbeatEvent(BaseModel):
+    type: Literal["heartbeat"]
+    ts: float
+
+
+class ProgressEvent(BaseModel):
+    """任务级总进度。current/total 按词数计算；phase 标记当前阶段。"""
+    type: Literal["progress"]
+    phase: str
+    current: int = 0
+    total: int = 0
+    message: Optional[str] = None
+    ts: float
+
+
+class RowStatusEvent(BaseModel):
+    """行级状态批量事件。可一次携带多行（如 AI 批次开始时所有词的 ai_request）。"""
+    type: Literal["row_status"]
+    rows: list[RowState]
+    ts: float
+
+
+# Discriminated union — Pydantic 按 `type` 字段路由到具体子类
+class TaskEvent(RootModel):
+    """SSE 任务事件流的统一信封。前端按 `type` 字段做 type narrowing。"""
+    root: Annotated[
+        Union[LogEvent, StatusEvent, HeartbeatEvent, ProgressEvent, RowStatusEvent],
+        Field(discriminator="type"),
+    ]
 
 
 # ---------------------------------------------------------------------------

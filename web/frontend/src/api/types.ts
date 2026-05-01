@@ -12,9 +12,9 @@ export interface ApiResponse<T = unknown> {
 
 export interface SessionInfo {
   active_profile: string
-  available_profiles: string[]
+  available_profiles?: string[]
   server_time: string
-  host_binding: string
+  host_binding?: string
 }
 
 export interface HealthInfo {
@@ -55,10 +55,10 @@ export interface IterationCandidatesResponse {
 }
 
 export interface TaskRunResponse {
-  task_id?: string | unknown
-  word_count?: number | unknown
-  days?: number | unknown
-  message?: string | unknown
+  task_id?: string | null
+  word_count?: number | null
+  days?: number | null
+  message?: string | null
 }
 
 export interface TaskSubmitResponse {
@@ -68,30 +68,63 @@ export interface TaskSubmitResponse {
 export interface TaskStatusResponse {
   task_id: string
   status: string
-  result?: unknown
-  error?: string | unknown
+  result?: unknown | null
+  error?: string | null
   created_at?: number
-  started_at?: number | unknown
-  finished_at?: number | unknown
+  started_at?: number | null
+  finished_at?: number | null
 }
 
 export interface TaskCancelResponse {
   canceled?: boolean
 }
 
-export interface TaskEvent {
-  type: 'log' | 'status' | 'heartbeat'
-  level?: string | unknown
-  message?: string | unknown
-  module?: string | unknown
-  status?: string | unknown
-  error?: string | unknown
-  cancel_requested?: boolean | unknown
-  ts: number
-  event?: string | unknown
-  progress?: Record<string, unknown> | unknown
-  data?: Record<string, unknown> | unknown
+export interface RowState {
+  item_id: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  phase?: string | null
+  error?: string | null
+  current?: number | null
+  total?: number | null
 }
+
+export interface LogEvent {
+  type: 'log'
+  level: 'info' | 'warning' | 'error'
+  message: string
+  module?: string
+  ts: number
+}
+
+export interface StatusEvent {
+  type: 'status'
+  status: 'pending' | 'running' | 'done' | 'error' | 'canceled'
+  error?: string | null
+  cancel_requested?: boolean | null
+  ts: number
+}
+
+export interface HeartbeatEvent {
+  type: 'heartbeat'
+  ts: number
+}
+
+export interface ProgressEvent {
+  type: 'progress'
+  phase: string
+  current?: number
+  total?: number
+  message?: string | null
+  ts: number
+}
+
+export interface RowStatusEvent {
+  type: 'row_status'
+  rows: RowState[]
+  ts: number
+}
+
+export type TaskEvent = LogEvent | StatusEvent | HeartbeatEvent | ProgressEvent | RowStatusEvent
 
 export interface WordNoteSummary {
   voc_id: string
@@ -177,8 +210,8 @@ export interface SyncFlushResponse {
 
 export interface SyncRetryResponse {
   retried?: number
-  total_conflicts?: number | unknown
-  message?: string | unknown
+  total_conflicts?: number | null
+  message?: string | null
 }
 
 export interface UserProfile {
@@ -209,13 +242,13 @@ export interface WizardCreateRequest {
   momo_token: string
   ai_provider: string
   ai_api_key: string
-  user_email?: string | unknown
+  user_email?: string | null
 }
 
 export interface WizardValidationResult {
   ok: boolean
-  category?: string | unknown
-  detail?: string | unknown
+  category?: string | null
+  detail?: string | null
 }
 
 export interface WizardCreateResponse {
