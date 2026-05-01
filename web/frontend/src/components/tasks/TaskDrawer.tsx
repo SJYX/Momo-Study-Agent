@@ -91,20 +91,22 @@ export default function TaskDrawer() {
     if (logExpanded) logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [events, logExpanded])
 
+  // ⚠️ 所有 hooks 必须在 early return 之前调用，否则 drawer 从关→开时 hooks 数量变化触发 React #310。
+  const logEvents = useMemo(() => events.filter(isLog), [events])
+  const progressEvents = useMemo(() => events.filter(isProgress), [events])
+  const counts = useMemo(() => aggregateRowCounts(events), [events])
+
   if (!drawerOpen || !activeTaskId) return null
 
   const isTerminal = ['done', 'error', 'canceled'].includes(status)
   const canCancel = ['pending', 'running', 'connected', 'connecting'].includes(status)
 
-  const logEvents = useMemo(() => events.filter(isLog), [events])
-  const progressEvents = useMemo(() => events.filter(isProgress), [events])
   const latestProgress = progressEvents.length > 0 ? progressEvents[progressEvents.length - 1] : null
   const progressCurrent = latestProgress?.current ?? 0
   const progressTotal = latestProgress?.total ?? 0
   const progressPercent = latestProgress && progressTotal > 0
     ? Math.max(0, Math.min(100, Math.round((progressCurrent / progressTotal) * 100)))
     : null
-  const counts = useMemo(() => aggregateRowCounts(events), [events])
   const totalRows = counts.done + counts.error + counts.running + counts.pending
 
   const statusColor = status === 'done' ? 'text-green-500'
