@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 import config
-from web.backend.deps import get_active_user, get_workflow
+from web.backend.deps import get_user_context, get_workflow
 from web.backend.schemas import (
     ApiResponse,
     SyncFlushResponse,
@@ -27,21 +27,23 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 @router.get("/status", response_model=ApiResponse[SyncStatusResponse])
 async def sync_status(
     limit: int = Query(default=20, ge=1, le=100),
-    user: str = Depends(get_active_user),
+    ctx = Depends(get_user_context),
 ):
     """返回同步队列深度和最近的冲突记录（sync_status=2）。"""
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
     from database.momo_words import get_unsynced_notes
 
+    user = ctx.profile_name
+
     # 队列深度
     try:
-        unsynced = get_unsynced_notes()
+        unsynced = get_unsynced_notes(db_path=ctx.db_path)
         queue_depth = len(unsynced) if unsynced else 0
     except Exception:
         queue_depth = 0
 
     # 冲突列表 (sync_status = 2)
-    conn = _get_read_conn(config.DB_PATH)
+    conn = _get_read_conn(ctx.db_path)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
     conflicts = []
@@ -82,10 +84,11 @@ async def sync_status(
 
 @router.post("/flush", response_model=ApiResponse[SyncFlushResponse])
 async def flush_sync(
-    user: str = Depends(get_active_user),
+    ctx = Depends(get_user_context),
     workflow=Depends(get_workflow),
 ):
     """触发一次立即收尾同步。"""
+    user = ctx.profile_name
     try:
         workflow.sync_manager.flush_pending_syncs("Web手动触发")
         return ok_response({"flushed": True}, user_id=user)
@@ -95,14 +98,15 @@ async def flush_sync(
 
 @router.post("/retry", response_model=ApiResponse[SyncRetryResponse])
 async def retry_conflicts(
-    user: str = Depends(get_active_user),
+    ctx = Depends(get_user_context),
     workflow=Depends(get_workflow),
 ):
     """重试所有冲突的同步项（sync_status=2），将其重新入队。"""
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
     from database.utils import clean_for_maimemo
 
-    conn = _get_read_conn(config.DB_PATH)
+    user = ctx.profile_name
+    conn = _get_read_conn(ctx.db_path)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
     conflicts = []

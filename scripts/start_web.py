@@ -38,36 +38,7 @@ if platform.system() == "Windows":
 ROOT = Path(__file__).resolve().parent.parent  # 项目根目录
 FRONTEND_DIR = ROOT / "web" / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
-PROFILES_DIR = ROOT / "data" / "profiles"
 LAST_WEB_USER_FILE = ROOT / "data" / ".last_web_user"
-
-
-def _pick_user() -> str | None:
-    """列出已有 profile，让用户选择。仅返回 .env 文件名（不含扩展名）。"""
-    if not PROFILES_DIR.is_dir():
-        return None
-    profiles = sorted(
-        f.stem for f in PROFILES_DIR.glob("*.env")
-        if f.stem not in ("default",) and not f.stem.startswith(".")
-    )
-    if not profiles:
-        return None
-    if len(profiles) == 1:
-        print(f"👤 自动选择唯一用户: {profiles[0]}")
-        return profiles[0]
-    print("\n👤 检测到多个用户，请选择：")
-    for i, name in enumerate(profiles, 1):
-        print(f"  {i}. {name}")
-    while True:
-        try:
-            raw = input(f"输入编号 [1-{len(profiles)}]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(profiles):
-            selected = profiles[int(raw) - 1]
-            print(f"   -> 已选择: {selected}\n")
-            return selected
-        print("   无效输入，请重试。")
 
 
 def _load_last_user() -> str | None:
@@ -304,10 +275,9 @@ def main():
     if args.dev:
         args.frontend_port = _pick_available_port(args.frontend_host, args.frontend_port)
 
-    # 用户选择：--user > MOMO_USER > 上次使用用户 > 交互选择
+    # 用户选择：--user > MOMO_USER > 上次使用用户
+    # 若均无，则不设定用户，交由 Gateway 页面选择/创建 profile。
     user = args.user or os.getenv("MOMO_USER") or _load_last_user()
-    if not user:
-        user = _pick_user()
     if user:
         args.user = user
         os.environ["MOMO_USER"] = user

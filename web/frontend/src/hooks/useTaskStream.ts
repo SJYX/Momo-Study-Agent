@@ -31,7 +31,7 @@ export function useTaskStream({ taskId, enabled = true, onEvent, onDone }: UseTa
       return
     }
 
-    const profile = localStorage.getItem('momo_active_profile') || ''
+    const profile = sessionStorage.getItem('momo_active_profile') || ''
     if (!profile) {
       setStatus('error')
       return

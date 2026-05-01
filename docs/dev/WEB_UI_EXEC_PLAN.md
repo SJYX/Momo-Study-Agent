@@ -154,8 +154,21 @@
 - 基本 Dashboard
 
 ## 12. 当前状态
-- 当前阶段：`P1（暂停）`
-- 当前焦点：`今日收口，等待下次继续处理 UserContext 初始化阻塞`
+- 当前阶段：`P3（已完成）`
+- 当前焦点：`进入 P4：TaskDrawer 结构化展示与协议固化`
 - 当前原则：`先不串用户/不写坏数据/不串任务，再做视觉美化`
-- 今日进展（2026-04-30）：`已补齐 POST /api/users 最小接口并接入 UserGateway Step1；P1 验收测试 11 passed`
+- 今日进展（2026-05-01）：`P3-T1/T2/T3 已完成：Today/Future 行级进度列落地，Iteration 候选列表化，row_status 结构化事件贯通（含 skipped/sync_pending/sync_done/sync_conflict/sync_failed）`
+
+## 13. P3 完成度说明
+### 已完成点
+1. Today 页面：行级进度列已落地，支持待处理/处理中/已完成/失败/已跳过/待同步。
+2. Future 页面：行级进度列已落地，状态语义与 Today 对齐。
+3. Iteration 页面：已从单按钮说明页升级为候选词列表 + 行级进度展示。
+4. 后端事件：已支持结构化 `row_status` 事件并覆盖 AI 阶段与同步阶段（成功/冲突/失败）。
+5. 跳过细分：查重跳过已按本地 `sync_status` 区分为 `skipped` 与 `sync_pending`。
+
+### 未完成点（不阻塞 P3 完成，归入 P4/P6）
+1. TaskDrawer 仍以日志视图为主，尚未完成结构化主视图与日志折叠（P4-T2）。
+2. 行级百分比进度（current/total/percent）未统一落地（计划在 P4/P后续 V3）。
+3. 个别场景仍保留日志语义兜底解析，待协议进一步收敛后可去除。
 

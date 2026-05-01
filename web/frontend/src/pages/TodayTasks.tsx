@@ -7,13 +7,17 @@ import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { useTaskStore } from '../stores/tasks'
 import type { TodayItemsResponse, TaskSubmitResponse } from '../api/types'
 import { PlayCircle, Loader2 } from 'lucide-react'
+import { buildRowStatusMap, rowDisplayLabel, rowPhaseLabel } from '../utils/rowProgress'
 
 export default function TodayTasks() {
   const [data, setData] = useState<TodayItemsResponse | null>(null)
   const [error, setError] = useState('')
   const [processing, setProcessing] = useState(false)
   const setActiveTask = useTaskStore(s => s.setActiveTask)
+  const events = useTaskStore(s => s.events)
+  const taskStatus = useTaskStore(s => s.taskStatus)
   const items = data?.items ?? []
+  const rowStatusMap = buildRowStatusMap(items, events, taskStatus)
 
   const load = useCallback(() => {
     apiClient<TodayItemsResponse>('/api/study/today')
@@ -65,6 +69,7 @@ export default function TodayTasks() {
                 <th className="text-left px-4 py-2 font-medium text-gray-600">#</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">单词</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">释义</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">进度</th>
               </tr>
             </thead>
             <tbody>
@@ -73,6 +78,19 @@ export default function TodayTasks() {
                   <td className="px-4 py-2 text-gray-400">{i + 1}</td>
                   <td className="px-4 py-2 font-medium">{item.voc_spelling}</td>
                   <td className="px-4 py-2 text-gray-600">{item.voc_meanings || '—'}</td>
+                  <td className="px-4 py-2">
+                    <span
+                      className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700"
+                      title={
+                        [
+                          rowPhaseLabel(rowStatusMap[item.voc_spelling.toLowerCase()]?.phase),
+                          rowStatusMap[item.voc_spelling.toLowerCase()]?.reason || '',
+                        ].filter(Boolean).join(' | ')
+                      }
+                    >
+                      {rowDisplayLabel(rowStatusMap[item.voc_spelling.toLowerCase()])}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>

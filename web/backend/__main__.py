@@ -40,28 +40,15 @@ def main():
     if args.user:
         os.environ["MOMO_USER"] = args.user
 
-    # 如果未指定用户，尝试交互选择（与 CLI 行为一致）
-    if not os.getenv("MOMO_USER") and sys.stdin.isatty():
-        try:
-            import config
-            if getattr(config, "ACTIVE_USER", "default") == "default":
-                selected = config.pm.normalize_username(config.pm.pick_profile() or "")
-                if not selected:
-                    print("\n[Exit] 未选择有效用户，已退出。")
-                    sys.exit(0)
-                os.environ["MOMO_USER"] = selected
-                import importlib
-                importlib.reload(config)
-        except (KeyboardInterrupt, EOFError):
-            print("\n[Exit] 用户取消选择。")
-            sys.exit(0)
+    # 注意：Web 模式默认不做交互式选用户。
+    # 用户应在 Gateway 页面中选择/创建 profile。
 
     # 2. 获取进程锁（与 CLI 互斥）
     from web.backend.lock import acquire_process_lock
     acquire_process_lock()
 
     print(f"\n🌐 MOMO Study Agent Web 后端")
-    print(f"   用户: {os.getenv('MOMO_USER', 'default')}")
+    print(f"   用户: {os.getenv('MOMO_USER', 'default')} (可在 Gateway 切换)")
     print(f"   地址: http://{args.host}:{args.port}")
     print(f"   健康检查: http://{args.host}:{args.port}/api/health")
     print(f"   按 Ctrl+C 停止\n")

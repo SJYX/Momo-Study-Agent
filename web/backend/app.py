@@ -23,22 +23,18 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan：启动时创建 UserContextManager，关闭时清理所有 profile。"""
     # ---- 启动 ----
     import os
-    from config import ACTIVE_USER
 
     # 创建 context manager
     context_manager = UserContextManager()
 
-    # 预初始化启动用户（避免首次请求延迟）
-    fallback_user = ACTIVE_USER or "default"
-    try:
-        context_manager.get(fallback_user)
-    except Exception as e:
-        print(f"⚠️ 预初始化用户 '{fallback_user}' 失败: {e}")
+    # 不在启动时初始化任何具体用户。
+    # 仅保留 fallback 名称用于无 header 请求兼容（默认 default）。
+    fallback_user = (os.getenv("MOMO_USER") or "default").strip().lower() or "default"
 
     # 注册到依赖注入（fallback_user 仅用于无 header 时的降级，不影响 profile 隔离）
     init_deps(context_manager=context_manager, fallback_user=fallback_user)
 
-    print(f"[Web] 后端已启动，默认用户: {fallback_user}")
+    print(f"[Web] 后端启动流程继续，fallback用户: {fallback_user}")
 
     yield  # --- 应用运行中 ---
 

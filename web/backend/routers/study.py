@@ -218,3 +218,31 @@ async def iterate(
     task_id = _submit_with_profile_lock(user, registry, _run, loop, logger)
 
     return ok_response({"task_id": task_id}, user_id=user)
+
+
+@router.get("/iterate-candidates")
+async def iterate_candidates(
+    limit: int = Query(default=100, ge=1, le=500),
+    user: str = Depends(get_active_user),
+    logger=Depends(get_logger),
+):
+    """返回智能迭代候选词列表（薄弱词）。"""
+    try:
+        from core.weak_word_filter import WeakWordFilter
+
+        filter_obj = WeakWordFilter(logger)
+        rows = filter_obj.get_weak_words_by_score(min_score=50.0, limit=limit)
+        items = []
+        for row in rows:
+            items.append(
+                {
+                    "voc_id": str(row.get("voc_id", "")),
+                    "voc_spelling": str(row.get("spelling", "")),
+                    "voc_meanings": str(row.get("meanings", "") or ""),
+                    "it_level": int(row.get("it_level", 0) or 0),
+                    "weak_score": float(row.get("weak_score", 0.0) or 0.0),
+                }
+            )
+        return ok_response({"count": len(items), "items": items}, user_id=user)
+    except Exception as e:
+        return error_response("ITERATE_CANDIDATES_ERROR", str(e), user_id=user)

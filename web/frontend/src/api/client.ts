@@ -15,7 +15,7 @@ export interface ApiResponse<T = unknown> {
 }
 
 function getProfileHeader(): Record<string, string> {
-  const profile = localStorage.getItem('momo_active_profile')
+  const profile = sessionStorage.getItem('momo_active_profile')
   return profile ? { 'X-Momo-Profile': profile } : {}
 }
 
@@ -25,10 +25,11 @@ export async function apiClient<T = unknown>(
 ): Promise<ApiResponse<T>> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15_000)
+  const resolvedUrl = new URL(url, window.location.origin).toString()
 
   let res: Response
   try {
-    res = await fetch(url, {
+    res = await fetch(resolvedUrl, {
       headers: {
         'Content-Type': 'application/json',
         ...getProfileHeader(),
@@ -40,9 +41,9 @@ export async function apiClient<T = unknown>(
   } catch (e) {
     clearTimeout(timeout)
     if (e instanceof DOMException && e.name === 'AbortError') {
-      throw new Error('请求超时，请检查后端是否启动')
+      throw new Error(`请求超时: ${resolvedUrl} (origin=${window.location.origin})`)
     }
-    throw new Error('无法连接后端，请检查服务是否运行')
+    throw new Error(`无法连接后端: ${resolvedUrl} (origin=${window.location.origin})`)
   } finally {
     clearTimeout(timeout)
   }

@@ -22,7 +22,7 @@ from core.sync_manager import SyncManager
 class StudyWorkflow:
     """核心业务层：单词处理流水线、缓存判重、AI 调度、DB 写入与同步任务投递。"""
 
-    def __init__(self, logger, ai_client, momo_api, ui_manager):
+    def __init__(self, logger, ai_client, momo_api, ui_manager, db_path=None):
         self.logger = logger
         self.ai_client = ai_client
         self.momo = momo_api
@@ -38,6 +38,7 @@ class StudyWorkflow:
             logger=self.logger,
             momo_api=self.momo,
             on_mark_processed=self._mark_processed_with_cache,
+            db_path=db_path,
         )
 
     def _prune_processed_cache(self):
@@ -195,9 +196,40 @@ class StudyWorkflow:
 
             if spell not in ai_map:
                 self.logger.warning(f"{spell} 结果缺失")
+                self.logger.info(
+                    f"[RowStatus] {spell} 处理失败：结果缺失",
+                    extra={
+                        "event": "row_status",
+                        "data": {
+                            "rows": [
+                                {
+                                    "item_id": spell,
+                                    "status": "error",
+                                    "phase": "ai_result",
+                                    "error": "AI 返回缺失该单词结果",
+                                }
+                            ]
+                        },
+                    },
+                )
                 continue
 
             payload = ai_map[spell]
+            self.logger.info(
+                f"[RowStatus] {spell} AI 处理完成",
+                extra={
+                    "event": "row_status",
+                    "data": {
+                        "rows": [
+                            {
+                                "item_id": spell,
+                                "status": "running",
+                                "phase": "ai_done",
+                            }
+                        ]
+                    },
+                },
+            )
             meta = {
                 "batch_id": batch_id,
                 "original_meanings": w.get("voc_meanings") or w.get("voc_meaning") or w.get("meanings"),
@@ -257,6 +289,21 @@ class StudyWorkflow:
                     item["tags"],
                     force_sync=True,  # 内存信任：刚生成结果直接同步，跳过写后即读
                 )
+                self.logger.info(
+                    f"[RowStatus] {item['spell']} 已入同步队列",
+                    extra={
+                        "event": "row_status",
+                        "data": {
+                            "rows": [
+                                {
+                                    "item_id": item["spell"],
+                                    "status": "done",
+                                    "phase": "sync_queued",
+                                }
+                            ]
+                        },
+                    },
+                )
             
             # 汇总打印同步入队信息，避免 200+ 词刷屏
             sync_spells = [item["spell"] for item in pending_sync_items]
@@ -265,6 +312,18 @@ class StudyWorkflow:
             )
 
     def _run_ai_batch(self, batch_no, total_batches, batch_spells):
+        self.logger.info(
+            f"[RowStatus] 批次开始",
+            extra={
+                "event": "row_status",
+                "data": {
+                    "rows": [
+                        {"item_id": str(spell).lower(), "status": "running", "phase": "ai_request"}
+                        for spell in batch_spells
+                    ]
+                },
+            },
+        )
         self.logger.info(
             f"[Pipeline] {self._format_words_preview(batch_spells)} - 1. 开始请求 AI 助记 (批次 {batch_no}/{total_batches})"
         )
@@ -308,6 +367,45 @@ class StudyWorkflow:
             if skipped_spells:
                 self.logger.info(
                     f"[去重] 本轮跳过单词: {self._format_words_preview(skipped_spells)}"
+                )
+                rows = []
+                for word in skipped_words:
+                    spell = str(word.get("voc_spelling", "") or "").strip().lower()
+                    voc_id = str(word.get("voc_id", "") or "").strip()
+                    if not spell:
+                        continue
+
+                    # 已处理并不一定代表已同步：根据本地 sync_status 区分显示。
+                    # 0: 待同步  1: 已同步  2: 冲突
+                    phase = "skipped"
+                    status = "done"
+                    reason = ""
+                    try:
+                        note = get_local_word_note(voc_id)
+                        sync_status = int((note or {}).get("sync_status", 0) or 0)
+                        if sync_status == 0:
+                            phase = "sync_pending"
+                            status = "pending"
+                            reason = "本地已生成，待上传同步"
+                        elif sync_status == 2:
+                            phase = "sync_conflict"
+                            status = "error"
+                            reason = "云端释义冲突，待处理"
+                    except Exception:
+                        # 查询失败时保守展示为 skipped，避免中断主流程。
+                        pass
+
+                    row = {"item_id": spell, "status": status, "phase": phase}
+                    if reason:
+                        row["error"] = reason
+                    rows.append(row)
+
+                self.logger.info(
+                    "[RowStatus] 本轮跳过单词状态回填",
+                    extra={
+                        "event": "row_status",
+                        "data": {"rows": rows},
+                    },
                 )
 
         if not pending_words:

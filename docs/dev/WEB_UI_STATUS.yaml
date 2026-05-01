@@ -2,8 +2,8 @@ meta:
   project: momo-web-ui
   plan_file: docs/dev/WEB_UI_EXEC_PLAN.md
   owner: 112560
-  last_updated: 2026-04-30
-  status: paused
+  last_updated: 2026-05-01
+  status: active
 
 principles:
   - 不串用户
@@ -13,9 +13,9 @@ principles:
   - 再做视觉美化
 
 current:
-  phase: P1
-  in_progress: paused
-  summary: 今日收口暂停；P0 最小创建接口已补齐，P1 验收测试已通过，下一步处理 UserContext 初始化阻塞
+  phase: P3
+  in_progress: completed
+  summary: P3 已完成；Today/Future/Iteration 已具备行级进度与结构化状态回填能力
 
 phase_plan:
   P0:
@@ -686,17 +686,29 @@ done:
   - P0-T4
   - P0-T5
   - P0-T6
+  - P1-T1
+  - P1-T2
+  - P1-T3
+  - P1-T4
+  - P3-T1
+  - P3-T2
+  - P3-T3
 
 next_actions:
-  - 恢复后优先处理 P1-T1 启动/初始化阻塞问题（拆轻初始化与异步预热）
-  - 复查 P1-T2/P1-T3/P1-T4 与执行计划的接口约定一致性
+  - 启动 P4-T1：结构化进度事件协议收敛与字段固化
+  - 启动 P4-T2：TaskDrawer 结构化展示升级（日志折叠、阶段摘要、成功失败计数）
+  - 评估是否补充 P3 端到端验收脚本（回归用例固化）
 
 notes:
   - 第一阶段默认仅绑定 127.0.0.1，不开放公网
   - 第一阶段不做登录/鉴权，但必须保留 auth/tenant 扩展位
   - 行级进度先在 Today/Future/Iteration 落地，再扩展到类似列表场景
   - P0 已完成全部 6 个任务（UserGateway/Profile store/路由守卫/X-Momo-Profile header/Session API 改造/SSE 重置）
-  - P1-T1 代码已完成（user_context.py + deps.py 改造 + app.py lifespan 改造），但启动后端口未绑定，疑似同步任务阻塞事件循环
+  - P1-T1 启动阻塞问题已通过拆轻初始化与异步预热机制解决
+  - P1 所有阶段（包括两层锁、Profile级TaskRegistry隔离、SSE多终端订阅）均已完成并通过验收测试 (11 passed)
   - lock.py 已加入 PID 检测 + 自动恢复机制
   - 2026-04-30 收口：已新增 POST /api/users（最小 profile_name 入参）并接入 UserGateway Step1
-  - 2026-04-30 收口：tests/web/test_p1_acceptance.py 已通过（11 passed）
+  - 2026-05-01：按 Gateway-first 模式修复 context 初始化时序与 SSE profile 存储一致性
+  - 2026-05-01：P3 V1 已开始，先基于现有 TaskDrawer 事件流提供行级状态映射（pending/running/done/error）
+  - 2026-05-01：P3 收口完成（T1/T2/T3）——Today/Future 增加行级进度列；Iteration 改为候选列表模式；同步阶段接入 row_status（含 sync_done/sync_conflict/sync_failed）；查重跳过细分为 skipped 与 sync_pending
+  - 未完成点（按当前标准）：TaskDrawer 尚未完成 P4 结构化主视图改造；行级进度百分比（V3）未实现；部分状态仍依赖日志语义兜底

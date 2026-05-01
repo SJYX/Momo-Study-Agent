@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 import config
-from web.backend.deps import get_active_user
+from web.backend.deps import get_user_context
 from web.backend.schemas import (
     ApiResponse,
     WordIterationsResponse,
@@ -32,12 +32,13 @@ async def list_words(
     search: Optional[str] = Query(default=None),
     sync_status: Optional[int] = Query(default=None),
     it_level: Optional[int] = Query(default=None),
-    user: str = Depends(get_active_user),
+    ctx = Depends(get_user_context),
 ):
     """分页列出 ai_word_notes，支持搜索和筛选。"""
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
-    conn = _get_read_conn(config.DB_PATH)
+    user = ctx.profile_name
+    conn = _get_read_conn(ctx.db_path)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 
@@ -100,13 +101,14 @@ async def list_words(
 
 
 @router.get("/{voc_id}", response_model=ApiResponse[WordNoteDetail])
-async def get_word_detail(voc_id: str, user: str = Depends(get_active_user)):
+async def get_word_detail(voc_id: str, ctx = Depends(get_user_context)):
     """获取单个单词的完整笔记详情。"""
     from database.momo_words import get_local_word_note
 
-    note = get_local_word_note(voc_id)
+    user = ctx.profile_name
+    note = get_local_word_note(voc_id, db_path=ctx.db_path)
     if not note:
-        raise HTTPException(status_code=404, detail=f"Word note not found: {voc_id}")
+        return error_response("NOT_FOUND", f"Word note not found: {voc_id}", user_id=user)
     return ok_response(note, user_id=user)
 
 
@@ -114,31 +116,35 @@ async def get_word_detail(voc_id: str, user: str = Depends(get_active_user)):
 async def update_word_note(
     voc_id: str,
     body: dict,
-    user: str = Depends(get_active_user),
+    ctx = Depends(get_user_context),
 ):
     """编辑单词笔记的 memory_aid 字段。"""
+    user = ctx.profile_name
     memory_aid = body.get("memory_aid", "")
     if not memory_aid:
         return error_response("INVALID_INPUT", "memory_aid 不能为空", user_id=user)
 
     try:
-        from database.connection import _queue_write_operation
+        from database.connection import _execute_write_sql_sync
         from database.utils import get_timestamp_with_tz
 
         sql = "UPDATE ai_word_notes SET memory_aid = ?, updated_at = ? WHERE voc_id = ?"
         args = (memory_aid, get_timestamp_with_tz(), str(voc_id))
-        _queue_write_operation(sql, args, op_type="insert_or_replace")
+        
+        # Web 环境下多用户并发，必须使用同步写入指定 db_path，不能使用全局的 _queue_write_operation
+        _execute_write_sql_sync(sql, args, db_path=ctx.db_path)
         return ok_response({"updated": True, "voc_id": voc_id}, user_id=user)
     except Exception as e:
         return error_response("UPDATE_ERROR", str(e), user_id=user)
 
 
 @router.get("/{voc_id}/iterations", response_model=ApiResponse[WordIterationsResponse])
-async def get_word_iterations(voc_id: str, user: str = Depends(get_active_user)):
+async def get_word_iterations(voc_id: str, ctx = Depends(get_user_context)):
     """获取单词的迭代历史。"""
     from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
-    conn = _get_read_conn(config.DB_PATH)
+    user = ctx.profile_name
+    conn = _get_read_conn(ctx.db_path)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 

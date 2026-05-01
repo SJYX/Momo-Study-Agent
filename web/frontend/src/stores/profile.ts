@@ -1,7 +1,7 @@
 /**
- * stores/profile.ts — Profile store：管理 active profile，localStorage 持久化。
+ * stores/profile.ts — Profile store：管理 active profile，sessionStorage 持久化。
  *
- * P0-T2: 让用户刷新页面后不丢失当前 profile 选择。
+ * P0-T2: 让用户刷新页面后不丢失当前 profile 选择（仅当前标签页）。
  */
 import { create } from 'zustand'
 
@@ -14,15 +14,15 @@ interface ProfileState {
 }
 
 export const useProfileStore = create<ProfileState>((set) => ({
-  activeProfile: localStorage.getItem(STORAGE_KEY),
+  activeProfile: sessionStorage.getItem(STORAGE_KEY),
 
   setActiveProfile: (name: string) => {
-    localStorage.setItem(STORAGE_KEY, name)
+    sessionStorage.setItem(STORAGE_KEY, name)
     set({ activeProfile: name })
   },
 
   clearProfile: () => {
-    localStorage.removeItem(STORAGE_KEY)
+    sessionStorage.removeItem(STORAGE_KEY)
     set({ activeProfile: null })
   },
 }))

@@ -23,11 +23,13 @@ class SyncManager:
         momo_api,
         on_mark_processed: Callable[[str, str], None],
         on_conflict: Optional[Callable[[dict, str], None]] = None,
+        db_path: Optional[str] = None,
     ):
         self.logger = logger
         self.momo = momo_api
         self.on_mark_processed = on_mark_processed
         self.on_conflict = on_conflict
+        self.db_path = db_path
 
         self.sync_queue = queue.Queue()
         self.conflict_sync_queue = queue.Queue()
@@ -96,6 +98,22 @@ class SyncManager:
 
     def _defer_maimemo_conflict(self, item, reason: str):
         self.conflict_sync_queue.put(item)
+        self.logger.info(
+            f"[RowStatus] {item.get('spell', '')} 同步冲突",
+            extra={
+                "event": "row_status",
+                "data": {
+                    "rows": [
+                        {
+                            "item_id": str(item.get("spell", "")).lower(),
+                            "status": "error",
+                            "phase": "sync_conflict",
+                            "error": reason,
+                        }
+                    ]
+                },
+            },
+        )
         if self.on_conflict:
             self.on_conflict(item, reason)
             return
@@ -120,13 +138,19 @@ class SyncManager:
                 # 仅在非内存信任路径下执行 DB 查询兜底
                 if not force_sync:
                     try:
-                        current_note = get_local_word_note(voc_id)
+                        if self.db_path:
+                            current_note = get_local_word_note(voc_id, db_path=self.db_path)
+                        else:
+                            current_note = get_local_word_note(voc_id)
                     except Exception as local_read_error:
                         self.logger.warning(f"⚠️ {spell} 本地数据库读取失败: {local_read_error}")
 
                     if not current_note:
                         try:
-                            current_note = get_word_note(voc_id)
+                            if self.db_path:
+                                current_note = get_word_note(voc_id, db_path=self.db_path)
+                            else:
+                                current_note = get_word_note(voc_id)
                         except Exception as fallback_read_error:
                             self.logger.warning(f"⚠️ {spell} 主连接读取失败: {fallback_read_error}")
 
@@ -157,30 +181,73 @@ class SyncManager:
 
                     if sync_status == 1:
                         try:
-                            mark_processed(voc_id, spell)
+                            if self.db_path:
+                                mark_processed(voc_id, spell, db_path=self.db_path)
+                            else:
+                                mark_processed(voc_id, spell)
                         except Exception as persist_error:
                             self.logger.warning(f"⚠️ {spell} 已同步，但 processed 标记持久化失败: {persist_error}")
                         try:
                             self.on_mark_processed(voc_id, spell)
                         except Exception as cache_error:
                             self.logger.warning(f"⚠️ {spell} 已同步，但缓存更新失败: {cache_error}")
-                        ok = mark_note_synced(voc_id)
+                        if self.db_path:
+                            ok = mark_note_synced(voc_id, db_path=self.db_path)
+                        else:
+                            ok = mark_note_synced(voc_id)
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=1 写回未命中")
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
+                        self.logger.info(
+                            f"[RowStatus] {spell} 同步完成",
+                            extra={
+                                "event": "row_status",
+                                "data": {
+                                    "rows": [
+                                        {
+                                            "item_id": str(spell).lower(),
+                                            "status": "done",
+                                            "phase": "sync_done",
+                                        }
+                                    ]
+                                },
+                            },
+                        )
                     elif sync_status == 2:
                         try:
-                            mark_processed(voc_id, spell)
+                            if self.db_path:
+                                mark_processed(voc_id, spell, db_path=self.db_path)
+                            else:
+                                mark_processed(voc_id, spell)
                         except Exception as persist_error:
                             self.logger.warning(f"⚠️ {spell} 冲突态 processed 持久化失败: {persist_error}")
                         try:
                             self.on_mark_processed(voc_id, spell)
                         except Exception as cache_error:
                             self.logger.warning(f"⚠️ {spell} 冲突态缓存更新失败: {cache_error}")
-                        ok = set_note_sync_status(voc_id, 2)
+                        if self.db_path:
+                            ok = set_note_sync_status(voc_id, 2, db_path=self.db_path)
+                        else:
+                            ok = set_note_sync_status(voc_id, 2)
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=2 写回未命中")
                         self.logger.warning(f"[Pipeline] ⚠️ {spell} - 4. 墨墨同步提示: 发现已存在的不一致释义，已标记冲突")
+                        self.logger.info(
+                            f"[RowStatus] {spell} 同步冲突",
+                            extra={
+                                "event": "row_status",
+                                "data": {
+                                    "rows": [
+                                        {
+                                            "item_id": str(spell).lower(),
+                                            "status": "error",
+                                            "phase": "sync_conflict",
+                                            "error": "远端释义与本地不一致",
+                                        }
+                                    ]
+                                },
+                            },
+                        )
                     else:
                         reason = ""
                         if isinstance(sync_result, dict):
@@ -188,15 +255,66 @@ class SyncManager:
 
                         # 非法资源 ID 属于不可重试失败：写回冲突态避免反复重试刷屏。
                         if reason in {"invalid_res_id", "common_invalid_res_id"}:
-                            ok = set_note_sync_status(voc_id, 2)
+                            if self.db_path:
+                                ok = set_note_sync_status(voc_id, 2, db_path=self.db_path)
+                            else:
+                                ok = set_note_sync_status(voc_id, 2)
                             if not ok:
                                 self.logger.warning(f"⚠️ {spell} 非法 voc_id 状态写回未命中")
                             self.logger.warning(f"⚠️ {spell} voc_id={voc_id} 在墨墨侧非法，已标记为冲突并停止重试")
+                            self.logger.info(
+                                f"[RowStatus] {spell} 同步失败",
+                                extra={
+                                    "event": "row_status",
+                                    "data": {
+                                        "rows": [
+                                            {
+                                                "item_id": str(spell).lower(),
+                                                "status": "error",
+                                                "phase": "sync_failed",
+                                                "error": "invalid_res_id",
+                                            }
+                                        ]
+                                    },
+                                },
+                            )
                             continue
 
                         self.logger.warning(f"⚠️ {spell} 墨墨同步未完成")
+                        self.logger.info(
+                            f"[RowStatus] {spell} 同步未完成",
+                            extra={
+                                "event": "row_status",
+                                "data": {
+                                    "rows": [
+                                        {
+                                            "item_id": str(spell).lower(),
+                                            "status": "error",
+                                            "phase": "sync_failed",
+                                            "error": reason or "sync_incomplete",
+                                        }
+                                    ]
+                                },
+                            },
+                        )
                 except Exception as e:
                     self.logger.error(f"❌ {spell} 后台同步异常: {e}")
+                    self.logger.info(
+                        f"[RowStatus] {spell} 同步异常",
+                        extra={
+                            "event": "row_status",
+                            "data": {
+                                "rows": [
+                                    {
+                                        "item_id": str(spell).lower(),
+                                        "status": "error",
+                                        "phase": "sync_failed",
+                                        "error": str(e),
+                                    }
+                                ]
+                            },
+                        },
+                    )
             finally:
                 self.sync_queue.task_done()
 

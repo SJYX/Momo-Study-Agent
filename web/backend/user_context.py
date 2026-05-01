@@ -39,15 +39,29 @@ class UserContextManager:
     def __init__(self):
         self._contexts: Dict[str, UserContext] = {}
         self._lock = threading.Lock()
+        self._warmup_done: set[str] = set()
 
     def get(self, profile_name: str) -> UserContext:
         """获取指定 profile 的 context，不存在则创建。"""
+        # Fast path: read under lock.
         with self._lock:
-            ctx = self._contexts.get(profile_name)
-            if ctx is None:
-                ctx = self._create_context(profile_name)
-                self._contexts[profile_name] = ctx
-            return ctx
+            existing = self._contexts.get(profile_name)
+        if existing is not None:
+            return existing
+
+        # Slow path: initialize outside lock to avoid holding a global mutex
+        # during potentially long I/O (db warmup, cloud auth, client init).
+        created = self._create_context(profile_name)
+
+        # Publish with double-check to handle races.
+        with self._lock:
+            existing = self._contexts.get(profile_name)
+            if existing is not None:
+                # Another thread already published a context.
+                self._cleanup_context(created)
+                return existing
+            self._contexts[profile_name] = created
+            return created
 
     def has(self, profile_name: str) -> bool:
         with self._lock:
@@ -120,15 +134,7 @@ class UserContextManager:
                 from core.gemini_client import GeminiClient
                 ai_client = GeminiClient(cfg.GEMINI_API_KEY)
 
-            # 初始化数据库（使用 switch_user 已设置的 DB globals）
-            from database.connection import init_concurrent_system
-            from database.schema import init_db
-            init_concurrent_system()
-            init_db()
-
             from core.study_workflow import StudyWorkflow
-            from database.momo_words import get_unsynced_notes
-            from database.utils import clean_for_maimemo
 
             class _NullUI:
                 def __getattr__(self, name):
@@ -139,19 +145,8 @@ class UserContextManager:
                 ai_client=ai_client,
                 momo_api=momo_api,
                 ui_manager=_NullUI(),
+                db_path=cfg.DB_PATH,
             )
-
-            unsynced = get_unsynced_notes()
-            if unsynced:
-                logger.info(f"发现 {len(unsynced)} 条待同步笔记，正在入队...", module="user_context")
-                for note in unsynced:
-                    workflow.sync_manager.queue_maimemo_sync(
-                        note["voc_id"],
-                        note.get("spelling", ""),
-                        clean_for_maimemo(note.get("basic_meanings", "")),
-                        ["雅思"],
-                        force_sync=True,
-                    )
 
             from web.backend.tasks import TaskRegistry
             from web.backend.logger_bridge import LoggerBridge
@@ -175,6 +170,9 @@ class UserContextManager:
                 turso_db_url=cfg.TURSO_DB_URL or "",
                 turso_auth_token=cfg.TURSO_AUTH_TOKEN or "",
             )
+
+            # profile 级 warmup 改为可等待的同步流程，避免刚进入 Gateway 后触发任务时出现竞态。
+            self.ensure_profile_ready(ctx)
 
         finally:
             # 恢复原全局状态，避免污染其他 profile
@@ -202,6 +200,37 @@ class UserContextManager:
                 pass
 
         return ctx
+
+    def ensure_profile_ready(self, ctx: UserContext) -> None:
+        profile = (ctx.profile_name or "").strip().lower()
+        with self._lock:
+            if profile in self._warmup_done:
+                return
+        self._warmup_profile(ctx)
+        with self._lock:
+            self._warmup_done.add(profile)
+
+    def _warmup_profile(self, ctx: UserContext) -> None:
+        UserContextManager.prepare_for_task(ctx)
+        from database.connection import init_concurrent_system
+        from database.schema import init_db
+        from database.momo_words import get_unsynced_notes
+        from database.utils import clean_for_maimemo
+
+        init_concurrent_system()
+        init_db()
+
+        unsynced = get_unsynced_notes(db_path=ctx.db_path)
+        if unsynced:
+            ctx.logger.info(f"发现 {len(unsynced)} 条待同步笔记，正在后台入队...", module="user_context")
+            for note in unsynced:
+                ctx.workflow.sync_manager.queue_maimemo_sync(
+                    note["voc_id"],
+                    note.get("spelling", ""),
+                    clean_for_maimemo(note.get("basic_meanings", "")),
+                    ["雅思"],
+                    force_sync=True,
+                )
 
     @staticmethod
     def prepare_for_task(ctx: UserContext) -> None:

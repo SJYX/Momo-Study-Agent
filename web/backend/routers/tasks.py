@@ -7,10 +7,11 @@ POST /api/tasks/{task_id}/cancel  — 取消任务
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
+from web.backend.deps import get_task_registry
 from web.backend.schemas import (
     ApiResponse,
     TaskCancelResponse,
@@ -20,6 +21,16 @@ from web.backend.schemas import (
 )
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+
+def _profile_exists(profile: str) -> bool:
+    try:
+        from config import PROFILES_DIR
+        from core.profile_manager import ProfileManager
+
+        return profile in ProfileManager(PROFILES_DIR).list_profiles()
+    except Exception:
+        return False
 
 
 def _resolve_registry(profile_query: str = "", x_momo_profile: str | None = None):
@@ -32,26 +43,39 @@ def _resolve_registry(profile_query: str = "", x_momo_profile: str | None = None
     if not profile:
         profile = (_deps._fallback_user or "default").strip().lower()
 
-    if hasattr(_deps._context_manager, "has") and not _deps._context_manager.has(profile):
+    if hasattr(_deps._context_manager, "has") and not _deps._context_manager.has(profile) and not _profile_exists(profile):
         return None
 
     return _deps._context_manager.get(profile).task_registry
 
 
+def _resolve_fallback_registry(request: Request):
+    """仅在未指定 profile 的兼容路径下，按需获取 fallback registry。"""
+    try:
+        override = request.app.dependency_overrides.get(get_task_registry)
+        if override:
+            return override()
+    except Exception:
+        pass
+    try:
+        return get_task_registry()
+    except Exception:
+        return None
+
+
 @router.get("/{task_id}", response_model=ApiResponse[TaskStatusResponse])
 async def get_task_status(
+    request: Request,
     task_id: str,
     profile: str = Query(default=""),
     x_momo_profile: str | None = Header(default=None),
 ):
     """查询任务状态。"""
+    registry = None
     try:
         registry = _resolve_registry(profile_query=profile, x_momo_profile=x_momo_profile)
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=error_response("CONTEXT_ERROR", f"获取任务上下文失败: {e}"),
-        )
+    except Exception:
+        registry = _resolve_fallback_registry(request) if not (profile or x_momo_profile) else None
     if registry is None:
         return JSONResponse(
             status_code=404,
@@ -90,11 +114,16 @@ async def task_events(
         )
 
     profile = profile.strip().lower()
+    if hasattr(_deps._context_manager, "has") and not _deps._context_manager.has(profile) and not _profile_exists(profile):
+        return JSONResponse(
+            status_code=404,
+            content=error_response("PROFILE_NOT_FOUND", f"Profile not initialized: {profile}"),
+        )
     try:
         ctx = _deps._context_manager.get(profile)
     except Exception as e:
         return JSONResponse(
-            status_code=500,
+            status_code=404,
             content=error_response("CONTEXT_ERROR", f"获取 profile '{profile}' 上下文失败: {e}"),
         )
     registry = ctx.task_registry
@@ -134,18 +163,17 @@ async def task_events(
 
 @router.post("/{task_id}/cancel", response_model=ApiResponse[TaskCancelResponse])
 async def cancel_task(
+    request: Request,
     task_id: str,
     profile: str = Query(default=""),
     x_momo_profile: str | None = Header(default=None),
 ):
     """取消一个运行中的任务。"""
+    registry = None
     try:
         registry = _resolve_registry(profile_query=profile, x_momo_profile=x_momo_profile)
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=error_response("CONTEXT_ERROR", f"获取任务上下文失败: {e}"),
-        )
+    except Exception:
+        registry = _resolve_fallback_registry(request) if not (profile or x_momo_profile) else None
     if registry is None:
         return JSONResponse(
             status_code=400,

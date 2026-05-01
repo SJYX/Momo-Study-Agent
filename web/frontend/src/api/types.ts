@@ -41,6 +41,19 @@ export interface FutureItemsResponse {
   items?: TodayItem[]
 }
 
+export interface IterationCandidateItem {
+  voc_id: string
+  voc_spelling: string
+  voc_meanings?: string
+  it_level?: number
+  weak_score?: number
+}
+
+export interface IterationCandidatesResponse {
+  count?: number
+  items?: IterationCandidateItem[]
+}
+
 export interface TaskRunResponse {
   task_id?: string | unknown
   word_count?: number | unknown
@@ -77,6 +90,7 @@ export interface TaskEvent {
   ts: number
   event?: string | unknown
   progress?: Record<string, unknown> | unknown
+  data?: Record<string, unknown> | unknown
 }
 
 export interface WordNoteSummary {

@@ -8,18 +8,19 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 import config
-from web.backend.deps import get_active_user
+from web.backend.deps import get_user_context
 from web.backend.schemas import ApiResponse, StatsSummary, ok_response, error_response
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 
 @router.get("/summary", response_model=ApiResponse[StatsSummary])
-async def stats_summary(user: str = Depends(get_active_user)):
+async def stats_summary(ctx = Depends(get_user_context)):
     """返回系统聚合统计信息。"""
     from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
-    conn = _get_read_conn(config.DB_PATH)
+    user = ctx.profile_name
+    conn = _get_read_conn(ctx.db_path)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 
@@ -81,7 +82,7 @@ async def stats_summary(user: str = Depends(get_active_user)):
     # 同步队列深度（通过 SyncManager 获取，但这里直接查 pending notes）
     try:
         from database.momo_words import get_unsynced_notes
-        unsynced = get_unsynced_notes()
+        unsynced = get_unsynced_notes(db_path=ctx.db_path)
         sync_queue_depth = len(unsynced) if unsynced else 0
     except Exception:
         sync_queue_depth = 0

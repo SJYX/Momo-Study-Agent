@@ -37,6 +37,7 @@ async def list_users(user: str = Depends(get_active_user)):
     from config import PROFILES_DIR
     from core.profile_manager import ProfileManager
 
+    print(f"[Web][users] list_users called by profile={user}")
     pm = ProfileManager(PROFILES_DIR)
     profiles = pm.list_profiles()
 
@@ -96,7 +97,8 @@ async def switch_active_user(
     try:
         import web.backend.deps as _deps
         if _deps._context_manager:
-            _deps._context_manager.get(username.lower())
+            ctx = _deps._context_manager.get(username.lower())
+            _deps._context_manager.ensure_profile_ready(ctx)
     except Exception as e:
         return error_response("CONTEXT_ERROR", f"初始化用户上下文失败: {e}", user_id=user)
 

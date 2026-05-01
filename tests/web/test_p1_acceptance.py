@@ -128,7 +128,7 @@ class TestSSEProfilePassing:
             with TestClient(app, raise_server_exceptions=False) as client:
                 resp = client.get("/api/tasks/fake-id/events?profile=nonexistent")
                 # _context_manager.get("nonexistent") 会尝试创建 context 并失败
-                assert resp.status_code == 500
+                assert resp.status_code == 404
 
     def test_sse_correct_profile_finds_task(self):
         """SSE 请求带正确 profile 可以找到对应任务。"""
