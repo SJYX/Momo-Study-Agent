@@ -87,7 +87,18 @@ def create_app() -> FastAPI:
     # ---- 生产模式：托管前端静态文件 ----
     frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
     if frontend_dist.is_dir():
-        app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="static-assets")
+        # /assets/* 是 Vite 哈希命名的不可变资源（index-XXXX.js / index-XXXX.css），
+        # 可以长期缓存。index.html 必须每次回源校验，否则浏览器永远拿不到新发布。
+        IMMUTABLE_ASSETS = "public, max-age=31536000, immutable"
+        NO_CACHE_HTML = "no-cache, no-store, must-revalidate"
+
+        class _ImmutableAssetsStatic(StaticFiles):
+            async def get_response(self, path: str, scope):
+                resp = await super().get_response(path, scope)
+                resp.headers["Cache-Control"] = IMMUTABLE_ASSETS
+                return resp
+
+        app.mount("/assets", _ImmutableAssetsStatic(directory=str(frontend_dist / "assets")), name="static-assets")
 
         @app.get("/{full_path:path}")
         async def spa_catch_all(request: Request, full_path: str):
@@ -95,7 +106,14 @@ def create_app() -> FastAPI:
                 return {"ok": False, "error": {"code": "NOT_FOUND", "message": "API endpoint not found"}}
             file_path = frontend_dist / full_path
             if file_path.is_file():
-                return FileResponse(str(file_path))
-            return FileResponse(str(frontend_dist / "index.html"))
+                # 非 /assets 的 dist 文件（favicon 等），按短缓存
+                resp = FileResponse(str(file_path))
+                resp.headers.setdefault("Cache-Control", "public, max-age=300")
+                return resp
+            # SPA fallback / index.html：必须每次校验，禁止粘滞缓存
+            resp = FileResponse(str(frontend_dist / "index.html"))
+            resp.headers["Cache-Control"] = NO_CACHE_HTML
+            resp.headers["Pragma"] = "no-cache"
+            return resp
 
     return app
