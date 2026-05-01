@@ -89,115 +89,81 @@ class UserContextManager:
     def _create_context(self, profile_name: str) -> UserContext:
         """为指定 profile 创建完整的运行时上下文。
 
-        使用 config.switch_user() 初始化依赖（因为底层模块依赖全局变量），
-        但初始化完成后快照配置到 context，并恢复原全局状态。
+        P4-T4 后不再走 cfg.switch_user + finally 恢复全局态的老路径。改为：
+          1. 用 ProfileConfig.load() 读出 profile env，得到不可变快照
+          2. 用快照里的字段直接构造 logger / momo_api / ai_client / workflow
+          3. prepare_for_task 在每个任务开始前把 db_path 切到当前 ctx
+             （database.connection / database.momo_words 仍存模块级 DB_PATH，
+             所以并发不同 profile 的任务时由 prepare_for_task 序列化）
         """
-        import config as cfg
+        import os
+        from web.backend.profile_config import load_profile_config
 
-        # 保存当前全局状态（初始化完成后恢复）
-        saved = {
-            "ACTIVE_USER": cfg.ACTIVE_USER,
-            "MOMO_TOKEN": cfg.MOMO_TOKEN,
-            "GEMINI_API_KEY": cfg.GEMINI_API_KEY,
-            "MIMO_API_KEY": cfg.MIMO_API_KEY,
-            "AI_PROVIDER": cfg.AI_PROVIDER,
-            "DB_PATH": cfg.DB_PATH,
-            "TEST_DB_PATH": cfg.TEST_DB_PATH,
-            "TURSO_DB_URL": cfg.TURSO_DB_URL,
-            "TURSO_AUTH_TOKEN": cfg.TURSO_AUTH_TOKEN,
-        }
+        cfg_snapshot = load_profile_config(profile_name)
 
-        try:
-            # 切换到目标 profile 初始化所有依赖
-            cfg.switch_user(profile_name)
+        from core.log_config import get_full_config
+        from core.logger import setup_logger
 
-            # 快照当前配置到 context
-            import os
-            from core.log_config import get_full_config
-            from core.logger import setup_logger
+        environment = os.getenv("MOMO_ENV", "development")
+        config_file = os.getenv("MOMO_CONFIG_FILE", "config/logging.yaml")
+        get_full_config(environment, config_file)
 
-            environment = os.getenv("MOMO_ENV", "development")
-            config_file = os.getenv("MOMO_CONFIG_FILE", "config/logging.yaml")
-            get_full_config(environment, config_file)
+        logger = setup_logger(cfg_snapshot.profile_name, environment=environment, config_file=config_file)
+        session_id = str(uuid.uuid4())
+        logger.set_context(session_id=session_id)
 
-            logger = setup_logger(profile_name, environment=environment, config_file=config_file)
-            session_id = str(uuid.uuid4())
-            logger.set_context(session_id=session_id)
+        from core.maimemo_api import MaiMemoAPI
+        momo_api = MaiMemoAPI(cfg_snapshot.momo_token)
 
-            from core.maimemo_api import MaiMemoAPI
-            momo_api = MaiMemoAPI(cfg.MOMO_TOKEN)
+        if cfg_snapshot.ai_provider == "mimo":
+            from core.mimo_client import MimoClient
+            ai_client = MimoClient(cfg_snapshot.mimo_api_key)
+        else:
+            from core.gemini_client import GeminiClient
+            ai_client = GeminiClient(cfg_snapshot.gemini_api_key)
 
-            if cfg.AI_PROVIDER == "mimo":
-                from core.mimo_client import MimoClient
-                ai_client = MimoClient(cfg.MIMO_API_KEY)
-            else:
-                from core.gemini_client import GeminiClient
-                ai_client = GeminiClient(cfg.GEMINI_API_KEY)
+        from core.study_workflow import StudyWorkflow
 
-            from core.study_workflow import StudyWorkflow
+        class _NullUI:
+            def __getattr__(self, name):
+                return lambda *a, **kw: None
 
-            class _NullUI:
-                def __getattr__(self, name):
-                    return lambda *a, **kw: None
+        workflow = StudyWorkflow(
+            logger=logger,
+            ai_client=ai_client,
+            momo_api=momo_api,
+            ui_manager=_NullUI(),
+            db_path=cfg_snapshot.db_path,
+        )
 
-            workflow = StudyWorkflow(
-                logger=logger,
-                ai_client=ai_client,
-                momo_api=momo_api,
-                ui_manager=_NullUI(),
-                db_path=cfg.DB_PATH,
-            )
+        from web.backend.tasks import TaskRegistry
+        from web.backend.logger_bridge import LoggerBridge
 
-            from web.backend.tasks import TaskRegistry
-            from web.backend.logger_bridge import LoggerBridge
+        task_registry = TaskRegistry()
+        logger_bridge = LoggerBridge(task_registry)
+        logger_bridge.attach(logger)
 
-            task_registry = TaskRegistry()
-            logger_bridge = LoggerBridge(task_registry)
-            logger_bridge.attach(logger)
+        logger.info(
+            f"[Web] profile '{cfg_snapshot.profile_name}' 上下文已初始化，AI: {cfg_snapshot.ai_provider}",
+            module="user_context",
+        )
 
-            logger.info(f"[Web] profile '{profile_name}' 上下文已初始化，AI: {cfg.AI_PROVIDER}", module="user_context")
+        ctx = UserContext(
+            profile_name=cfg_snapshot.profile_name,
+            logger=logger,
+            momo_api=momo_api,
+            ai_client=ai_client,
+            workflow=workflow,
+            task_registry=task_registry,
+            logger_bridge=logger_bridge,
+            db_path=cfg_snapshot.db_path,
+            env_path=cfg_snapshot.env_path,
+            turso_db_url=cfg_snapshot.turso_db_url,
+            turso_auth_token=cfg_snapshot.turso_auth_token,
+        )
 
-            ctx = UserContext(
-                profile_name=profile_name,
-                logger=logger,
-                momo_api=momo_api,
-                ai_client=ai_client,
-                workflow=workflow,
-                task_registry=task_registry,
-                logger_bridge=logger_bridge,
-                db_path=cfg.DB_PATH,
-                env_path=os.path.join(cfg.PROFILES_DIR, f"{profile_name}.env"),
-                turso_db_url=cfg.TURSO_DB_URL or "",
-                turso_auth_token=cfg.TURSO_AUTH_TOKEN or "",
-            )
-
-            # profile 级 warmup 改为可等待的同步流程，避免刚进入 Gateway 后触发任务时出现竞态。
-            self.ensure_profile_ready(ctx)
-
-        finally:
-            # 恢复原全局状态，避免污染其他 profile
-            cfg.ACTIVE_USER = saved["ACTIVE_USER"]
-            cfg.MOMO_TOKEN = saved["MOMO_TOKEN"]
-            cfg.GEMINI_API_KEY = saved["GEMINI_API_KEY"]
-            cfg.MIMO_API_KEY = saved["MIMO_API_KEY"]
-            cfg.AI_PROVIDER = saved["AI_PROVIDER"]
-            cfg.DB_PATH = saved["DB_PATH"]
-            cfg.TEST_DB_PATH = saved["TEST_DB_PATH"]
-            cfg.TURSO_DB_URL = saved["TURSO_DB_URL"]
-            cfg.TURSO_AUTH_TOKEN = saved["TURSO_AUTH_TOKEN"]
-
-            # 恢复 database 模块的 DB_PATH
-            try:
-                import database.connection as _db_conn
-                _db_conn.DB_PATH = saved["DB_PATH"]
-            except Exception:
-                pass
-            try:
-                import database.momo_words as _db_momo
-                _db_momo.DB_PATH = saved["DB_PATH"]
-                _db_momo.TEST_DB_PATH = saved["TEST_DB_PATH"]
-            except Exception:
-                pass
+        # warmup 仍然同步执行（T5 会异步化）
+        self.ensure_profile_ready(ctx)
 
         return ctx
 
