@@ -68,19 +68,15 @@ def _wait_terminal(registry: TaskRegistry, task_id: str, timeout: float = 3.0):
 
 
 def _row_status_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """从事件流过滤出 row_status 事件（当前协议：type=log + event=row_status）。"""
-    return [
-        ev
-        for ev in events
-        if ev.get("type") == "log" and ev.get("event") == "row_status"
-    ]
+    """从事件流过滤出 row_status 事件（P4-T2 协议：type=row_status）。"""
+    return [ev for ev in events if ev.get("type") == "row_status"]
 
 
 def _row_states_for(events: List[Dict[str, Any]], item_id: str) -> List[Dict[str, Any]]:
     """提取某个单词的全部 row 事件载荷。"""
     out = []
     for ev in _row_status_events(events):
-        rows = ((ev.get("data") or {}).get("rows") or [])
+        rows = ev.get("rows") or []
         for row in rows:
             if str(row.get("item_id", "")).lower() == item_id.lower():
                 out.append(row)
@@ -186,11 +182,10 @@ class TestLoggerBridgeRowStatus:
             assert len(row_events) == 1, f"expected 1 row_status event, got {row_events}"
 
             ev = row_events[0]
-            # 关键 schema 字段（P4 改协议时这里要同步）
-            assert ev["type"] == "log"
-            assert ev["event"] == "row_status"
-            assert "data" in ev and "rows" in ev["data"]
-            row = ev["data"]["rows"][0]
+            # 关键 schema 字段（P4-T2 后协议：type=row_status，rows 直接挂顶层）
+            assert ev["type"] == "row_status"
+            assert "rows" in ev
+            row = ev["rows"][0]
             assert row["item_id"] == "abandon"
             assert row["status"] == "running"
             assert row["phase"] == "ai_done"
@@ -266,7 +261,7 @@ class TestLoggerBridgeRowStatus:
 
             row_events = _row_status_events(registry.get_events(task_id))
             assert len(row_events) == 1
-            rows = row_events[0]["data"]["rows"]
+            rows = row_events[0]["rows"]
             assert {r["item_id"] for r in rows} == {"alpha", "beta", "gamma"}
             assert all(r["phase"] == "ai_request" for r in rows)
         finally:
@@ -577,7 +572,7 @@ class TestSkipPhaseSubdivision:
             _wait_terminal(registry, task_id)
 
             events = registry.get_events(task_id)
-            rows = _row_status_events(events)[0]["data"]["rows"]
+            rows = _row_status_events(events)[0]["rows"]
             by_id = {r["item_id"]: r for r in rows}
             assert by_id["alpha"]["phase"] == "skipped"
             assert by_id["alpha"]["status"] == "done"
