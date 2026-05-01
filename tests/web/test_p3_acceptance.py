@@ -124,7 +124,7 @@ def _make_context_manager(profiles: dict[str, UserContext]) -> UserContextManage
     cm = UserContextManager.__new__(UserContextManager)
     cm._contexts = dict(profiles)
     cm._lock = threading.Lock()
-    cm._warmup_done = set()
+    cm._warmup_state = {}
     return cm
 
 

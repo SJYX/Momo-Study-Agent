@@ -39,7 +39,8 @@ class UserContextManager:
     def __init__(self):
         self._contexts: Dict[str, UserContext] = {}
         self._lock = threading.Lock()
-        self._warmup_done: set[str] = set()
+        # warmup 三态：not_started → in_progress → done
+        self._warmup_state: Dict[str, str] = {}
 
     def get(self, profile_name: str) -> UserContext:
         """获取指定 profile 的 context，不存在则创建。"""
@@ -168,35 +169,83 @@ class UserContextManager:
         return ctx
 
     def ensure_profile_ready(self, ctx: UserContext) -> None:
+        """同步阶段必须完成才能让 context 投入使用；异步阶段（扫描待同步笔记并入队）
+        在后台线程跑，不阻塞 Gateway 切换。"""
         profile = (ctx.profile_name or "").strip().lower()
         with self._lock:
-            if profile in self._warmup_done:
+            state = self._warmup_state.get(profile, "not_started")
+            if state in ("done", "in_progress"):
                 return
-        self._warmup_profile(ctx)
-        with self._lock:
-            self._warmup_done.add(profile)
+            self._warmup_state[profile] = "in_progress"
 
-    def _warmup_profile(self, ctx: UserContext) -> None:
+        try:
+            self._warmup_sync(ctx)
+        except Exception:
+            with self._lock:
+                # 失败时回滚状态，让下次 get(profile) 可以重试
+                self._warmup_state[profile] = "not_started"
+            raise
+
+        # 启动后台异步部分（扫描 + 入队），不阻塞调用方
+        thread = threading.Thread(
+            target=self._warmup_async_safe,
+            args=(ctx, profile),
+            name=f"warmup-async-{profile}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _warmup_sync(self, ctx: UserContext) -> None:
+        """阻塞段：DB schema 初始化 + 写并发系统启动。必须先于任何任务完成。"""
         UserContextManager.prepare_for_task(ctx)
         from database.connection import init_concurrent_system
         from database.schema import init_db
-        from database.momo_words import get_unsynced_notes
-        from database.utils import clean_for_maimemo
 
         init_concurrent_system()
         init_db()
 
-        unsynced = get_unsynced_notes(db_path=ctx.db_path)
-        if unsynced:
-            ctx.logger.info(f"发现 {len(unsynced)} 条待同步笔记，正在后台入队...", module="user_context")
-            for note in unsynced:
-                ctx.workflow.sync_manager.queue_maimemo_sync(
-                    note["voc_id"],
-                    note.get("spelling", ""),
-                    clean_for_maimemo(note.get("basic_meanings", "")),
-                    ["雅思"],
-                    force_sync=True,
+    def _warmup_async_safe(self, ctx: UserContext, profile: str) -> None:
+        """异步段：扫描未同步笔记并入队。失败不影响 ctx 可用性。"""
+        try:
+            self._warmup_async(ctx)
+            with self._lock:
+                self._warmup_state[profile] = "done"
+        except Exception as exc:
+            with self._lock:
+                # 部分完成也算 done — 这是 best-effort 后台扫描，不可阻塞下一次调用
+                self._warmup_state[profile] = "done"
+            try:
+                ctx.logger.warning(
+                    f"[Web] profile '{profile}' 异步 warmup 失败: {exc}",
+                    module="user_context",
                 )
+            except Exception:
+                pass
+
+    def _warmup_async(self, ctx: UserContext) -> None:
+        """异步执行：把未同步笔记重新入队同步。"""
+        from database.momo_words import get_unsynced_notes
+        from database.utils import clean_for_maimemo
+
+        # 异步线程也要确保 DB globals 指向正确的 profile，否则会拉错库
+        UserContextManager.prepare_for_task(ctx)
+
+        unsynced = get_unsynced_notes(db_path=ctx.db_path)
+        if not unsynced:
+            return
+
+        ctx.logger.info(
+            f"发现 {len(unsynced)} 条待同步笔记，正在后台入队...",
+            module="user_context",
+        )
+        for note in unsynced:
+            ctx.workflow.sync_manager.queue_maimemo_sync(
+                note["voc_id"],
+                note.get("spelling", ""),
+                clean_for_maimemo(note.get("basic_meanings", "")),
+                ["雅思"],
+                force_sync=True,
+            )
 
     @staticmethod
     def prepare_for_task(ctx: UserContext) -> None:
