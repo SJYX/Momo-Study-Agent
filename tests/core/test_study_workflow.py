@@ -65,8 +65,10 @@ def test_ai_batch_failure_handling(workflow, mock_deps):
         
         workflow.process_word_list(word_list, "失败测试")
         
-        # 验证输出了警告
-        logger.warning.assert_any_call("⚠️ AI 批次 1/1 返回空结果，已跳过: word1")
+        # 验证输出了警告（生产代码会附带 extra={event:batch_error,...}，
+        # 测试只关心首参 message 文本）
+        warning_messages = [c.args[0] for c in logger.warning.call_args_list if c.args]
+        assert "⚠️ AI 批次 1/1 返回空结果，已跳过: word1" in warning_messages
 
 
 def test_dedup_recovers_from_local_notes(workflow, mock_deps):
