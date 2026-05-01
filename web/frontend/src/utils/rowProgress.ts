@@ -2,22 +2,21 @@ import type { TaskEvent } from '../api/types'
 
 export type RowStatus = 'pending' | 'running' | 'done' | 'error'
 
-function extractWordsFromMessage(message: string): string[] {
-  if (!message.includes('[Pipeline]')) return []
-  const marker = ' - '
-  const idx = message.indexOf(marker)
-  if (idx <= 0) return []
-  const prefix = message.slice(0, idx).replace('[Pipeline]', '').trim()
-  if (!prefix) return []
-  return prefix.split(',').map((w) => w.trim().toLowerCase()).filter(Boolean)
-}
-
 export interface RowState {
   status: RowStatus
   reason?: string
   phase?: string
+  current?: number
+  total?: number
 }
 
+/**
+ * 把任务事件流投影成"按词→当前状态"的映射。
+ *
+ * P4-T2/T3 后只读 type='row_status' 的结构化事件 + 任务级 status；
+ * 不再做日志关键字兜底解析。如果某个 item_id 从未出现在 row_status 事件里，
+ * 它会保持 pending（直到任务终态时被强制收口）。
+ */
 export function buildRowStatusMap(
   items: Array<{ voc_spelling?: string }>,
   events: TaskEvent[],
@@ -30,50 +29,31 @@ export function buildRowStatusMap(
   }
 
   for (const ev of events) {
-    // P4-T1 临时桥接：T2 之前后端仍发 type=log + event=row_status，
-    // 这里先用 unknown 强制读取兼容字段；T3 会改为 if (ev.type === 'row_status')。
-    const evAny = ev as unknown as { event?: string; data?: unknown; type?: string; message?: unknown }
-    if (evAny.event === 'row_status') {
-      const rows = (evAny.data as { rows?: Array<{ item_id?: string; status?: string; error?: string }> } | undefined)?.rows || []
-      for (const row of rows) {
-        const key = String(row.item_id || '').trim().toLowerCase()
-        if (!key || !map[key]) continue
-        const st = String(row.status || '')
-        if (st === 'pending' || st === 'running' || st === 'done' || st === 'error') {
-          map[key] = st === 'error'
-            ? { status: 'error', reason: row.error || '', phase: String((row as { phase?: string }).phase || '') }
-            : { status: st, phase: String((row as { phase?: string }).phase || '') }
-        }
-      }
-      continue
-    }
+    if (ev.type !== 'row_status') continue
+    for (const row of ev.rows) {
+      const key = String(row.item_id || '').trim().toLowerCase()
+      if (!key || !map[key]) continue
+      const st = row.status
+      if (st !== 'pending' && st !== 'running' && st !== 'done' && st !== 'error') continue
 
-    if (ev.type !== 'log') continue
-    const msg = String((ev as unknown as { message?: string }).message || '')
-    const words = extractWordsFromMessage(msg)
-    if (words.length === 0) continue
-
-    let status: RowStatus | null = null
-    if (msg.includes('开始请求 AI 助记')) status = 'running'
-    if (msg.includes('已投递本地数据库及云端同步队列') || msg.includes('墨墨同步完成')) status = 'done'
-    if (msg.includes('同步未完成') || msg.includes('异常') || msg.includes('失败')) status = 'error'
-    if (!status) continue
-
-    for (const word of words) {
-      if (!map[word]) continue
-      map[word] = status === 'error' ? { status, reason: msg } : { status }
+      const next: RowState = { status: st }
+      if (row.phase) next.phase = row.phase
+      if (st === 'error' && row.error) next.reason = row.error
+      if (typeof row.current === 'number') next.current = row.current
+      if (typeof row.total === 'number') next.total = row.total
+      map[key] = next
     }
   }
 
   if (taskStatus === 'done') {
     for (const key of Object.keys(map)) {
-      if (map[key].status !== 'error') map[key] = { status: 'done' }
+      if (map[key].status !== 'error') map[key] = { ...map[key], status: 'done' }
     }
   }
   if (taskStatus === 'error') {
     for (const key of Object.keys(map)) {
       if (map[key].status === 'pending' || map[key].status === 'running') {
-        map[key] = { status: 'error', reason: '任务异常终止' }
+        map[key] = { ...map[key], status: 'error', reason: map[key].reason || '任务异常终止' }
       }
     }
   }
@@ -106,4 +86,11 @@ export function rowDisplayLabel(state?: RowState): string {
   if (state.phase === 'skipped') return '已跳过'
   if (state.phase === 'sync_pending') return '待同步'
   return rowStatusLabel(state.status)
+}
+
+/** V3：行级百分比（total 缺失或 0 时返回 null）。 */
+export function rowPercent(state?: RowState): number | null {
+  if (!state || typeof state.current !== 'number' || !state.total) return null
+  const pct = (state.current / state.total) * 100
+  return Math.max(0, Math.min(100, Math.round(pct)))
 }
