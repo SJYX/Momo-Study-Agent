@@ -13,9 +13,12 @@ principles:
   - 再做视觉美化
 
 current:
-  phase: P3
+  phase: P4
   in_progress: completed
-  summary: P3 已完成；Today/Future/Iteration 已具备行级进度与结构化状态回填能力
+  summary: |
+    P4 已完成（含扩展项 T4/T5）。事件协议改为 TaskEvent 判别 union，
+    LoggerBridge 一刀切迁移；TaskDrawer 改为结构化主视图 + 折叠日志；
+    UserContextManager 不再 mutate cfg 全局；warmup 拆分同步/异步两段。
 
 phase_plan:
   P0:
@@ -693,11 +696,20 @@ done:
   - P3-T1
   - P3-T2
   - P3-T3
+  # P3.5（前置债务清理）
+  - P3.5-T0   # P3 端到端 row_status 协议回归测试（21 cases）
+  - P3.5-T0.5 # 修复 P0/P1 重构后遗留的 29 个 web 测试失败 → 135/135
+  # P4
+  - P4-T1     # TaskEvent 判别 union（5 variants + RowState）
+  - P4-T2     # LoggerBridge 一刀切：row_status / progress / log 分流
+  - P4-T3     # 前端 rowProgress 重写 + TaskDrawer 结构化展示
+  - P4-T4     # ProfileConfig dataclass 替换 cfg.switch_user 全局态 hack
+  - P4-T5     # warmup 拆分同步/异步两段（_warmup_state 三态机）
 
 next_actions:
-  - 启动 P4-T1：结构化进度事件协议收敛与字段固化
-  - 启动 P4-T2：TaskDrawer 结构化展示升级（日志折叠、阶段摘要、成功失败计数）
-  - 评估是否补充 P3 端到端验收脚本（回归用例固化）
+  - 进入 P5：Word Library / Sync Status / Preflight 二级页面可用化
+  - P3.5-T0 端到端测试已建议作为 CI gate（pytest tests/web/test_p3_acceptance.py）
+  - 前端 progress 事件目前依赖 ai_batch_* 阶段；如需更细粒度 V3 词级进度可在 P5 之后单列任务
 
 notes:
   - 第一阶段默认仅绑定 127.0.0.1，不开放公网
@@ -711,4 +723,9 @@ notes:
   - 2026-05-01：按 Gateway-first 模式修复 context 初始化时序与 SSE profile 存储一致性
   - 2026-05-01：P3 V1 已开始，先基于现有 TaskDrawer 事件流提供行级状态映射（pending/running/done/error）
   - 2026-05-01：P3 收口完成（T1/T2/T3）——Today/Future 增加行级进度列；Iteration 改为候选列表模式；同步阶段接入 row_status（含 sync_done/sync_conflict/sync_failed）；查重跳过细分为 skipped 与 sync_pending
-  - 未完成点（按当前标准）：TaskDrawer 尚未完成 P4 结构化主视图改造；行级进度百分比（V3）未实现；部分状态仍依赖日志语义兜底
+  - 2026-05-01：P3.5-T0 落地端到端 row_status 协议回归测试（tests/web/test_p3_acceptance.py，21 cases）；P3.5-T0.5 修复 P0/P1 重构后遗留的 29 个 web 测试失败（test_session/test_words/test_stats/test_sync/test_deps/test_schemas/test_task_registry/test_users），web suite 105/134 → 135/135
+  - 2026-05-01：P4-T1 落地 TaskEvent 判别 union（LogEvent/StatusEvent/HeartbeatEvent/ProgressEvent/RowStatusEvent + RowState）；scripts/generate_frontend_types.py 增强支持 RootModel oneOf
+  - 2026-05-01：P4-T2 完成 LoggerBridge 协议迁移；core/study_workflow.py 与 core/sync_manager.py 的 11 处发射点不动，bridge 内部按 extra.event 路由到新 type 变体
+  - 2026-05-01：P4-T3 前端一刀切；rowProgress.ts 删除日志关键字兜底，TaskDrawer 改为顶部 profile/状态/阶段 + 中部进度条与四态计数 + 底部折叠日志
+  - 2026-05-01：P4-T4 移除 _create_context 的 cfg.switch_user 全局态 hack；新增 web/backend/profile_config.py 提供 ProfileConfig 不可变快照
+  - 2026-05-01：P4-T5 warmup 拆分；同步段（init_db / init_concurrent_system）阻塞，异步段（扫描未同步笔记 + 入队同步）跑后台 daemon 线程；warmup 状态改为 not_started/in_progress/done 三态机

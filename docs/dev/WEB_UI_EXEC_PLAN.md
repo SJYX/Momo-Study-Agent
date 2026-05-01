@@ -154,10 +154,10 @@
 - 基本 Dashboard
 
 ## 12. 当前状态
-- 当前阶段：`P3（已完成）`
-- 当前焦点：`进入 P4：TaskDrawer 结构化展示与协议固化`
+- 当前阶段：`P4（已完成）`
+- 当前焦点：`进入 P5：Word Library / Sync Status / Preflight 二级页面可用化`
 - 当前原则：`先不串用户/不写坏数据/不串任务，再做视觉美化`
-- 今日进展（2026-05-01）：`P3-T1/T2/T3 已完成：Today/Future 行级进度列落地，Iteration 候选列表化，row_status 结构化事件贯通（含 skipped/sync_pending/sync_done/sync_conflict/sync_failed）`
+- 今日进展（2026-05-01）：`P3.5-T0/T0.5 + P4-T1/T2/T3/T4/T5 全部完成；row_status 协议升级为判别 union，TaskDrawer 改结构化展示，UserContextManager 去全局态 hack，warmup 异步化`
 
 ## 13. P3 完成度说明
 ### 已完成点
@@ -167,8 +167,26 @@
 4. 后端事件：已支持结构化 `row_status` 事件并覆盖 AI 阶段与同步阶段（成功/冲突/失败）。
 5. 跳过细分：查重跳过已按本地 `sync_status` 区分为 `skipped` 与 `sync_pending`。
 
-### 未完成点（不阻塞 P3 完成，归入 P4/P6）
-1. TaskDrawer 仍以日志视图为主，尚未完成结构化主视图与日志折叠（P4-T2）。
-2. 行级百分比进度（current/total/percent）未统一落地（计划在 P4/P后续 V3）。
-3. 个别场景仍保留日志语义兜底解析，待协议进一步收敛后可去除。
+## 14. P4 完成度说明（2026-05-01）
+
+### P3.5 前置债务清理
+- **P3.5-T0**：新增 `tests/web/test_p3_acceptance.py`（21 cases），固化 row_status 协议——LoggerBridge schema 稳定性、Today/Future happy path 序列、ai_result/sync_conflict/sync_failed 失败路径、skipped/sync_pending 跳过细分、9 个已知 phase 值的 round-trip。
+- **P3.5-T0.5**：修复 P0/P1 重构后遗留的 29 个 web 测试失败。conftest 新增 `make_test_user_context` + `override_ctx` fixture。web suite 105/134 → **135/135**。
+
+### P4 主线
+- **P4-T1**：定义 `TaskEvent` discriminated union——LogEvent / StatusEvent / HeartbeatEvent / ProgressEvent / RowStatusEvent + RowState。生成器 `scripts/generate_frontend_types.py` 增强支持 RootModel oneOf 与 `Literal const` 判别字段。
+- **P4-T2**：LoggerBridge 一刀切。`extra.event=='row_status'` → `type=row_status` 事件；`extra.progress` + `event in {batch_*}` → `type=progress` 事件；其他 → 干净 `type=log`。core/study_workflow.py 与 core/sync_manager.py 的 11 处发射点不动。
+- **P4-T3**：前端一刀切。`rowProgress.ts` 删除 `[Pipeline]` 日志关键字兜底解析，纯按 `ev.type==='row_status'` 读取；TaskDrawer 改为结构化主视图——顶部 profile/状态/阶段 chip，中部总进度条 + 四态计数（done/error/running/pending），底部折叠日志，终态结果摘要。
+- **P4-T4**：移除 `UserContextManager._create_context` 的 `cfg.switch_user` 全局态 hack。新增 `web/backend/profile_config.py` 提供 `ProfileConfig` 不可变快照（dotenv_values 读取，不修改 os.environ）。CLI `main.py` 与 core/* 的 `from config import X` 模式保持不动。
+- **P4-T5**：warmup 拆分。`_warmup_sync`（DB schema + 并发系统）保持阻塞；`_warmup_async`（扫描未同步笔记 + 入队）跑后台 daemon 线程；状态机改为三态（not_started/in_progress/done），失败可重试。
+
+### 测试结果
+- web suite：135/135 全绿
+- 前端：`tsc --noEmit` exit 0，`vite build` 1.57s 通过
+- P3 acceptance 在协议迁移过程中持续通过，验证了"协议升级未丢任何 phase"
+
+### 后续遗留点（不阻塞 P4 完成）
+1. core/* 的 `from config import AI_PROVIDER, BATCH_SIZE, DRY_RUN` 仍是 import-time 绑定，单进程多 profile 时这些值不会随 profile 切换。当前不构成实际问题（这些字段在所有 profile 间通常一致），但若未来需要 profile-specific BATCH_SIZE，需进一步参数化。
+2. V3 词级百分比目前仅在 `RowState.current/total` 字段层面预留，发射端尚未提供词级 current/total（仅有 batch 级 ai_batch_* 阶段进度）。如需真正"每词进度条"可单列任务。
+3. CLI `main.py` 仍依赖 `cfg.switch_user`，与 web 路径分叉。P7 CLI 降级周期里统一处理。
 
