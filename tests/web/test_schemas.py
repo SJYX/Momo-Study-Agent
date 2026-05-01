@@ -42,8 +42,8 @@ class TestSchemas:
     def test_health_info(self):
         assert HealthInfo().model_dump()["status"] == "ok"
     def test_session_info(self):
-        s = SessionInfo(active_user="t", ai_provider="g", batch_size=10, dry_run=False, db_path="/d")
-        assert s.model_dump()["active_user"] == "t"
+        s = SessionInfo(active_profile="t", available_profiles=["t"], server_time="2026-01-01T00:00:00Z", host_binding="127.0.0.1")
+        assert s.model_dump()["active_profile"] == "t"
     def test_today_items(self):
         r = TodayItemsResponse(count=2, items=[TodayItem(voc_id="v1", voc_spelling="w")])
         assert r.model_dump()["count"] == 2
@@ -76,7 +76,7 @@ class TestSchemas:
         r = SyncRetryResponse(retried=5)
         assert r.model_dump()["retried"] == 5
     def test_users_list(self):
-        r = UsersListResponse(users=[UserProfile(username="a")], active_user="a")
+        r = UsersListResponse(users=[UserProfile(username="a")], active_profile="a")
         assert len(r.model_dump()["users"]) == 1
     def test_validate_req(self):
         r = ValidateRequest(field="f", value="v")

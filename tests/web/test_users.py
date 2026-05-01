@@ -54,7 +54,7 @@ class TestSwitchActiveUser:
         import config as cfg
         monkeypatch.setattr(cfg, "switch_user", lambda u: u)
         import web.backend.deps as dp
-        monkeypatch.setattr(dp, "_active_user", "testuser")
+        monkeypatch.setattr(dp, "_fallback_user", "testuser")
         monkeypatch.setattr(dp, "reload_user_services", lambda: None)
         import database.connection as db_conn
         monkeypatch.setattr(db_conn, "cleanup_concurrent_system", lambda: None)

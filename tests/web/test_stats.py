@@ -14,14 +14,14 @@ from web.backend.routers.stats import router as stats_router
 class TestStatsSummary:
     """GET /api/stats/summary"""
 
-    def test_stats_empty_db(self, app, test_db, monkeypatch):
+    def test_stats_empty_db(self, app, test_db, monkeypatch, override_ctx):
         """空数据库应返回全零统计。"""
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda: [])
+        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [])
         app.include_router(stats_router)
-        app.dependency_overrides[deps.get_active_user] = lambda: "testuser"
+        override_ctx(test_db)
         from fastapi.testclient import TestClient
         with TestClient(app, raise_server_exceptions=False) as c:
             resp = c.get("/api/stats/summary")
@@ -39,7 +39,7 @@ class TestStatsSummary:
         assert data["sync_queue_depth"] == 0
         assert data["weak_words_count"] == 0
 
-    def test_stats_with_data(self, app, test_db, monkeypatch):
+    def test_stats_with_data(self, app, test_db, monkeypatch, override_ctx):
         """有数据时统计应正确。"""
         conn = sqlite3.connect(test_db)
         conn.execute(
@@ -63,9 +63,9 @@ class TestStatsSummary:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda: [{"voc_id": "v1"}])
+        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [{"voc_id": "v1"}])
         app.include_router(stats_router)
-        app.dependency_overrides[deps.get_active_user] = lambda: "testuser"
+        override_ctx(test_db)
         from fastapi.testclient import TestClient
         with TestClient(app, raise_server_exceptions=False) as c:
             resp = c.get("/api/stats/summary")
@@ -82,14 +82,14 @@ class TestStatsSummary:
         assert data["sync_queue_depth"] == 1
         assert data["weak_words_count"] == 1  # familiarity_short < 3.0
 
-    def test_stats_user_id(self, app, test_db, monkeypatch):
+    def test_stats_user_id(self, app, test_db, monkeypatch, override_ctx):
         """响应应包含 user_id。"""
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda: [])
+        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [])
         app.include_router(stats_router)
-        app.dependency_overrides[deps.get_active_user] = lambda: "testuser"
+        override_ctx(test_db)
         from fastapi.testclient import TestClient
         with TestClient(app, raise_server_exceptions=False) as c:
             body = c.get("/api/stats/summary").json()

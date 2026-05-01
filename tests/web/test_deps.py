@@ -1,73 +1,49 @@
 """
 tests/web/test_deps.py -- web.backend.deps module tests.
+
+P1 重构后 deps 不再持有单例服务实例，改为通过 UserContextManager
+按请求级 profile 解析 ctx。本测试覆盖：
+- init_deps 注册 UserContextManager
+- cleanup_deps 调用 cleanup_all
+- get_active_user header 优先级（缺失时 fallback → "default"）
+- reload_user_services 已废弃为 no-op
 """
 from __future__ import annotations
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 from web.backend import deps
 
 
 class TestInitDeps:
     def setup_method(self):
-        deps._active_user = None
-        deps._logger = None
-        deps._momo_api = None
-        deps._ai_client = None
-        deps._workflow = None
-        deps._task_registry = None
-        deps._logger_bridge = None
+        deps._context_manager = None
+        deps._fallback_user = None
 
-    def test_init_deps_sets_singletons(self):
-        ml, mm, ma, mw, mr, mb = MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
-        deps.init_deps(active_user="u", logger=ml, momo_api=mm, ai_client=ma, workflow=mw, task_registry=mr, logger_bridge=mb)
-        assert deps.get_active_user() == "u"
-        assert deps.get_logger() is ml
-        assert deps.get_momo_api() is mm
-        assert deps.get_ai_client() is ma
-        assert deps.get_workflow() is mw
-        assert deps.get_task_registry() is mr
+    def test_init_deps_registers_context_manager(self):
+        cm = MagicMock()
+        deps.init_deps(cm, fallback_user="alice")
+        assert deps._context_manager is cm
+        assert deps._fallback_user == "alice"
 
-    def test_cleanup_calls_shutdown(self):
-        mw = MagicMock()
-        mm = MagicMock()
-        ma = MagicMock()
-        mr = MagicMock()
-        mm.close = MagicMock()
-        ma.close = MagicMock()
-        deps.init_deps(active_user="u", logger=MagicMock(), momo_api=mm, ai_client=ma, workflow=mw, task_registry=mr, logger_bridge=MagicMock())
+    def test_cleanup_deps_calls_cleanup_all(self):
+        cm = MagicMock()
+        deps.init_deps(cm, fallback_user="alice")
         deps.cleanup_deps()
-        mw.shutdown.assert_called_once()
-        mr.shutdown.assert_called_once()
+        cm.cleanup_all.assert_called_once()
+        assert deps._context_manager is None
 
-    def test_get_active_user_default(self):
-        deps._active_user = None
-        assert deps.get_active_user() == "default"
+    def test_resolve_profile_uses_header(self):
+        deps._fallback_user = "alice"
+        assert deps._resolve_profile("Bob") == "bob"
 
-    def test_reload_user_services_gemini(self):
-        import config as cfg
-        cfg.MOMO_TOKEN = "fake"
-        cfg.AI_PROVIDER = "gemini"
-        cfg.GEMINI_API_KEY = "fake"
-        mw = MagicMock()
-        deps._workflow = mw
-        deps._momo_api = MagicMock()
-        deps._ai_client = MagicMock()
-        with patch("core.maimemo_api.MaiMemoAPI", return_value=MagicMock()), \
-             patch("core.gemini_client.GeminiClient", return_value=MagicMock()):
-            deps.reload_user_services()
-        assert deps._momo_api is not None
-        assert deps._ai_client is not None
+    def test_resolve_profile_falls_back_when_no_header(self):
+        deps._fallback_user = "alice"
+        assert deps._resolve_profile(None) == "alice"
 
-    def test_reload_user_services_mimo(self):
-        import config as cfg
-        cfg.MOMO_TOKEN = "fake"
-        cfg.AI_PROVIDER = "mimo"
-        cfg.MIMO_API_KEY = "fake"
-        mw = MagicMock()
-        deps._workflow = mw
-        deps._momo_api = MagicMock()
-        deps._ai_client = MagicMock()
-        with patch("core.maimemo_api.MaiMemoAPI", return_value=MagicMock()), \
-             patch("core.mimo_client.MimoClient", return_value=MagicMock()):
-            deps.reload_user_services()
-        assert deps._ai_client is not None
+    def test_resolve_profile_default_when_no_fallback(self):
+        deps._fallback_user = None
+        assert deps._resolve_profile(None) == "default"
+
+    def test_reload_user_services_is_noop(self):
+        # P1 后该函数仅保留兼容签名
+        assert deps.reload_user_services() is None

@@ -112,6 +112,57 @@ class MockLogger:
         self.messages.append(("error", msg, kwargs))
 
 
+# ====== Helper: 路由依赖 get_user_context 时使用 ======
+def make_test_user_context(db_path: str, profile: str = "testuser"):
+    """构造指向 test_db 的伪 UserContext，供路由依赖注入。
+
+    P1 引入 UserContextManager 后，words/stats/sync 等路由通过
+    Depends(get_user_context) 拿 ctx，测试需要 override 此依赖。
+    """
+    from web.backend.user_context import UserContext
+
+    return UserContext(
+        profile_name=profile,
+        logger=MockLogger(),
+        momo_api=MagicMock(),
+        ai_client=MagicMock(),
+        workflow=MagicMock(),
+        task_registry=MagicMock(),
+        logger_bridge=MagicMock(),
+        db_path=db_path,
+        env_path=f"/tmp/{profile}.env",
+    )
+
+
+def override_user_context(app, db_path: str, profile: str = "testuser"):
+    """在 app.dependency_overrides 注入 get_user_context 与所有 ctx 衍生依赖。
+
+    路由可能同时依赖 get_user_context 和 get_workflow/get_logger 等，
+    所以这里把 ctx 的所有衍生 getter 都 override 一遍。
+    """
+    from web.backend import deps
+
+    ctx = make_test_user_context(db_path, profile)
+    app.dependency_overrides[deps.get_active_user] = lambda: profile
+    app.dependency_overrides[deps.get_user_context] = lambda: ctx
+    app.dependency_overrides[deps.get_logger] = lambda: ctx.logger
+    app.dependency_overrides[deps.get_momo_api] = lambda: ctx.momo_api
+    app.dependency_overrides[deps.get_ai_client] = lambda: ctx.ai_client
+    app.dependency_overrides[deps.get_workflow] = lambda: ctx.workflow
+    app.dependency_overrides[deps.get_task_registry] = lambda: ctx.task_registry
+    app.dependency_overrides[deps.get_logger_bridge] = lambda: ctx.logger_bridge
+    return ctx
+
+
+@pytest.fixture
+def override_ctx(app):
+    """注入 get_user_context override，让用 Depends(get_user_context) 的路由
+    拿到指向 test_db 的伪 ctx。tests 直接 `override_ctx(test_db)` 调用即可。"""
+    def _do(db_path: str, profile: str = "testuser"):
+        return override_user_context(app, db_path, profile)
+    return _do
+
+
 # ====== Task Registry ======
 @pytest.fixture
 def task_registry():
@@ -246,6 +297,15 @@ def client(app, mock_momo, mock_ai, mock_workflow, mock_logger, task_registry):
     app.dependency_overrides[deps.get_workflow] = lambda: mock_workflow
     app.dependency_overrides[deps.get_logger] = lambda: mock_logger
     app.dependency_overrides[deps.get_task_registry] = lambda: task_registry
+
+    # P1 后路由通过 get_user_context 拿 ctx；提供一个指向内存 mock 的伪 ctx
+    _fake_ctx = make_test_user_context(db_path="/tmp/test-client.db")
+    _fake_ctx.momo_api = mock_momo
+    _fake_ctx.ai_client = mock_ai
+    _fake_ctx.workflow = mock_workflow
+    _fake_ctx.logger = mock_logger
+    _fake_ctx.task_registry = task_registry
+    app.dependency_overrides[deps.get_user_context] = lambda: _fake_ctx
 
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c

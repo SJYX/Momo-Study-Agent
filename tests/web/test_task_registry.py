@@ -22,14 +22,23 @@ def test_task_registry_replay_events():
     loop, thread = _create_loop()
     try:
         registry = TaskRegistry(max_workers=2)
+        ready = threading.Event()
         evt = threading.Event()
+        captured_id = {}
 
         def _job():
-            registry.push_event(task_id, {"type": "log", "level": "info", "message": "hello", "ts": time.time()})
+            # 等外层把 task_id 写入闭包（避免 submit 后立即执行的竞态）
+            ready.wait(timeout=2)
+            registry.push_event(
+                captured_id["id"],
+                {"type": "log", "level": "info", "message": "hello", "ts": time.time()},
+            )
             evt.set()
             return {"ok": True}
 
         task_id = registry.submit(_job, event_loop=loop, logger=None)
+        captured_id["id"] = task_id
+        ready.set()
         assert evt.wait(timeout=2)
 
         # 等任务结束
