@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -19,5 +20,11 @@ export default defineConfig({
     outDir: 'dist',
     // 生产打包后由 FastAPI 静态托管
     emptyOutDir: true,
+  },
+  test: {
+    // V1 测试集中在 utils/ 纯函数。后续如需测组件再引入 jsdom + @testing-library/react。
+    environment: 'node',
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    globals: false,
   },
 })

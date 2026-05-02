@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "gen:types": "python ../../scripts/generate_frontend_types.py --output src/api/types.ts",
     "gen:openapi": "python ../../scripts/export_web_openapi.py --output src/api/openapi.json",
     "sync:api": "npm run gen:types && npm run gen:openapi"
@@ -24,8 +26,10 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
     "tailwindcss": "^4.2.4",
     "typescript": "~5.6.3",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^2.1.8"
   }
 }

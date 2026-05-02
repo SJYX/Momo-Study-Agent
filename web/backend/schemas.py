@@ -155,6 +155,10 @@ class RowState(BaseModel):
     status: RowStatus
     phase: Optional[str] = None
     error: Optional[str] = None
+    # V1-T0：失败分组协议字段。后端发射端在 V1 暂不填充，前端 fallback 用 phase 兜底。
+    # 正式契约升级排在 C08。
+    error_type: Optional[str] = None
+    error_code: Optional[str] = None
     # V3 行级百分比（current/total 任一缺失视为不展示百分比）
     current: Optional[int] = None
     total: Optional[int] = None

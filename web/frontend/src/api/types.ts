@@ -84,6 +84,8 @@ export interface RowState {
   status: 'pending' | 'running' | 'done' | 'error'
   phase?: string | null
   error?: string | null
+  error_type?: string | null
+  error_code?: string | null
   current?: number | null
   total?: number | null
 }

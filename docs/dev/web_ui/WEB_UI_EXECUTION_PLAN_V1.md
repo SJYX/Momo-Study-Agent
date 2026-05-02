@@ -64,26 +64,37 @@
 
 ## V1：Today 主闭环稳定化（C02+C03）
 
+详细任务单见 `V1_TASK_LIST.md`（v2 修订版，T0-T10）。
+
 交付内容：
 
-1. 行视图优先 + 默认可执行项筛选
-2. 价值优先 + 时间压力次级排序
-3. 执行前轻确认条
-4. 执行中自动跟随当前行 + 可改筛选（仅影响显示）
-5. 完成后停留摘要
-6. 失败分组默认展开最大失败组
-7. 组级全量重试、>100 条二次确认、残留失败高亮
+1. T0：feature flag 骨架 + RowState 协议字段（error_type/error_code）扩展
+2. 行视图优先 + 默认可执行项筛选（V1 近似实现）
+3. 价值优先 + 时间压力次级排序（V1 近似实现）
+4. 执行前轻确认条
+5. 执行中自动跟随当前行 + 可改筛选（仅影响显示）
+6. 完成后停留摘要
+7. 失败分组默认展开最大失败组
+8. 后端 `/api/study/process` 接受可选 voc_ids 子集（T6a）
+9. 组级全量重试、>100 条二次确认、残留失败高亮
 
 验收重点：
 
-1. Today 主路径可连续完成“执行-失败-重试”
+1. Today 主路径可连续完成”执行-失败-重试”
 2. 不影响现有日常任务处理
 3. 回归全绿
+
+门禁口径（V1 修订）：
+
+1. (a) 后端 pytest：`python -m pytest tests/web/ -v -m “not slow”`
+2. (b) 前端 Vitest：覆盖 `todayView.ts`、`failureGrouping.ts`、`featureFlags.ts` 三纯函数文件
+3. 前端 build + typecheck：`npm --prefix web/frontend run build`
 
 风险控制：
 
 1. 新交互全部 behind flag
-2. 任意异常先关开关
+2. 提供一键全关回退（URL `?ff_off=v1` 或 localStorage `ff_off=v1`）
+3. 任意异常先关开关
 
 ## V2：执行上下文与监控台（C04+C05）
 

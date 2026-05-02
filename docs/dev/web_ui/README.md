@@ -36,3 +36,4 @@
 
 6. chapters/GLOBAL_TODAY_GUARDRAILS.md：开发全周期 Today 可用性门禁。
 7. WEB_UI_EXECUTION_PLAN_V1.md：开发执行计划（批次V1-V5）。
+8. V1_TASK_LIST.md：V1（C02+C03）开发任务单。
