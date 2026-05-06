@@ -31,6 +31,8 @@ class UserContext:
     env_path: str = ""
     turso_db_url: str = ""
     turso_auth_token: str = ""
+    # 运行时缓存 (key -> {data: any, ts: float})
+    cache: Dict[str, Any] = field(default_factory=dict)
 
 
 class UserContextManager:

@@ -48,10 +48,10 @@ def _build_event(level: str, msg: str, kwargs: Dict[str, Any]) -> Dict[str, Any]
         rows = ((extra.get("data") or {}).get("rows") or [])
         return {"type": "row_status", "rows": rows, "ts": ts}
 
-    # progress 事件：把 batch_* 事件配上 phase
-    progress = extra.get("progress")
-    if isinstance(progress, dict) and event_name in _PROGRESS_PHASES:
-        phase = _PROGRESS_PHASES[event_name]
+    # progress 事件：把 batch_* 事件配上 phase，或处理显式的 progress 事件
+    progress = extra.get("progress") or extra.get("data")
+    if isinstance(progress, dict) and (event_name in _PROGRESS_PHASES or event_name == "progress"):
+        phase = _PROGRESS_PHASES.get(event_name) or progress.get("phase") or "running"
         # 兼容老 progress 字段名：current/total/batch_no/total_batches/words
         current = progress.get("current")
         total = progress.get("total")

@@ -10,10 +10,11 @@ POST /api/study/iterate        — 触发智能迭代（返回 task_id）
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Optional
-
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 
 from web.backend.deps import (
     get_active_user,
@@ -21,12 +22,14 @@ from web.backend.deps import (
     get_logger,
     get_momo_api,
     get_task_registry,
+    get_user_context,
     get_workflow,
 )
 from web.backend.lock import acquire_profile_lock, get_profile_lock_holder, release_profile_lock
 from web.backend.schemas import (
     ApiResponse,
     FutureItemsResponse,
+    ProcessRequest,
     TaskRunResponse,
     TodayItemsResponse,
     error_response,
@@ -34,6 +37,9 @@ from web.backend.schemas import (
 )
 
 router = APIRouter(prefix="/api/study", tags=["study"])
+
+# 缓存配置：8 小时
+TODAY_CACHE_TTL = 8 * 3600
 
 
 def _submit_with_profile_lock(
@@ -86,12 +92,58 @@ def _submit_with_profile_lock(
 
 
 @router.get("/today", response_model=ApiResponse[TodayItemsResponse])
-async def get_today(user: str = Depends(get_active_user), momo=Depends(get_momo_api)):
-    """获取今日任务列表。"""
+async def get_today(
+    refresh: bool = Query(default=False),
+    user: str = Depends(get_active_user),
+    ctx=Depends(get_user_context),
+):
+    """获取今日任务列表（带 8 小时缓存）。"""
+    momo = ctx.momo_api
+    
+    # 检查缓存
+    if not refresh:
+        cache_entry = ctx.cache.get("today")
+        if cache_entry:
+            ts = cache_entry.get("ts", 0)
+            if time.time() - ts < TODAY_CACHE_TTL:
+                return ok_response(cache_entry["data"], user_id=user)
+
     try:
-        res = momo.get_today_items(limit=500)
-        items = (res or {}).get("data", {}).get("today_items", [])
-        return ok_response({"count": len(items), "items": items}, user_id=user)
+        res = await run_in_threadpool(momo.get_today_items, limit=500)
+        items_raw = (res or {}).get("data", {}).get("today_items", [])
+        
+        # 状态回填：检查本地 DB 哪些已经同步成功了
+        voc_ids = [str(it.get("voc_id")) for it in items_raw]
+        from database.momo_words import get_sync_status_in_batch
+        sync_statuses = await run_in_threadpool(get_sync_status_in_batch, voc_ids)
+        
+        items = []
+        for it in items_raw:
+            vid = str(it.get("voc_id"))
+            # 如果 sync_status 为 1，说明本地已处理并同步过
+            status = "done" if sync_statuses.get(vid) == 1 else None
+            items.append({
+                "voc_id": vid,
+                "voc_spelling": it.get("voc_spelling") or it.get("spelling"),
+                "voc_meanings": it.get("voc_meanings") or it.get("meanings") or "",
+                "review_count": it.get("review_count") or 0,
+                "familiarity_short": it.get("familiarity_short") or 0.0,
+                "status": status
+            })
+
+        data = {
+            "count": len(items),
+            "items": items,
+            "ts": time.time()
+        }
+        
+        # 更新缓存
+        ctx.cache["today"] = {
+            "data": data,
+            "ts": time.time()
+        }
+        
+        return ok_response(data, user_id=user)
     except Exception as e:
         return error_response("MAIMO_API_ERROR", str(e), user_id=user)
 
@@ -106,7 +158,8 @@ async def get_future(
     try:
         start_dt = datetime.now()
         end_dt = start_dt + timedelta(days=days)
-        res = momo.query_study_records(
+        res = await run_in_threadpool(
+            momo.query_study_records,
             start_dt.strftime("%Y-%m-%dT00:00:00.000Z"),
             end_dt.strftime("%Y-%m-%dT23:59:59.000Z"),
         )
@@ -128,15 +181,22 @@ async def get_future(
 
 @router.post("/process", response_model=ApiResponse[TaskRunResponse])
 async def process_today(
+    request: ProcessRequest = Body(default_factory=ProcessRequest),
     user: str = Depends(get_active_user),
     momo=Depends(get_momo_api),
     workflow=Depends(get_workflow),
     logger=Depends(get_logger),
     registry=Depends(get_task_registry),
+    ctx=Depends(get_user_context),
 ):
     """触发今日任务处理，立即返回 task_id，后台异步执行。"""
+    momo = ctx.momo_api
+    
+    # 触发处理时清理缓存，确保下次获取的是最新状态
+    ctx.cache.pop("today", None)
+    
     try:
-        res = momo.get_today_items(limit=500)
+        res = await run_in_threadpool(momo.get_today_items, limit=500)
         items = (res or {}).get("data", {}).get("today_items", [])
     except Exception as e:
         return error_response("MAIMO_API_ERROR", str(e), user_id=user)
@@ -144,7 +204,14 @@ async def process_today(
     if not items:
         return ok_response({"task_id": None, "message": "今日无待处理单词"}, user_id=user)
 
-    loop = asyncio.get_event_loop()
+    # T6a: 如果指定了 voc_ids，只处理指定的单词
+    if request.voc_ids:
+        target_ids = set(request.voc_ids)
+        items = [it for it in items if str(it.get("voc_id")) in target_ids]
+        if not items:
+            return ok_response({"task_id": None, "message": "指定的单词今日无需处理或不存在"}, user_id=user)
+
+    loop = asyncio.get_running_loop()
 
     def _run():
         workflow.process_word_list(items, "今日任务")
@@ -167,7 +234,8 @@ async def process_future(
     try:
         start_dt = datetime.now()
         end_dt = start_dt + timedelta(days=days)
-        res = momo.query_study_records(
+        res = await run_in_threadpool(
+            momo.query_study_records,
             start_dt.strftime("%Y-%m-%dT00:00:00.000Z"),
             end_dt.strftime("%Y-%m-%dT23:59:59.000Z"),
         )
@@ -188,7 +256,7 @@ async def process_future(
     if not records:
         return ok_response({"task_id": None, "message": f"未来 {days} 天无待处理单词"}, user_id=user)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _run():
         workflow.process_word_list(records, f"未来 {days} 天计划")
@@ -209,7 +277,7 @@ async def iterate(
     """触发智能迭代，立即返回 task_id。"""
     from core.iteration_manager import IterationManager
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _run():
         manager = IterationManager(ai_client=ai_client, momo_api=momo, logger=logger)
@@ -228,10 +296,11 @@ async def iterate_candidates(
 ):
     """返回智能迭代候选词列表（薄弱词）。"""
     try:
-        from core.weak_word_filter import WeakWordFilter
+        def _get_data():
+            filter_obj = WeakWordFilter(logger)
+            return filter_obj.get_weak_words_by_score(min_score=50.0, limit=limit)
 
-        filter_obj = WeakWordFilter(logger)
-        rows = filter_obj.get_weak_words_by_score(min_score=50.0, limit=limit)
+        rows = await run_in_threadpool(_get_data)
         items = []
         for row in rows:
             items.append(

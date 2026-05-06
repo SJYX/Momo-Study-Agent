@@ -341,6 +341,15 @@ class StudyWorkflow:
             self.logger.info(f"{name} 过滤后无可处理有效单词")
             return
 
+        # V1-T3.1: 握手进度 - 立即告知前端总数，消除"等待结构化进度事件"
+        self.logger.info(
+            f"[Pipeline] {name} 任务初始化，总计 {len(word_list)} 词",
+            extra={
+                "event": "progress",
+                "data": {"current": 0, "total": len(word_list), "phase": "initializing"}
+            }
+        )
+
         all_voc_ids = [str(w.get("voc_id")) for w in word_list]
         processed_ids = self._get_processed_ids_cached(all_voc_ids)
 
@@ -389,7 +398,7 @@ class StudyWorkflow:
                             reason = "本地已生成，待上传同步"
                         elif sync_status == 2:
                             phase = "sync_conflict"
-                            status = "error"
+                            status = "warning"
                             reason = "云端释义冲突，待处理"
                     except Exception:
                         # 查询失败时保守展示为 skipped，避免中断主流程。

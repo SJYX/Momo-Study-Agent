@@ -88,11 +88,13 @@ class TodayItem(BaseModel):
     voc_meanings: str = ""
     review_count: int = 0
     familiarity_short: float = 0.0
+    status: Optional[str] = None  # done | None
 
 
 class TodayItemsResponse(BaseModel):
     count: int = 0
     items: list[TodayItem] = Field(default_factory=list)
+    ts: float = 0.0
 
 
 class FutureItemsResponse(BaseModel):
@@ -125,6 +127,13 @@ class TaskCancelResponse(BaseModel):
     canceled: bool = True
 
 
+class ProcessRequest(BaseModel):
+    voc_ids: Optional[list[str]] = Field(
+        default=None, 
+        description="Optional list of vocabulary IDs to process. If empty, process all pending."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task event protocol — discriminated union by `type`
 #
@@ -144,7 +153,7 @@ class TaskCancelResponse(BaseModel):
 #   - 新增 type 必须先扩 union，再让发射方代码生成。
 #   - phase 字符串集合见 docs/dev/EVENT_PROTOCOL.md（待补）。
 # ---------------------------------------------------------------------------
-RowStatus = Literal["pending", "running", "done", "error"]
+RowStatus = Literal["pending", "running", "done", "error", "warning"]
 TaskStatus = Literal["pending", "running", "done", "error", "canceled"]
 LogLevel = Literal["info", "warning", "error"]
 
