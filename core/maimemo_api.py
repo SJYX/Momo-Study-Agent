@@ -67,35 +67,44 @@ class MaiMemoAPI:
             pass
 
     def _apply_rate_limit(self):
-        """根据墨墨频控窗口进行自适应节流，尽量减少 429 重试等待。"""
+        """根据墨墨频控窗口进行自适应节流，分配执行时间票据，避免线程饥饿。"""
         with self._rate_limit_lock:
             now = time.time()
 
-            # 清理窗口外时间戳
+            # 清理真正过期的时间戳（基于当前时间）
             while self._req_ts_10s and now - self._req_ts_10s[0] >= 10:
                 self._req_ts_10s.popleft()
             while self._req_ts_60s and now - self._req_ts_60s[0] >= 60:
                 self._req_ts_60s.popleft()
 
-            wait_candidates = []
-            if self._req_ts_10s and len(self._req_ts_10s) >= 20:
-                wait_candidates.append(10 - (now - self._req_ts_10s[0]))
-            if self._req_ts_60s and len(self._req_ts_60s) >= 40:
-                wait_candidates.append(60 - (now - self._req_ts_60s[0]))
+            wait_candidates = [0.0]
 
-            # 平滑间隔，减少突发请求导致的额外限流
-            gap = now - self._last_request_ts
-            if gap < self._min_interval_sec:
-                wait_candidates.append(self._min_interval_sec - gap)
+            # 1. 最小间隔平滑处理
+            interval_wait = (self._last_request_ts + self._min_interval_sec) - now
+            if interval_wait > 0:
+                wait_candidates.append(interval_wait)
 
-            wait_time = max(wait_candidates) if wait_candidates else 0
-            if wait_time > 0:
-                time.sleep(wait_time)
+            # 2. 10秒20次限制
+            if len(self._req_ts_10s) >= 20:
+                wait_10 = (self._req_ts_10s[-20] + 10.0) - now
+                if wait_10 > 0:
+                    wait_candidates.append(wait_10)
 
-            req_ts = time.time()
-            self._req_ts_10s.append(req_ts)
-            self._req_ts_60s.append(req_ts)
-            self._last_request_ts = req_ts
+            # 3. 60秒40次限制
+            if len(self._req_ts_60s) >= 40:
+                wait_60 = (self._req_ts_60s[-40] + 60.0) - now
+                if wait_60 > 0:
+                    wait_candidates.append(wait_60)
+
+            wait_time = max(wait_candidates)
+            execution_time = now + wait_time
+
+            self._req_ts_10s.append(execution_time)
+            self._req_ts_60s.append(execution_time)
+            self._last_request_ts = execution_time
+
+        if wait_time > 0:
+            time.sleep(wait_time)
 
     @staticmethod
     def _is_transient_status(status_code: int) -> bool:

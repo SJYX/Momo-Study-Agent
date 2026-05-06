@@ -76,6 +76,22 @@ class TestStudyProcess:
         body = resp.json()
         assert body["ok"] is False
 
+    def test_process_with_voc_ids_filters_items(self, client):
+        resp = client.post("/api/study/process", json={"voc_ids": ["v1"]})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["data"]["task_id"] is not None
+        assert body["data"]["word_count"] == 1
+
+    def test_process_with_unmatched_voc_ids(self, client):
+        resp = client.post("/api/study/process", json={"voc_ids": ["not_exist"]})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["data"]["task_id"] is None
+        assert body["data"]["message"] == "指定的单词今日无需处理或不存在"
+
 
 class TestStudyProcessFuture:
     def test_process_future_returns_task_id(self, client):

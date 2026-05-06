@@ -137,145 +137,585 @@ flag：`ff_today_default_view`
 flag：`ff_today_light_confirm`
 目标：执行前显示非弹窗轻确认信息。
 
-产出：
+### T2 实现任务拆分
 
-1. 新组件 `components/today/LightConfirmBar.tsx`
-2. 文案："本次将执行 N 条，可随时停止"
-3. N 与当前执行集合一致
-4. 普通执行不弹窗
+#### T2.1 新建 LightConfirmBar 组件
 
-验收：
+文件：`web/frontend/src/components/today/LightConfirmBar.tsx`
+
+Props 接口：
+
+```tsx
+interface LightConfirmBarProps {
+  /** 本次将执行的条目数量 */
+  count: number
+  /** 用户确认执行 */
+  onConfirm: () => void
+  /** 用户取消（收起确认条） */
+  onCancel: () => void
+  /** 是否正在执行中（确认后变为 loading 态） */
+  loading?: boolean
+}
+```
+
+组件行为：
+
+1. 渲染为一行内联横条（非弹窗、非 Modal），插入在"全部处理"按钮下方
+2. 左侧文案：`"本次将执行 {count} 条，可随时停止"`
+3. 右侧双按钮：`"确认执行"` + `"取消"`
+4. 确认后按钮变为 loading 态（disabled + Loader2 旋转图标），文案切换为 `"执行中…"`
+5. 视觉风格：蓝色 info bar 背景（`bg-blue-50 border border-blue-200 rounded-lg`），与现有 error bar（`bg-red-50`）对齐
+6. 过渡动画：进入时下滑展开（CSS `transition-all`），取消时收起
+
+复用设计（为 T6b 预留）：
+
+- T6b 组级重试也需要"将重试 N 条"确认条，LightConfirmBar 的 `count` + 文案可由外部 slot 或 `message` prop 自定义
+- 增加可选 `message?: string` prop，缺省时使用默认文案 `"本次将执行 {count} 条，可随时停止"`
+
+#### T2.2 TodayTasks.tsx 集成确认流程
+
+文件：`web/frontend/src/pages/TodayTasks.tsx`（A 组独占）
+
+状态机：在 TodayTasks 中引入执行阶段状态：
+
+```
+idle → confirming → executing → idle
+         ↓ (cancel)
+        idle
+```
+
+具体改动：
+
+1. 新增状态 `const [confirmingProcess, setConfirmingProcess] = useState(false)`
+2. 修改"全部处理"按钮 `onClick`：
+   - flag ON 时：`setConfirmingProcess(true)`（显示确认条，不立即执行）
+   - flag OFF 时：直接调用 `handleProcess()`（保持旧行为）
+3. 在按钮下方条件渲染 `<LightConfirmBar>`：
+   - `count` = `executableItems.length`（T1 已算好的可执行项数量）
+   - `onConfirm` = `handleProcess` → 触发执行 + `setConfirmingProcess(false)`
+   - `onCancel` = `setConfirmingProcess(false)`
+   - `loading` = `processing`（执行中的 loading 态）
+4. 确认条可见时，"全部处理"按钮 disabled（避免重复点击）
+
+#### T2.3 Flag 守卫
+
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+```tsx
+const lightConfirmEnabled = isEnabled('ff_today_light_confirm')
+```
+
+- `lightConfirmEnabled === true`：按钮点击 → 显示确认条 → 用户确认 → 执行
+- `lightConfirmEnabled === false`：按钮点击 → 直接执行（当前旧行为，不渲染 LightConfirmBar）
+
+#### T2.4 边界用例处理
+
+1. **count === 0**：不应到达确认条（按钮已 disabled），但 LightConfirmBar 内部也做兜底：count ≤ 0 时不渲染
+2. **执行中再次点击**：按钮已 disabled + 确认条 loading 态，双重防御
+3. **执行完成/失败**：`processing` 变为 false 时，确认条自动消失（`confirmingProcess` 在 `handleProcess` finally 中重置）
+4. **列表刷新**：确认条显示期间列表数据刷新导致 count 变化时，确认条实时反映最新 count
+
+#### T2.5 验证清单
+
+1. `npm --prefix web/frontend run build` 通过（typecheck）
+2. 手动验证场景：
+   - flag ON：点击"全部处理" → 出现确认条 → 点确认 → 执行 → 确认条消失
+   - flag ON：点击"全部处理" → 出现确认条 → 点取消 → 确认条消失，不执行
+   - flag OFF：点击"全部处理" → 直接执行，无确认条
+3. 确认条 count 与 T1 筛选条中 `仅可执行 (N)` 的 N 一致
+
+### T2 产出文件清单
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `web/frontend/src/components/today/LightConfirmBar.tsx` | 新建 | 轻确认条组件 |
+| `web/frontend/src/pages/TodayTasks.tsx` | 修改 | 集成确认流程 + flag 守卫 |
+
+### T2 验收
 
 1. 点击执行前可见确认条
-2. 与实际执行数量一致
+2. count 与实际可执行数量一致
 3. flag 关闭时直接执行无确认条
+4. 取消后不执行、确认条消失
+5. build + typecheck 通过
+
+### T2 风险与回退
+
+风险：确认条增加一步操作可能影响效率 → 通过 flag 关闭即可跳过
+回退：关闭 `ff_today_light_confirm`，按钮直接执行
+
 
 ## T3. 执行中交互稳定化
 
 flag：`ff_today_follow_running`
 目标：执行中不打断主流程。
 
-产出：
+### T3 实现任务拆分
 
-1. 自动滚动到首个 `status==='running'` 的行
-2. 执行中允许调整筛选（仅影响显示）
-3. 明示提示"仅影响显示，不影响执行"
-4. 跟随逻辑写入 `utils/todayView.ts`
+#### T3.1 行 ref 注册与滚动机制
 
-验收：
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+技术方案：
+
+1. 使用 `useRef<Map<string, HTMLTableRowElement>>()` 维护每行 DOM 引用
+2. 在 `<tr>` 渲染时通过 ref callback 注册：`ref={el => { if (el) rowRefs.current.set(key, el); else rowRefs.current.delete(key) }}`
+3. key 使用 `item.voc_spelling.toLowerCase()` 与 `rowStatusMap` / `findRunningKey` 一致
+
+滚动调用：
+
+```tsx
+const scrollToRow = (key: string) => {
+  const el = rowRefs.current.get(key)
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+```
+
+- `block: 'center'`：将目标行滚动到视口中央，避免贴顶/贴底
+- `behavior: 'smooth'`：平滑滚动，不突兀
+
+#### T3.2 useEffect 跟随驱动
+
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+利用 T1 已有的 `findRunningKey`（`todayView.ts`）：
+
+```tsx
+const followRunningEnabled = isEnabled('ff_today_follow_running')
+const [followPaused, setFollowPaused] = useState(false)
+
+const runningKey = useMemo(() => findRunningKey(rowStatusMap), [rowStatusMap])
+
+useEffect(() => {
+  if (!followRunningEnabled || followPaused || !runningKey) return
+  scrollToRow(runningKey)
+}, [followRunningEnabled, followPaused, runningKey])
+```
+
+行为：
+- 每当 `runningKey` 变化（新的一行进入 running 状态），自动滚动到该行
+- SSE 事件流中 `row_status` 事件推送 → `events` 变化 → `rowStatusMap` 重算 → `runningKey` 更新 → useEffect 触发滚动
+- 不应在同一 `runningKey` 重复滚动（useEffect 依赖 `runningKey` 变化即可天然去重）
+
+#### T3.3 暂停跟随交互
+
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+C02 §6.2 要求"提供暂停跟随开关"：
+
+1. 新增状态 `const [followPaused, setFollowPaused] = useState(false)`
+2. 仅在执行中（`taskStatus` 为 `running` 或 `pending`）且 flag ON 时显示暂停/恢复按钮
+3. 位置：在 T1 筛选条右侧添加"暂停跟随"/"恢复跟随"切换按钮
+4. 视觉：小型文字按钮，用 `Eye` / `EyeOff` 图标（lucide）
+5. 任务终态（`done` / `error`）时自动重置 `followPaused = false`
+
+```tsx
+// 任务终态时重置暂停状态
+useEffect(() => {
+  if (taskStatus === 'done' || taskStatus === 'error' || taskStatus === 'idle') {
+    setFollowPaused(false)
+  }
+}, [taskStatus])
+```
+
+#### T3.4 执行中筛选提示
+
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+C02 §6.3 要求"在筛选区域明确提示仅影响显示"：
+
+1. 当 `taskStatus` 为 `running` 或 `pending`（执行中）时，在 T1 筛选条下方显示提示
+2. 文案：`"筛选仅影响显示，不影响正在执行的任务"`
+3. 视觉：`text-xs text-amber-600`，使用 `Info` 图标
+4. 不在执行中时不显示此提示
+
+实现说明：
+- 当前后端 `POST /api/study/process` 是全量处理（不受前端筛选影响），所以执行中改筛选确实仅影响显示
+- 此提示是认知引导，避免用户误以为改筛选会改变执行集合
+
+#### T3.5 验证清单
+
+1. `npm --prefix web/frontend run build` 通过（typecheck）
+2. `npx vitest run` 全绿（不应破坏既有 37 个测试）
+3. 手动验证场景：
+   - flag ON + 执行中：列表自动滚动到 running 行
+   - 点"暂停跟随"后不再自动滚动，点"恢复跟随"恢复
+   - 执行中改筛选，提示"仅影响显示"可见
+   - 任务完成后暂停状态自动重置
+   - flag OFF：无自动滚动、无暂停按钮
+
+### T3 产出文件清单
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `web/frontend/src/pages/TodayTasks.tsx` | 修改 | 集成自动跟随 + 暂停开关 + 筛选提示 |
+
+说明：`findRunningKey` 已在 T1 中实现于 `utils/todayView.ts`，T3 无需修改该文件。
+
+### T3 验收
 
 1. 执行中滚动行为稳定
 2. 改筛选不改变执行任务集合
 3. flag 关闭时不滚动
+4. 暂停跟随可用且终态自动重置
+5. 执行中筛选提示可见
+
+### T3 风险与回退
+
+风险：自动滚动影响手动查看 → 暂停跟随开关
+风险：频繁滚动闪烁 → `runningKey` 天然去重，只在切换行时滚动
+回退：关闭 `ff_today_follow_running`
+
 
 ## T4. 完成后摘要停留
 
 flag：`ff_today_summary_stay`
 目标：任务完成后停留在结果摘要区。
 
-产出：
+### T4 实现任务拆分
 
-1. 新组件 `components/today/SummaryPanel.tsx`
-2. done/error/canceled 统一进入摘要区
-3. 摘要包含成功/失败/待处理计数
-4. 提供"进入失败分组"快捷入口（联动 T5）
+#### T4.1 新建 SummaryPanel 组件
 
-验收：
+文件：`web/frontend/src/components/today/SummaryPanel.tsx`
+
+Props 接口：
+
+```tsx
+interface SummaryPanelProps {
+  /** 成功（done）条目数 */
+  doneCount: number
+  /** 失败（error）条目数 */
+  errorCount: number
+  /** 跳过（skipped）条目数 */
+  skippedCount: number
+  /** 总条目数 */
+  totalCount: number
+  /** 任务终态类型：done / error / canceled */
+  taskStatus: string
+  /** 点击"进入失败分组"（联动 T5，T5 未完成时为 undefined） */
+  onGoToFailures?: () => void
+}
+```
+
+组件行为：
+
+1. 渲染为卡片面板，显示在列表上方
+2. 顶部状态标题：
+   - `done` → "✅ 任务完成" (绿色)
+   - `error` → "⚠️ 任务异常终止" (红色)
+   - `canceled` → "🚫 任务已取消" (灰色)
+3. 统计行：三列数字卡片
+   - 成功 N 条 (绿色 badge)
+   - 失败 N 条 (红色 badge)
+   - 跳过 N 条 (灰色 badge)
+4. 底部操作区：
+   - "进入失败分组" 按钮（errorCount > 0 且 onGoToFailures 存在时可点击）
+   - T5 未实现前，按钮显示为 disabled 状态 + 提示"失败分组功能开发中"
+5. 视觉风格：与现有 error bar / LightConfirmBar 一致的圆角卡片
+
+统计计算逻辑（从 rowStatusMap 中提取，在 TodayTasks 中计算后传入）：
+
+```tsx
+// 在 TodayTasks.tsx 中
+const statusCounts = useMemo(() => {
+  let done = 0, error = 0, skipped = 0
+  for (const s of Object.values(rowStatusMap)) {
+    if (s.phase === 'skipped') skipped++
+    else if (s.status === 'done') done++
+    else if (s.status === 'error') error++
+  }
+  return { done, error, skipped }
+}, [rowStatusMap])
+```
+
+#### T4.2 TodayTasks.tsx 集成
+
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+显示条件：
+
+```tsx
+const summaryStayEnabled = isEnabled('ff_today_summary_stay')
+const isTerminal = taskStatus === 'done' || taskStatus === 'error' || taskStatus === 'canceled'
+const showSummary = summaryStayEnabled && isTerminal && items.length > 0
+```
+
+渲染位置：在列表上方、筛选条下方插入 `<SummaryPanel>`。
+
+行为：
+- 终态时展示摘要面板（不隐藏列表，用户仍可向下查看详情）
+- flag 关闭时不渲染 SummaryPanel，维持旧行为
+
+#### T4.3 失败分组联动入口（T5 预留）
+
+SummaryPanel 的 `onGoToFailures` prop：
+- T5 未实现时传 `undefined`，按钮显示为 disabled + "即将推出"
+- T5 完成后，传入跳转到 FailureGroupsPanel 的回调
+
+#### T4.4 验证清单
+
+1. `npm --prefix web/frontend run build` 通过
+2. `npx vitest run` 全绿
+3. 手动验证场景：
+   - flag ON + 任务完成 → 出现摘要面板，统计正确
+   - flag ON + 任务失败 → 出现摘要面板，"进入失败分组"按钮可见（disabled）
+   - flag OFF → 无摘要面板
+   - 终态后列表仍然可见（不跳到顶部）
+
+### T4 产出文件清单
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `web/frontend/src/components/today/SummaryPanel.tsx` | 新建 | 摘要面板组件 |
+| `web/frontend/src/pages/TodayTasks.tsx` | 修改 | 集成摘要面板 + flag 守卫 |
+
+### T4 验收
 
 1. 终态后不跳到列表顶部
-2. 可直接进入失败分组处理
+2. 可直接进入失败分组处理（T5 完成后激活）
 3. flag 关闭时无摘要面板
+4. 统计数字与行状态一致
+
+### T4 风险与回退
+
+风险：摘要面板占用空间影响列表查看 → 面板在列表上方，不遮挡
+回退：关闭 `ff_today_summary_stay`
+
 
 ## T5. 失败分组构建
 
 flag：`ff_today_failure_groups`
 目标：实现 C03 分组语义。
 
-产出：
+### T5 实现任务拆分
 
-1. 新组件 `components/today/FailureGroupsPanel.tsx`
-2. 新工具 `utils/failureGrouping.ts`：按 `error_type` -> `error_code` -> `phase` 三级 key 兜底（T0 协议字段缺失时只用 phase）
-3. 按失败数量降序
-4. 默认展开失败最多分组
+#### T5.1 新建工具类 `failureGrouping.ts`
 
-验收：
+文件：`web/frontend/src/utils/failureGrouping.ts`
+测试：`web/frontend/src/utils/failureGrouping.test.ts`
+
+逻辑：
+1. 提取所有 `status === 'error'` 的项
+2. 分组 Key 策略：优先 `error_type`，其次 `error_code`，兜底 `phase`（格式如 `type:NETWORK` 或 `code:404` 或 `phase:gen_story`）。T0 已经扩展了后端协议，RowState 包含 `error_type` 和 `error_code`。
+3. 聚合：`Record<string, FailureGroup>`，每个 group 包含 `groupKey`, `label`（友好展示名）, `reason`（代表性原因）, `items`（原始条目数组）
+4. 排序：按 `items.length` 降序排列返回数组
+
+```tsx
+export interface FailureGroup {
+  groupKey: string
+  label: string
+  reason: string
+  items: TodayItem[]
+}
+export function buildFailureGroups(items: TodayItem[], rowStatusMap: Record<string, RowState>): FailureGroup[]
+```
+
+#### T5.2 新建组件 `FailureGroupsPanel.tsx`
+
+文件：`web/frontend/src/components/today/FailureGroupsPanel.tsx`
+
+Props：
+```tsx
+interface FailureGroupsPanelProps {
+  groups: FailureGroup[]
+  rowStatusMap: Record<string, RowState>
+  onRetryGroup?: (group: FailureGroup) => void // T6b 预留
+  onBack: () => void // 返回完整列表
+}
+```
+
+UI 行为：
+1. 顶部提供返回按钮："← 返回完整列表"
+2. 如果 `groups.length === 0`，渲染空状态。
+3. 渲染每组为一个可折叠的卡片（accordion）。
+4. **默认展开第一个分组**（即失败数量最多的组）。
+5. 每组卡片头部显示：Label、Reason 截断、数量 Badge、"重试本组 N 项"按钮（当前 T5 阶段该按钮 disabled，提示"T6b 开发中"）。
+6. 每组展开内容：展示该组下的单词列表（类似主列表的精简版）。
+
+#### T5.3 TodayTasks.tsx 页面集成
+
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+集成逻辑：
+1. 新增状态 `const [showFailureMode, setShowFailureMode] = useState(false)`
+2. 在 `SummaryPanel` 的 `onGoToFailures` 传参：`() => setShowFailureMode(true)`
+3. 当 `showFailureMode === true` 且 `ff_today_failure_groups` 开启时，隐藏原主列表 `<table ...>`，渲染 `<FailureGroupsPanel>`。
+4. 传递 `onBack={() => setShowFailureMode(false)}`
+
+#### T5.4 验证清单
+
+1. `npx vitest run`：`failureGrouping.test.ts` 纯函数测试通过（分组、降序排列）
+2. 手动验证：
+   - 执行结束有失败时，点击 SummaryPanel 的"进入失败分组"按钮可切换视图
+   - 视图中正确渲染失败组，默认展开第一个
+   - 重试按钮占位显示正确
+   - 点返回可回到完整列表
+
+### T5 产出文件清单
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `web/frontend/src/utils/failureGrouping.ts` | 新建 | 核心分组逻辑 |
+| `web/frontend/src/utils/failureGrouping.test.ts` | 新建 | 单测 |
+| `web/frontend/src/components/today/FailureGroupsPanel.tsx` | 新建 | 分组列表视图 |
+| `web/frontend/src/pages/TodayTasks.tsx` | 修改 | 集成视图切换 |
+
+### T5 验收
 
 1. 分组稳定且可复现（同输入同输出）
 2. 排序与默认展开符合规则
 3. flag 关闭时不渲染失败分组面板
 
+### T5 风险与回退
+
+风险：后端未传详细 error_type 导致全部分到兜底组 → 前端逻辑正常兜底为 phase，无 crash 风险
+回退：关闭 `ff_today_failure_groups`
+
 ## T6a. 后端组级重试入口
 
 目标：扩展后端入口接受 voc_id 子集。
 
-产出：
+### T6a 实现任务拆分
 
-1. 修改 `web/backend/routers/study.py` 的 `POST /api/study/process`：接受可选 body `{voc_ids?: string[]}`
-2. `voc_ids` 为空 -> 沿用旧路径（`momo.get_today_items`）
-3. `voc_ids` 非空 -> 仅按子集执行 workflow.process_word_list
-4. schemas.py 新增 `ProcessRequest` 模型
-5. 同步重生成 `types.ts`
-6. 新增 `tests/web/test_v1_acceptance.py` 覆盖：
-   - 不传 body 时旧行为不变
-   - 传 voc_ids 时仅执行子集
-   - profile lock 行为不变
+#### T6a.1 定义 ProcessRequest Schema
+文件：`web/backend/schemas.py`
 
-验收：
+```python
+class ProcessRequest(BaseModel):
+    voc_ids: Optional[List[str]] = Field(default=None, description="Optional list of vocabulary IDs to process. If empty, process all pending.")
+```
 
-1. 旧调用 `apiPost('/api/study/process')` 无 payload 行为不变
-2. 新调用 `apiPost('/api/study/process', {voc_ids: [...]} )` 仅执行子集
-3. 新测试全绿，旧测试无回归
+#### T6a.2 修改 POST /api/study/process
+文件：`web/backend/routers/study.py`
+
+将 `process_today_words` 修改为接受 `request: ProcessRequest = Body(default_factory=ProcessRequest)`。
+如果 `request.voc_ids` 为空，沿用旧路径（调用 `momo.get_today_items` 并在未完成时提取 id）；
+如果 `request.voc_ids` 非空，则仅过滤出 `voc_ids` 的部分，传给 `process_word_list`。
+
+#### T6a.3 同步前端类型
+文件：`web/frontend/src/api/types.ts`
+运行生成脚本：`python scripts/generate_frontend_types.py`，确保 `ProcessRequest` 反映到前端。
+
+#### T6a.4 完善后端验证测试
+文件：`tests/web/test_v1_acceptance.py`（如果已有类似测试，则在其内扩展；否则可新建/修改对应路由测试 `tests/web/test_study_router.py`）
+
+确保：
+1. 不传 body 时旧行为不变。
+2. 传 `voc_ids` 时仅执行对应的词。
+3. 传不存在的 `voc_ids` 不崩溃。
 
 ## T6b. 前端组级重试动作
 
 flag：`ff_today_group_retry`
 目标：实现组级全量重试链路。
 
-产出：
+### T6b 实现任务拆分
 
-1. `FailureGroupsPanel.tsx` 中"重试该组 N 条"按钮
-2. 复用 T2 轻确认条："将重试 N 条"
-3. 调 T6a 入口 `apiPost('/api/study/process', {voc_ids})`
-4. 重试后刷新分组状态
+#### T6b.1 TodayTasks.tsx 支持重试参数
+文件：`web/frontend/src/pages/TodayTasks.tsx`
 
-验收：
+修改 `handleProcess` 签名，接受可选的 `voc_ids?: string[]`：
+```tsx
+const handleProcess = async (voc_ids?: string[]) => {
+  setProcessing(true)
+  try {
+    const payload = voc_ids ? { voc_ids } : {}
+    const res = await apiPost<TaskSubmitResponse>('/api/study/process', payload)
+    if (res.data?.task_id) {
+      setActiveTask(res.data.task_id)
+    }
+  } catch (e) { ... }
+}
+```
 
-1. 重试范围正确（仅该组）
-2. 结果状态可见
-3. flag 关闭时不显示按钮
+#### T6b.2 集成轻确认条到 FailureGroupsPanel
+文件：`web/frontend/src/components/today/FailureGroupsPanel.tsx`
+
+1. 传入 `ff_today_group_retry` 控制逻辑。
+2. 添加状态 `const [confirmingGroup, setConfirmingGroup] = useState<string | null>(null)`。
+3. 点击"重试本组"按钮时，如果 flag ON，则将该组的 groupKey 存入 `confirmingGroup`。如果 flag OFF，按钮应该不可见或 disabled。
+4. 如果 `confirmingGroup === g.groupKey`，在原按钮位置（或卡片下方）展示 `LightConfirmBar`（复用 T2 组件）。
+5. 传给 LightConfirmBar 的 Props：
+   - `count={g.items.length}`
+   - `message={\`将重试本组 ${g.items.length} 个单词\`}`
+   - `onCancel={() => setConfirmingGroup(null)}`
+   - `onConfirm={() => { onRetryGroup?.(g); setConfirmingGroup(null); }}`
+
+#### T6b.3 联调验证
+1. `npx vitest run` 和 `pytest` 跑通。
+2. 前端界面：点击"重试本组" -> 展开轻确认条 -> 确认 -> 触发重试（仅发送这部分 ids） -> 列表随之响应 `row_status` 并更新 UI。
+
+### T6 验收
+1. 重试范围正确（仅该组 `voc_ids` 被发送和处理）
+2. 后端不阻断原本全量处理的无参调用
+3. flag 关闭时重试按钮不可用
 
 ## T7. 大批量二次确认门禁
 
 flag：`ff_today_bulk_guard`（默认 ON，独立于其他 flag）
 目标：避免误触发大规模重试。
 
-产出：
+### T7 实现任务拆分
 
-1. 失败组条目 >100 时强制二次弹窗
-2. 弹窗含影响范围与回退提示
-3. 阈值常量 `BULK_RETRY_THRESHOLD = 100` 集中在 `featureFlags.ts`
+#### T7.1 featureFlags 扩展
+文件：`web/frontend/src/utils/featureFlags.ts`
 
-验收：
+1. 导出常量 `export const BULK_RETRY_THRESHOLD = 100`
+2. 确保 `ff_today_bulk_guard` 定义存在且默认为 `true`。
 
-1. <=100 不触发二次弹窗
-2. >100 必触发
-3. 即使 `ff_today_group_retry` 开启，`ff_today_bulk_guard` 关闭后也跳过弹窗（只在显式关闭时）
+#### T7.2 TodayTasks.tsx 支持全部处理防误触
+文件：`web/frontend/src/pages/TodayTasks.tsx`
+
+1. 引入 `BULK_RETRY_THRESHOLD`。
+2. 在点击"全部处理"时，如果 `data.count > BULK_RETRY_THRESHOLD` 且 `ff_today_bulk_guard` 开启，则不仅触发 `LightConfirmBar`，还可以使 `LightConfirmBar` 接收一个 `warning` 级别，显示特别的高亮警告（例如红色按钮，或弹窗模式）。为了简单起见，可以给 `LightConfirmBar` 增加 `variant="default" | "danger"` 属性，或者单独在页面用一个原生的 `window.confirm` 或自定义 `Modal` 进行二次确认。
+*考虑到这是一个严肃的二次弹窗，我们可以新建一个简单的 `BulkGuardModal.tsx`，或者在 `TodayTasks.tsx` 和 `FailureGroupsPanel.tsx` 共享。*
+
+为了复用，我们在 `components/today` 下新建 `BulkGuardModal.tsx`：
+```tsx
+interface Props {
+  count: number;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+// 包含文案："注意：您即将重试 {count} 个单词，这可能会消耗较多系统资源和时间。是否确认继续？"
+```
+
+#### T7.3 FailureGroupsPanel 集成
+文件：`web/frontend/src/components/today/FailureGroupsPanel.tsx`
+
+1. 点击"重试本组"时，如果数量 `> BULK_RETRY_THRESHOLD` 且 `isEnabled('ff_today_bulk_guard')` 为 true：
+   - 不显示内联 `LightConfirmBar`，而是弹出 `BulkGuardModal` 弹窗。
+2. 弹窗点确认后才触发真正的 `onRetryGroup`。
+3. `<= 100` 则走原来的 `LightConfirmBar`。
+
+### T7 验收
+1. <=100 时仍然使用轻确认条（对于全部处理或组内重试）
+2. >100 时触发醒目的 `BulkGuardModal` 拦截
+3. `ff_today_bulk_guard` 设为 false 后，即使 >100 也降级走普通轻确认条
 
 ## T8. 残留失败高亮
 
 flag：`ff_today_residual_highlight`
 目标：重试后仍失败项可直接定位。
 
-产出：
+### T8 实现任务拆分
 
-1. 重试后保持当前分组上下文（不收起面板、不切换分组）
-2. 仍失败项视觉高亮（红色描边或背景）
+#### T8.1 featureFlags 扩展
+文件：`web/frontend/src/utils/featureFlags.ts`
+（其实 `ff_today_residual_highlight` 已经存在于 V1_FLAGS 中，只需在组件中使用）
 
-验收：
+#### T8.2 FailureGroupsPanel 中高亮残留失败项
+文件：`web/frontend/src/components/today/FailureGroupsPanel.tsx`
 
-1. 不跳离当前分组
-2. 失败残留可一眼识别
-3. flag 关闭时无特殊高亮
+1. 引入 `isEnabled('ff_today_residual_highlight')`。
+2. 在渲染分组的单词列表 `<tr>` 时，如果 `state.status === 'error'` 且该 flag 开启：
+   - 给整行 `<tr>` 加上浅红色背景（如 `bg-red-50`）或左侧红色边框（如 `border-l-4 border-l-red-500`），以使其在重试过程中或重试后一眼能识别出"这是一个失败项"。
+   - 考虑到原本在 FailureGroupsPanel 里的项可能都是 error，但在重试时它们会变成 `pending` 或 `running`。重试结束后，仍为 `error` 的项会再次显现为高亮，而成功的项会从列表消失（由于被重新分组或由于不再是 error 导致过滤，取决于我们分组时是否排除了成功项，当前 `buildFailureGroups` 已经过滤了 `status === 'error'` 的项，所以成功的项会直接消失）。
+   - 如果成功的项消失，残留的高亮项仍然会保留。
+
+### T8 验收
+1. 错误项在 `FailureGroupsPanel` 中具有明显的视觉高亮（例如红底或红左边框）。
+2. `ff_today_residual_highlight` 关闭时，恢复普通白底。
 
 ## T9. Feature Flag 总开关与回退
 

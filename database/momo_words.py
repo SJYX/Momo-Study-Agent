@@ -136,6 +136,57 @@ def get_progress_tracked_ids_in_batch(voc_ids: List[str], db_path: Optional[str]
             pass
 
 
+def get_sync_status_in_batch(voc_ids: List[str], db_path: Optional[str] = None) -> Dict[str, int]:
+    """批量获取单词的同步状态 (0: 未同步, 1: 已同步)"""
+    if not voc_ids:
+        return {}
+
+    c = None
+    try:
+        c = connection._get_read_conn(db_path or DB_PATH)
+        conn_lock = connection._get_singleton_conn_op_lock(c)
+        vs = [str(v) for v in voc_ids]
+        ph = ",".join(["?"] * len(vs))
+
+        sql = f"SELECT voc_id, sync_status FROM ai_word_notes WHERE voc_id IN ({ph})"
+        
+        if conn_lock is not None:
+            with conn_lock:
+                cur = c.cursor()
+                try:
+                    cur.execute(sql, vs)
+                    rows = cur.fetchall()
+                finally:
+                    cur.close()
+                c.commit()
+        else:
+            cur = c.cursor()
+            try:
+                cur.execute(sql, vs)
+                rows = cur.fetchall()
+            finally:
+                cur.close()
+            c.commit()
+
+        # 处理元组或字典返回
+        res = {}
+        for r in rows:
+            if isinstance(r, (tuple, list)):
+                res[str(r[0])] = int(r[1] or 0)
+            else:
+                res[str(r["voc_id"])] = int(r["sync_status"] or 0)
+        return res
+    except Exception as e:
+        _debug_log(f"get_sync_status_in_batch 异常: {e}", level="WARNING", module="database.momo_words")
+        return {}
+    finally:
+        try:
+            if c is not None and not connection._is_main_write_singleton_conn(c):
+                c.close()
+        except Exception:
+            pass
+
+
 def is_processed(voc_id: str, db_path: Optional[str] = None) -> bool:
     c = None
     try:
