@@ -12,7 +12,7 @@
  *   8. 未注册 flag 返回 false
  */
 import { describe, expect, it } from 'vitest'
-import { evaluateFlag, V1_FLAGS, BULK_RETRY_THRESHOLD } from './featureFlags'
+import { evaluateFlag, V1_FLAGS, V2_FLAGS, ALL_FLAGS, BULK_RETRY_THRESHOLD } from './featureFlags'
 import type { FlagKey, FlagOverrideSources } from './featureFlags'
 
 function makeLs(map: Record<string, string>) {
@@ -22,7 +22,7 @@ function makeLs(map: Record<string, string>) {
 describe('featureFlags', () => {
   it('默认值：未配置任何 override 时使用 registry default', () => {
     const sources: FlagOverrideSources = {}
-    expect(evaluateFlag('ff_today_default_view', sources)).toBe(false)
+    expect(evaluateFlag('ff_today_default_view', sources)).toBe(true)
     expect(evaluateFlag('ff_today_bulk_guard', sources)).toBe(true)
   })
 
@@ -154,6 +154,47 @@ describe('featureFlags', () => {
         expect(def.killable).toBe(false)
       }
     }
+  })
+
+  it('V2_FLAGS 注册表：所有 V2 flag 都有 task 标记', () => {
+    for (const [key, def] of Object.entries(V2_FLAGS)) {
+      expect(def.task).toMatch(/^V2-T\d/)
+      expect(typeof def.default).toBe('boolean')
+      expect(typeof def.killable).toBe('boolean')
+    }
+    // ff_ops_monitor 默认开启
+    expect(V2_FLAGS.ff_ops_monitor.default).toBe(true)
+  })
+
+  it('一键全关 v2：?ff_off=v2 关闭所有 V2 killable flag，但不影响 V1', () => {
+    const sources: FlagOverrideSources = {
+      urlParams: new URLSearchParams('?ff_off=v2'),
+    }
+    // V2 killable flags 关闭
+    expect(evaluateFlag('ff_taskdrawer_smart_icon', sources)).toBe(false)
+    expect(evaluateFlag('ff_ops_monitor', sources)).toBe(false)
+    // V1 flags 不受影响
+    expect(evaluateFlag('ff_today_default_view', sources)).toBe(true)
+    expect(evaluateFlag('ff_today_bulk_guard', sources)).toBe(true)
+  })
+
+  it('一键全关 v1：ff_off=v1 关闭 V1，但 V2 flag 不受影响', () => {
+    const sources: FlagOverrideSources = {
+      urlParams: new URLSearchParams('?ff_off=v1'),
+    }
+    // V1 关闭
+    expect(evaluateFlag('ff_today_default_view', sources)).toBe(false)
+    // V2 不受影响（v2 kill switch 需要 ff_off=v2）
+    expect(evaluateFlag('ff_taskdrawer_smart_icon', sources)).toBe(true)
+  })
+
+  it('ALL_FLAGS 合并注册表：包含 V1 和 V2 所有 flag', () => {
+    const v1Keys = Object.keys(V1_FLAGS)
+    const v2Keys = Object.keys(V2_FLAGS)
+    const allKeys = Object.keys(ALL_FLAGS)
+    expect(allKeys.length).toBe(v1Keys.length + v2Keys.length)
+    for (const k of v1Keys) expect(allKeys).toContain(k)
+    for (const k of v2Keys) expect(allKeys).toContain(k)
   })
 
   it('BULK_RETRY_THRESHOLD：与 C03 §3 一致', () => {

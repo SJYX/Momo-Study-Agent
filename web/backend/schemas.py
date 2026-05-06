@@ -79,6 +79,23 @@ class TaskStatusResponse(BaseModel):
     finished_at: Optional[float] = None
 
 
+class TaskListItem(BaseModel):
+    """任务列表项（V2 Ops Monitor 用）。"""
+    task_id: str
+    status: str
+    task_type: str = "today"
+    profile: str = ""
+    created_at: float = 0.0
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error: Optional[str] = None
+
+
+class TaskListResponse(BaseModel):
+    tasks: list[TaskListItem] = Field(default_factory=list)
+    total: int = 0
+
+
 # ---------------------------------------------------------------------------
 # /api/study/today
 # ---------------------------------------------------------------------------
@@ -281,6 +298,34 @@ class StatsSummary(BaseModel):
     avg_latency_ms: float = 0.0
     sync_queue_depth: int = 0
     weak_words_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# /api/stats/ops  — Ops Monitor 聚合
+# ---------------------------------------------------------------------------
+class FailureHotspot(BaseModel):
+    error_type: str
+    error_code: Optional[str] = None
+    count: int = 0
+    latest_at: float = 0.0
+    sample_items: list[dict] = Field(default_factory=list, max_length=5)
+
+
+class OpsStatsResponse(BaseModel):
+    # 卡片1：任务态势
+    tasks_running: int = 0
+    tasks_done_1h: int = 0
+    tasks_error_1h: int = 0
+    recent_tasks: list[TaskListItem] = Field(default_factory=list)
+    # 卡片2：失败热点
+    failure_hotspots: list[FailureHotspot] = Field(default_factory=list)
+    # 卡片3：系统健康
+    system_ok: bool = True
+    health_checks: list[PreflightCheck] = Field(default_factory=list)
+    # 卡片4：队列
+    sync_queue_depth: int = 0
+    sync_conflict_count: int = 0
+    avg_latency_ms: float = 0.0
 
 
 # ---------------------------------------------------------------------------

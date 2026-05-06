@@ -81,6 +81,43 @@ export interface TaskCancelResponse {
   canceled?: boolean
 }
 
+export interface TaskListItem {
+  task_id: string
+  status: string
+  task_type?: string
+  profile?: string
+  created_at?: number
+  started_at?: number | null
+  finished_at?: number | null
+  error?: string | null
+}
+
+export interface TaskListResponse {
+  tasks?: TaskListItem[]
+  total?: number
+}
+
+export interface FailureHotspot {
+  error_type: string
+  error_code?: string | null
+  count?: number
+  latest_at?: number
+  sample_items?: Record<string, unknown>[]
+}
+
+export interface OpsStatsResponse {
+  tasks_running?: number
+  tasks_done_1h?: number
+  tasks_error_1h?: number
+  recent_tasks?: TaskListItem[]
+  failure_hotspots?: FailureHotspot[]
+  system_ok?: boolean
+  health_checks?: PreflightCheck[]
+  sync_queue_depth?: number
+  sync_conflict_count?: number
+  avg_latency_ms?: number
+}
+
 export interface RowState {
   item_id: string
   status: 'pending' | 'running' | 'done' | 'error' | 'warning'

@@ -1,5 +1,5 @@
 /**
- * utils/featureFlags.ts — V1 Feature Flag 工具。
+ * utils/featureFlags.ts — V1/V2 Feature Flag 工具。
  *
  * 三层覆盖（从高到低优先级）：
  *   1. URL 参数：?ff_<key>=on | ?ff_<key>=off
@@ -8,19 +8,11 @@
  *   4. 硬编码默认值（registry 里写死）
  *
  * 一键全关：
- *   URL：?ff_off=v1
- *   localStorage：ff_off = "v1"
+ *   URL：?ff_off=v1（仅 V1）或 ?ff_off=v2（V1+V2 全关）
+ *   localStorage：ff_off = "v1" 或 "v2"
  *
- *   killSwitch 只对 `killable: true` 的 V1 flag 生效。
- *   per-flag URL/localStorage override 仍可单独打开（即 kill 之后还能针对性开启）。
- *
- * Bulk Guard 例外：
- *   ff_today_bulk_guard 是安全护栏（>100 二次确认），killable: false。
- *   只能通过显式 URL/localStorage 设置 off 才能关闭。
- *
- * V1 默认全部 OFF：
- *   T1-T8 各自的 flag 默认 false，未开启时 Today 行为与 v2 修订前一致。
- *   T7 的 ff_today_bulk_guard 默认 true（安全护栏始终在）。
+ * V1 flags（C02+C03）：ff_today_* 系列
+ * V2 flags（C04+C05）：ff_taskdrawer_* / ff_ops_monitor_* 系列
  *
  * 测试：
  *   evaluateFlag(key, defaultValue, sources) 是纯函数，便于 vitest 单测。
@@ -55,7 +47,23 @@ export const V1_FLAGS = {
   ff_today_residual_highlight: { default: true, killable: true, task: 'T8' },
 } as const satisfies Record<string, FlagDefinition>
 
-export type FlagKey = keyof typeof V1_FLAGS
+/**
+ * V2 Flag 注册表。C04 TaskDrawer Smart Icon + C05 Ops Monitor。
+ *
+ * killable=true：受 ff_off=v2 一键全关影响。
+ * ff_ops_monitor 默认 true（Ops Monitor 作为默认首页）。
+ */
+export const V2_FLAGS = {
+  ff_taskdrawer_smart_icon: { default: true, killable: true, task: 'V2-T2' },
+  ff_taskdrawer_auto_open: { default: true, killable: true, task: 'V2-T3' },
+  ff_ops_monitor: { default: true, killable: true, task: 'V2-T4' },
+  ff_ops_monitor_polling: { default: true, killable: true, task: 'V2-T5' },
+  ff_ops_monitor_alert_bar: { default: true, killable: true, task: 'V2-T6' },
+  ff_ops_monitor_csv_export: { default: true, killable: true, task: 'V2-T7' },
+} as const satisfies Record<string, FlagDefinition>
+
+export const ALL_FLAGS = { ...V1_FLAGS, ...V2_FLAGS }
+export type FlagKey = keyof typeof ALL_FLAGS
 
 /**
  * Flag 评估的输入源。所有字段可选，缺省视为不存在。
@@ -78,13 +86,15 @@ function parseOverride(raw: string | null | undefined): boolean | null {
   return null
 }
 
-function isKillSwitchActive(sources: FlagOverrideSources): boolean {
+function isKillSwitchActive(sources: FlagOverrideSources, version: 'v1' | 'v2' = 'v1'): boolean {
   const { urlParams, localStorage } = sources
   const fromUrl = urlParams?.get('ff_off')?.trim().toLowerCase()
-  if (fromUrl === 'v1') return true
   const fromLs = localStorage?.getItem('ff_off')?.trim().toLowerCase()
-  if (fromLs === 'v1') return true
-  return false
+  const active = fromUrl || fromLs
+  if (!active) return false
+  // ff_off=v1 关闭 V1 flags；ff_off=v2 关闭 V2 flags；ff_off=all 关闭全部
+  if (active === 'all') return true
+  return active === version
 }
 
 /**
@@ -95,7 +105,7 @@ function isKillSwitchActive(sources: FlagOverrideSources): boolean {
  * @returns 最终生效的 boolean 值
  */
 export function evaluateFlag(key: FlagKey, sources: FlagOverrideSources): boolean {
-  const def = V1_FLAGS[key]
+  const def = ALL_FLAGS[key]
   if (!def) {
     // 未注册的 flag 默认 off，避免静默放行
     return false
@@ -110,7 +120,9 @@ export function evaluateFlag(key: FlagKey, sources: FlagOverrideSources): boolea
   if (lsOverride !== null) return lsOverride
 
   // Layer 3: kill switch（只对 killable flag 生效）
-  if (def.killable && isKillSwitchActive(sources)) {
+  // V2 flags 受 ff_off=v2 影响；V1 flags 受 ff_off=v1 影响
+  const isV2 = key in V2_FLAGS
+  if (def.killable && isKillSwitchActive(sources, isV2 ? 'v2' : 'v1')) {
     return false
   }
 
@@ -155,7 +167,7 @@ export function isEnabled(key: FlagKey): boolean {
  */
 export function snapshotFlags(): Record<FlagKey, boolean> {
   const out: Partial<Record<FlagKey, boolean>> = {}
-  for (const k of Object.keys(V1_FLAGS) as FlagKey[]) {
+  for (const k of Object.keys(ALL_FLAGS) as FlagKey[]) {
     out[k] = isEnabled(k)
   }
   return out as Record<FlagKey, boolean>

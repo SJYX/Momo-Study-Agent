@@ -25,6 +25,10 @@ class TaskRecord:
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
+    # 任务类型：today | future | iteration
+    task_type: str = "today"
+    # 所属 profile
+    profile: str = ""
     # SSE 事件队列（asyncio.Queue 由 FastAPI 事件循环创建）
     event_queue: Optional[asyncio.Queue] = None
     # 创建任务时绑定的事件循环（用于线程安全投递 SSE 事件）
@@ -47,6 +51,8 @@ class TaskRecord:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "task_type": self.task_type,
+            "profile": self.profile,
         }
 
 
@@ -76,6 +82,8 @@ class TaskRegistry:
         *args: Any,
         event_loop: asyncio.AbstractEventLoop | None = None,
         logger: Any = None,
+        task_type: str = "today",
+        profile: str = "",
         **kwargs: Any,
     ) -> str:
         """提交一个同步函数到后台线程池，立即返回 task_id。
@@ -84,6 +92,8 @@ class TaskRegistry:
             func: 要执行的同步函数。
             event_loop: FastAPI 所在的事件循环，用于创建 asyncio.Queue。
             logger: 可选的 ContextLogger，wrapper 会在执行前自动设置 task_id 上下文。
+            task_type: 任务类型（today/future/iteration）。
+            profile: 所属 profile 名称。
         """
         if event_loop is None:
             raise RuntimeError("event_loop is required for TaskRegistry.submit")
@@ -91,7 +101,8 @@ class TaskRegistry:
         task_id = str(uuid.uuid4())
         eq: asyncio.Queue = asyncio.Queue(maxsize=self._max_queue_size)
 
-        rec = TaskRecord(task_id=task_id, event_queue=eq, event_loop=event_loop)
+        rec = TaskRecord(task_id=task_id, event_queue=eq, event_loop=event_loop,
+                         task_type=task_type, profile=profile)
         with self._tasks_lock:
             self._tasks[task_id] = rec
 
@@ -170,6 +181,11 @@ class TaskRegistry:
     def get(self, task_id: str) -> Optional[TaskRecord]:
         with self._tasks_lock:
             return self._tasks.get(task_id)
+
+    def list_all(self) -> List[dict]:
+        """返回所有任务的摘要列表（线程安全）。"""
+        with self._tasks_lock:
+            return [rec.to_dict() for rec in self._tasks.values()]
 
     def push_event(self, task_id: str, event: dict) -> bool:
         """线程安全地向任务事件流推送一条事件。"""
