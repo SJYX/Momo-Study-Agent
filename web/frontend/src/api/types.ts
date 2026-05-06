@@ -28,11 +28,13 @@ export interface TodayItem {
   voc_meanings?: string
   review_count?: number
   familiarity_short?: number
+  status?: string | null
 }
 
 export interface TodayItemsResponse {
   count?: number
   items?: TodayItem[]
+  ts?: number
 }
 
 export interface FutureItemsResponse {
@@ -81,7 +83,7 @@ export interface TaskCancelResponse {
 
 export interface RowState {
   item_id: string
-  status: 'pending' | 'running' | 'done' | 'error'
+  status: 'pending' | 'running' | 'done' | 'error' | 'warning'
   phase?: string | null
   error?: string | null
   error_type?: string | null

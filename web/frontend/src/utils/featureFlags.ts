@@ -45,14 +45,14 @@ export interface FlagDefinition {
 }
 
 export const V1_FLAGS = {
-  ff_today_default_view: { default: false, killable: true, task: 'T1' },
-  ff_today_light_confirm: { default: false, killable: true, task: 'T2' },
-  ff_today_follow_running: { default: false, killable: true, task: 'T3' },
-  ff_today_summary_stay: { default: false, killable: true, task: 'T4' },
-  ff_today_failure_groups: { default: false, killable: true, task: 'T5' },
-  ff_today_group_retry: { default: false, killable: true, task: 'T6b' },
+  ff_today_default_view: { default: true, killable: true, task: 'T1' },
+  ff_today_light_confirm: { default: true, killable: true, task: 'T2' },
+  ff_today_follow_running: { default: true, killable: true, task: 'T3' },
+  ff_today_summary_stay: { default: true, killable: true, task: 'T4' },
+  ff_today_failure_groups: { default: true, killable: true, task: 'T5' },
+  ff_today_group_retry: { default: true, killable: true, task: 'T6b' },
   ff_today_bulk_guard: { default: true, killable: false, task: 'T7' },
-  ff_today_residual_highlight: { default: false, killable: true, task: 'T8' },
+  ff_today_residual_highlight: { default: true, killable: true, task: 'T8' },
 } as const satisfies Record<string, FlagDefinition>
 
 export type FlagKey = keyof typeof V1_FLAGS

@@ -1,11 +1,14 @@
 import type { TaskEvent } from '../api/types'
 
-export type RowStatus = 'pending' | 'running' | 'done' | 'error'
+export type RowStatus = 'pending' | 'running' | 'done' | 'error' | 'warning'
 
 export interface RowState {
   status: RowStatus
   reason?: string
   phase?: string
+  error?: string // 兼容后端 RowState.error 字段
+  error_type?: string
+  error_code?: string
   current?: number
   total?: number
 }
@@ -23,9 +26,12 @@ export function buildRowStatusMap(
   taskStatus: string,
 ): Record<string, RowState> {
   const map: Record<string, RowState> = {}
-  for (const item of items) {
+  for (const item of items as any[]) {
     const key = (item.voc_spelling || '').trim().toLowerCase()
-    if (key) map[key] = { status: 'pending' }
+    if (key) {
+      const initialStatus = (item.status === 'done') ? 'done' : 'pending'
+      map[key] = { status: initialStatus }
+    }
   }
 
   for (const ev of events) {
@@ -33,12 +39,17 @@ export function buildRowStatusMap(
     for (const row of ev.rows) {
       const key = String(row.item_id || '').trim().toLowerCase()
       if (!key || !map[key]) continue
-      const st = row.status
-      if (st !== 'pending' && st !== 'running' && st !== 'done' && st !== 'error') continue
+      const st = row.status as RowStatus
+      if (st !== 'pending' && st !== 'running' && st !== 'done' && st !== 'error' && st !== 'warning') continue
 
       const next: RowState = { status: st }
       if (row.phase) next.phase = row.phase
-      if (st === 'error' && row.error) next.reason = row.error
+      // 优先取 error 字段作为失败原因
+      if ((st === 'error' || st === 'warning') && row.error) {
+        next.reason = row.error
+      }
+      if (row.error_type) next.error_type = row.error_type
+      if (row.error_code) next.error_code = row.error_code
       if (typeof row.current === 'number') next.current = row.current
       if (typeof row.total === 'number') next.total = row.total
       map[key] = next
@@ -47,7 +58,9 @@ export function buildRowStatusMap(
 
   if (taskStatus === 'done') {
     for (const key of Object.keys(map)) {
-      if (map[key].status !== 'error') map[key] = { ...map[key], status: 'done' }
+      if (map[key].status !== 'error' && map[key].status !== 'warning') {
+        map[key] = { ...map[key], status: 'done' }
+      }
     }
   }
   if (taskStatus === 'error') {
@@ -64,6 +77,7 @@ export function rowStatusLabel(status: RowStatus): string {
   if (status === 'pending') return '待处理'
   if (status === 'running') return '处理中'
   if (status === 'done') return '已完成'
+  if (status === 'warning') return '警告'
   return '失败'
 }
 

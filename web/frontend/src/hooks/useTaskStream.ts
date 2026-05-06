@@ -71,6 +71,24 @@ export function useTaskStream({ taskId, enabled = true, onEvent, onDone }: UseTa
       } catch { /* ignore */ }
     })
 
+    // 监听 progress 事件
+    es.addEventListener('progress', (e) => {
+      try {
+        const data: TaskEvent = JSON.parse(e.data)
+        setEvents(prev => [...prev, data])
+        onEvent?.(data)
+      } catch { /* ignore */ }
+    })
+
+    // 监听 row_status 事件
+    es.addEventListener('row_status', (e) => {
+      try {
+        const data: TaskEvent = JSON.parse(e.data)
+        setEvents(prev => [...prev, data])
+        onEvent?.(data)
+      } catch { /* ignore */ }
+    })
+
     // 监听 message 事件（fallback）
     es.onmessage = (e) => {
       try {
