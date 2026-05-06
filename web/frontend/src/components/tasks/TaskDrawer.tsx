@@ -18,6 +18,7 @@ import { useTaskStore } from '../../stores/tasks'
 import { useProfileStore } from '../../stores/profile'
 import { apiPost } from '../../api/client'
 import { rowPhaseLabel } from '../../utils/rowProgress'
+import { isEnabled } from '../../utils/featureFlags'
 import type { TaskEvent, LogEvent, ProgressEvent, RowStatusEvent, RowState } from '../../api/types'
 
 function isLog(ev: TaskEvent): ev is LogEvent {
@@ -69,7 +70,7 @@ function phaseChipText(phase: string | null | undefined): string {
 }
 
 export default function TaskDrawer() {
-  const { activeTaskId, drawerOpen, drawerMinimized, setTaskStatus, addEvent, closeDrawer, toggleMinimize } = useTaskStore()
+  const { activeTaskId, drawerOpen, drawerMinimized, iconMode, setTaskStatus, addEvent, closeDrawer, toggleMinimize, expandFromIcon } = useTaskStore()
   const activeProfile = useProfileStore(s => s.activeProfile)
   const logEndRef = useRef<HTMLDivElement>(null)
   const [canceling, setCanceling] = useState(false)
@@ -78,7 +79,7 @@ export default function TaskDrawer() {
 
   const { events, status } = useTaskStream({
     taskId: activeTaskId,
-    enabled: drawerOpen && !!activeTaskId,
+    enabled: !!activeTaskId && (drawerOpen || iconMode),
     onEvent: (e) => addEvent(e),
     onDone: (s) => setTaskStatus(s),
   })
@@ -86,6 +87,39 @@ export default function TaskDrawer() {
   useEffect(() => {
     setTaskStatus(status)
   }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // V2 T3: 自动收起（终态 3 秒后收起到 icon 模式）
+  useEffect(() => {
+    if (!isEnabled('ff_taskdrawer_auto_open')) return
+    if (!iconMode && !drawerOpen) return // 无任务不触发
+    if (!['done', 'error', 'canceled'].includes(status)) return
+    // 已经在 icon 模式则不重复收起
+    if (iconMode && !drawerOpen) return
+
+    const timer = setTimeout(() => {
+      const store = useTaskStore.getState()
+      // 用户在 3 秒内手动操作了则取消
+      if (store.drawerOpen && !store.drawerMinimized) return
+      store.collapseToIcon()
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [status, iconMode, drawerOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // V2 T3: 自动展开（高风险错误时从 icon 展开）
+  useEffect(() => {
+    if (!isEnabled('ff_taskdrawer_auto_open')) return
+    if (!iconMode || drawerOpen) return // 只在 icon 模式下触发
+
+    // 检查最新事件是否包含高风险错误
+    const lastEvent = events[events.length - 1]
+    if (!lastEvent || lastEvent.type !== 'row_status') return
+    const hasHighRisk = lastEvent.rows?.some(
+      (r) => r.status === 'error' && (r.error_type === 'ai_batch_error' || r.error_type === 'critical')
+    )
+    if (hasHighRisk) {
+      expandFromIcon()
+    }
+  }, [events, iconMode, drawerOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (logExpanded) logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -96,24 +130,11 @@ export default function TaskDrawer() {
   const progressEvents = useMemo(() => events.filter(isProgress), [events])
   const counts = useMemo(() => aggregateRowCounts(events), [events])
 
-  if (!drawerOpen || !activeTaskId) return null
+  if (!activeTaskId) return null
 
   const isTerminal = ['done', 'error', 'canceled'].includes(status)
   const canCancel = ['pending', 'running', 'connected', 'connecting'].includes(status)
-
-  const latestProgress = progressEvents.length > 0 ? progressEvents[progressEvents.length - 1] : null
-  const progressCurrent = latestProgress?.current ?? 0
-  const progressTotal = latestProgress?.total ?? 0
-  const progressPercent = latestProgress && progressTotal > 0
-    ? Math.max(0, Math.min(100, Math.round((progressCurrent / progressTotal) * 100)))
-    : null
   const totalRows = counts.done + counts.error + counts.running + counts.pending
-
-  const statusColor = status === 'done' ? 'text-green-500'
-    : status === 'error' ? 'text-red-500'
-    : status === 'canceled' ? 'text-yellow-500'
-    : status === 'running' ? 'text-blue-500'
-    : 'text-gray-400'
   const statusLabel = status === 'done' ? '已完成'
     : status === 'error' ? '出错'
     : status === 'canceled' ? '已取消'
@@ -122,6 +143,56 @@ export default function TaskDrawer() {
     : status === 'connecting' ? '连接中'
     : status === 'connected' ? '已连接'
     : status
+
+  // V2 Smart Icon 模式：右下角小图标
+  if (iconMode && !drawerOpen) {
+    const statusColor = status === 'done' ? 'bg-green-500'
+      : status === 'error' ? 'bg-red-500'
+      : status === 'canceled' ? 'bg-yellow-500'
+      : status === 'running' ? 'bg-blue-500'
+      : 'bg-gray-400'
+
+    return (
+      <button
+        onClick={expandFromIcon}
+        className="fixed bottom-4 right-4 w-12 h-12 rounded-full bg-gray-900 shadow-lg flex items-center justify-center hover:scale-105 transition-transform z-50 group"
+        title="展开任务面板"
+      >
+        {/* 状态色圆点 */}
+        <span className={`w-2.5 h-2.5 rounded-full ${statusColor} ${status === 'running' ? 'animate-pulse' : ''}`} />
+        {/* 计数 badge */}
+        {counts.error > 0 && (
+          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">
+            {counts.error > 99 ? '99+' : counts.error}
+          </span>
+        )}
+        {counts.error === 0 && counts.done > 0 && isTerminal && (
+          <span className="absolute -top-1 -right-1 bg-green-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">
+            {counts.done}
+          </span>
+        )}
+        {/* hover 提示 */}
+        <span className="absolute bottom-full right-0 mb-2 bg-gray-800 text-gray-200 text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+          {statusLabel} {totalRows > 0 ? `· ${counts.done}/${totalRows}` : ''}
+        </span>
+      </button>
+    )
+  }
+
+  if (!drawerOpen) return null
+
+  const latestProgress = progressEvents.length > 0 ? progressEvents[progressEvents.length - 1] : null
+  const progressCurrent = latestProgress?.current ?? 0
+  const progressTotal = latestProgress?.total ?? 0
+  const progressPercent = latestProgress && progressTotal > 0
+    ? Math.max(0, Math.min(100, Math.round((progressCurrent / progressTotal) * 100)))
+    : null
+
+  const statusColor = status === 'done' ? 'text-green-500'
+    : status === 'error' ? 'text-red-500'
+    : status === 'canceled' ? 'text-yellow-500'
+    : status === 'running' ? 'text-blue-500'
+    : 'text-gray-400'
 
   const handleCancel = async () => {
     if (!activeTaskId || !canCancel || canceling) return
