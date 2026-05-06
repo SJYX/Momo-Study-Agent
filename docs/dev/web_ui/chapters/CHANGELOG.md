@@ -38,3 +38,12 @@
 32. 新增执行计划文档 WEB_UI_EXECUTION_PLAN_V1.md（2026-05-02）。
 33. 新增 V1 任务单文档 V1_TASK_LIST.md（2026-05-02）。
 34. V1 任务单 v2 修订（2026-05-02）：插入 T0（flag 骨架 + RowState 协议字段扩展），T6 拆分为 T6a 后端入口 + T6b 前端动作，明确 A/B 组文件边界，门禁口径定为 (a) 后端 pytest + (b) 前端 Vitest 纯函数单测。
+35. V2 启动（2026-05-06）：C04 TaskDrawer Smart Icon + C05 Ops Monitor 实施，任务单 V2_TASK_LIST.md T0-T8。
+36. V2-T0 完成（2026-05-06）：Feature Flag 骨架升级——V2_FLAGS 注册表（6 个 flag）、kill switch 分层（ff_off=v1/v2/all）、TaskRecord 新增 task_type/profile 字段、TaskRegistry.list_all() 方法。
+37. V2-T1 完成（2026-05-06）：后端 API 新增——GET /api/tasks 任务列表端点、GET /api/stats/ops 运维聚合端点（含 FailureHotspot 失败热点聚合）、study.py 传入 task_type 参数。
+38. V2-T2 完成（2026-05-06）：TaskDrawer Smart Icon 模式——三态渲染（Icon/Minimized/Expanded）、48x48 圆形图标+状态色+计数 badge、SSE 流在 icon 模式下保持活跃。
+39. V2-T3 完成（2026-05-06）：TaskDrawer 自动展开/收起——终态 3 秒后自动收起到 Icon、高风险错误（ai_batch_error/critical）自动展开、用户手动操作取消自动收起。
+40. V2-T4 完成（2026-05-06）：Ops Monitor 页面骨架——默认首页替换 Dashboard（ff_ops_monitor 控制）、2x2 卡片网格布局、Sidebar 导航更新。
+41. V2-T5 完成（2026-05-06）：Ops Monitor 轮询——useOpsPolling 通用 Hook、5s/10s/30s 可切换间隔、页面不可见暂停、手动刷新。
+42. V2-T6/T7 完成（2026-05-06）：Ops Monitor 四卡片实现——任务态势/失败热点/系统健康/队列深度、告警条（system_ok=false 时红色横条）、时间窗口切换（15m/1h/24h）、CSV 导出（opsDataToCsv 纯函数）、静音模式（localStorage 持久化）。
+43. V2-T8 完成（2026-05-06）：验收通过——45 项 Vitest 全绿（featureFlags 22 + todayView 19 + opsCsv 4）、前端 build 成功、V2 回退验证（ff_off=v2 关闭所有 V2 功能后行为与 V1 一致）。
