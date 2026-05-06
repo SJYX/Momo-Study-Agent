@@ -252,8 +252,9 @@ export default function TaskDrawer() {
             </div>
           </div>
         ) : !latestProgress ? (
-          <div className="text-gray-500 text-xs text-center py-2">
-            {isTerminal ? '本次任务无可观测的行级进度' : '等待结构化进度事件...'}
+          <div className="text-gray-500 text-xs text-center py-4 flex flex-col items-center gap-2">
+            {!isTerminal && <Loader2 size={20} className="animate-spin text-blue-500/50" />}
+            <span>{isTerminal ? '本次任务无可观测的行级进度' : '正在初始化任务流水线...'}</span>
           </div>
         ) : null}
       </div>
