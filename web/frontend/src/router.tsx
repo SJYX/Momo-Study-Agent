@@ -8,6 +8,7 @@ import App from './App'
 import RequireProfile from './components/RequireProfile'
 import UserGateway from './pages/UserGateway'
 import Dashboard from './pages/Dashboard'
+import OpsMonitor from './pages/OpsMonitor'
 import TodayTasks from './pages/TodayTasks'
 import FuturePlan from './pages/FuturePlan'
 import Iteration from './pages/Iteration'
@@ -16,6 +17,7 @@ import SyncStatus from './pages/SyncStatus'
 import Preflight from './pages/Preflight'
 import Users from './pages/Users'
 import NotFound from './pages/NotFound'
+import { isEnabled } from './utils/featureFlags'
 
 export const router = createBrowserRouter([
   {
@@ -29,7 +31,8 @@ export const router = createBrowserRouter([
         path: '/',
         element: <App />,
         children: [
-          { index: true, element: <Dashboard /> },
+          { index: true, element: isEnabled('ff_ops_monitor') ? <OpsMonitor /> : <Dashboard /> },
+          { path: 'dashboard', element: <Dashboard /> },
           { path: 'today', element: <TodayTasks /> },
           { path: 'future', element: <FuturePlan /> },
           { path: 'iteration', element: <Iteration /> },

@@ -3,6 +3,7 @@
  */
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
+  Activity,
   LayoutDashboard,
   BookOpen,
   CalendarDays,
@@ -14,17 +15,30 @@ import {
   LogOut,
 } from 'lucide-react'
 import { useProfileStore } from '../../stores/profile'
+import { isEnabled } from '../../utils/featureFlags'
 
-const navItems = [
-  { to: '/', label: '仪表盘', icon: LayoutDashboard },
-  { to: '/today', label: '今日任务', icon: BookOpen },
-  { to: '/future', label: '未来计划', icon: CalendarDays },
-  { to: '/iteration', label: '智能迭代', icon: RefreshCw },
-  { to: '/words', label: '单词库', icon: Library },
-  { to: '/sync', label: '同步状态', icon: RefreshCcw },
-  { to: '/preflight', label: '体检', icon: Shield },
-  { to: '/users', label: '用户设置', icon: Users },
-]
+const navItems = isEnabled('ff_ops_monitor')
+  ? [
+      { to: '/', label: '运维监控', icon: Activity },
+      { to: '/today', label: '今日任务', icon: BookOpen },
+      { to: '/future', label: '未来计划', icon: CalendarDays },
+      { to: '/iteration', label: '智能迭代', icon: RefreshCw },
+      { to: '/words', label: '单词库', icon: Library },
+      { to: '/sync', label: '同步状态', icon: RefreshCcw },
+      { to: '/preflight', label: '体检', icon: Shield },
+      { to: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
+      { to: '/users', label: '用户设置', icon: Users },
+    ]
+  : [
+      { to: '/', label: '仪表盘', icon: LayoutDashboard },
+      { to: '/today', label: '今日任务', icon: BookOpen },
+      { to: '/future', label: '未来计划', icon: CalendarDays },
+      { to: '/iteration', label: '智能迭代', icon: RefreshCw },
+      { to: '/words', label: '单词库', icon: Library },
+      { to: '/sync', label: '同步状态', icon: RefreshCcw },
+      { to: '/preflight', label: '体检', icon: Shield },
+      { to: '/users', label: '用户设置', icon: Users },
+    ]
 
 export default function Sidebar() {
   const activeProfile = useProfileStore((s) => s.activeProfile)
