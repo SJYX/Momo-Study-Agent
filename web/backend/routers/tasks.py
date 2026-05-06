@@ -15,12 +15,46 @@ from web.backend.deps import get_task_registry
 from web.backend.schemas import (
     ApiResponse,
     TaskCancelResponse,
+    TaskListItem,
+    TaskListResponse,
     TaskStatusResponse,
     error_response,
     ok_response,
 )
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+
+@router.get("", response_model=ApiResponse[TaskListResponse])
+async def list_tasks(
+    request: Request,
+    profile: str = Query(default=""),
+    status: str = Query(default="", description="Filter by task status"),
+    since: float = Query(default=0, description="Filter tasks created after this epoch timestamp"),
+    x_momo_profile: str | None = Header(default=None),
+):
+    """列出当前 profile 的所有任务。"""
+    registry = None
+    try:
+        registry = _resolve_registry(profile_query=profile, x_momo_profile=x_momo_profile)
+    except Exception:
+        registry = _resolve_fallback_registry(request) if not (profile or x_momo_profile) else None
+    if registry is None:
+        return ok_response({"tasks": [], "total": 0})
+
+    tasks = registry.list_all()
+
+    # 过滤
+    if status:
+        tasks = [t for t in tasks if t.get("status") == status]
+    if since > 0:
+        tasks = [t for t in tasks if (t.get("created_at") or 0) >= since]
+
+    # 按创建时间降序
+    tasks.sort(key=lambda t: t.get("created_at", 0), reverse=True)
+
+    items = [TaskListItem(**t) for t in tasks]
+    return ok_response({"tasks": [i.model_dump() for i in items], "total": len(items)})
 
 
 def _profile_exists(profile: str) -> bool:

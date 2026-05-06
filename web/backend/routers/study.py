@@ -48,6 +48,7 @@ def _submit_with_profile_lock(
     func,
     event_loop,
     logger,
+    task_type: str = "today",
 ):
     """提交重任务并在终态自动释放 profile lock。冲突时抛出 HTTPException 409。"""
     # 先尝试占位（task_id 尚未生成，用占位符）
@@ -82,7 +83,8 @@ def _submit_with_profile_lock(
         finally:
             release_profile_lock(profile)
 
-    task_id = registry.submit(_locked_run, event_loop=event_loop, logger=logger)
+    task_id = registry.submit(_locked_run, event_loop=event_loop, logger=logger,
+                              task_type=task_type, profile=profile)
 
     # 更新锁持有者为真正的 task_id
     with _profile_locks_guard:
@@ -216,7 +218,7 @@ async def process_today(
     def _run():
         workflow.process_word_list(items, "今日任务")
 
-    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger)
+    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger, task_type="today")
 
     return ok_response({"task_id": task_id, "word_count": len(items)}, user_id=user)
 
@@ -261,7 +263,7 @@ async def process_future(
     def _run():
         workflow.process_word_list(records, f"未来 {days} 天计划")
 
-    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger)
+    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger, task_type="future")
 
     return ok_response({"task_id": task_id, "word_count": len(records), "days": days}, user_id=user)
 
@@ -283,7 +285,7 @@ async def iterate(
         manager = IterationManager(ai_client=ai_client, momo_api=momo, logger=logger)
         manager.run_iteration()
 
-    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger)
+    task_id = _submit_with_profile_lock(user, registry, _run, loop, logger, task_type="iteration")
 
     return ok_response({"task_id": task_id}, user_id=user)
 
