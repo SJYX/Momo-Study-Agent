@@ -814,6 +814,9 @@ def set_runtime_cloud_credentials(url: Optional[str], token: Optional[str], host
 
 # Imported from execution engine to maintain backward compatibility
 from database.execution_engine import (
+    _write_queue,
+    _writer_daemon_stop_event,
+    _write_queue_stats,
     _execute_batch_writes_unlocked,
     _execute_batch_writes,
     _writer_daemon,
