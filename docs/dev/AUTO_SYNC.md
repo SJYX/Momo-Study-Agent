@@ -1,5 +1,10 @@
 # 自动同步机制
 
+## 相关执行文档
+
+- 同步优先级与接口分级：`docs/dev/SYNC_PRIORITY_MATRIX.md`
+- 同步优化执行手册（最小改造/完整改造）：`docs/dev/SYNC_OPTIMIZATION_PLAYBOOK.md`
+
 ## 概述
 
 系统在主流程关键节点自动触发同步，当前基于 Embedded Replicas 的 `conn.sync()` 完成帧级增量收敛。
