@@ -6,7 +6,7 @@
 ## 当前状态（2026-04-23）
 
 - 版本 1.0.0，Python 3.12+，Windows 优先。
-- CLI 为主入口（`python main.py`），Web 前端初版在 `feat/web-ui` 分支（方案见 `docs/dev/WEB_UI_PLAN.md`）。
+- CLI 为主入口（`python main.py`），Web 前端初版在 `feat/web-ui` 分支（方案见 `docs/dev/web_ui/README.md`）。
 - **Web UI Phase 0–5 已完成**：后端 FastAPI + 前端 React SPA，启动方式 `python -m web.backend --user <name>`。
 - 数据层：Embedded Replicas 迁移已完成（Phase 0–4），`conn.sync()` 取代手工增量；持久逻辑拆到 `database/` 包。
 - 并发层：单写守护线程 + 进程锁稳定（feat/high-perf-sync 已合回 main）。
@@ -54,7 +54,7 @@
 - 代码规范 / 新增 AI 提供商 / 凭证处理 → `docs/dev/CONTRIBUTING.md`
 - 设计决策记录（为什么不那样做）→ `docs/dev/DECISIONS.md`
 - 快速起步命令 → `docs/dev/QUICK_START.md`
-- 当前正在做什么 → `docs/dev/WEB_UI_PLAN.md`（Web 前端）
+- 当前正在做什么 → `docs/dev/web_ui/README.md`（Web 前端）
 - **已完成的历史项目**（不是当前任务！）→ `docs/history/phases/`
 
 ## 调试定位

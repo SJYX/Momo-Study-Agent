@@ -1,5 +1,8 @@
 # 全局 Agent 规则
 
+> 项目业务地图 / 红线规则 / 调试入口在 [`CLAUDE.md`](CLAUDE.md) 和 [`docs/dev/AI_CONTEXT.md`](docs/dev/AI_CONTEXT.md)；开发者文档导航见 [`docs/dev/DEVELOPMENT.md`](docs/dev/DEVELOPMENT.md)。
+> 本文件**只**约束代理工作方式（流程纪律 / 提交门禁 / 任务分流），不重复项目业务上下文。
+
 本文件用于约束自动化代理在本机工作区中的默认工作方式，并将 Superpowers 作为主工作流体系按需激活。
 
 ## 指令优先级

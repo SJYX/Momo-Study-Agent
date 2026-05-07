@@ -12,7 +12,7 @@
 
 Momo Study Agent 是一个基于墨墨背单词 OpenAPI 的**多用户 AI 助记工具**：拉取今日/未来词汇 → 调 LLM 生成助记 → 写回墨墨 → 本地 SQLite 持久化 + Turso 云端同步。
 
-- 主入口：CLI（`python main.py`）；Web 前端初版在 `feat/web-ui` 分支（方案见 `../dev/WEB_UI_PLAN.md`）。
+- 主入口：CLI（`python main.py`）；Web 前端初版在 `feat/web-ui` 分支（方案见 `../dev/web_ui/README.md`）。
 - 运行形态：单进程（进程锁防多开），多用户 profile 隔离，离线可用（云端缺失时降级为纯本地）。
 
 ## 2. 模块地图

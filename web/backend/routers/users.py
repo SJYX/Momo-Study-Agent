@@ -14,6 +14,7 @@ import os
 from fastapi import APIRouter, Depends, Path
 
 from web.backend.deps import get_active_user
+from web.backend.router_helpers import catch_api_errors
 from web.backend.schemas import (
     ApiResponse,
     ProfileCreateRequest,
@@ -344,6 +345,7 @@ async def update_profile_config(
 
 
 @router.delete("/{username}")
+@catch_api_errors("DELETE_ERROR")
 async def delete_user(
     username: str = Path(...),
     user: str = Depends(get_active_user),
@@ -358,8 +360,6 @@ async def delete_user(
     pm = ProfileManager(PROFILES_DIR)
     try:
         pm.delete_local_profile(username)
-        return ok_response({"deleted": username}, user_id=user)
     except FileNotFoundError:
         return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
-    except Exception as e:
-        return error_response("DELETE_ERROR", str(e), user_id=user)
+    return ok_response({"deleted": username}, user_id=user)

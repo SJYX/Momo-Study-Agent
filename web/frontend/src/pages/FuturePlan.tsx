@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { apiClient, apiPost } from '../api/client'
 import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { useTaskStore } from '../stores/tasks'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type { FutureItemsResponse, TaskSubmitResponse } from '../api/types'
 import { PlayCircle, Loader2, Search } from 'lucide-react'
 import { buildRowStatusMap, rowDisplayLabel, rowPhaseLabel } from '../utils/rowProgress'
@@ -60,7 +61,7 @@ export default function FuturePlan() {
         </div>
       </div>
 
-      {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4">{error}</div>}
+      <ErrorBanner message={error} size="base" />
 
       {data && items.length > 0 && (
         <div className="bg-white rounded-lg shadow overflow-hidden">

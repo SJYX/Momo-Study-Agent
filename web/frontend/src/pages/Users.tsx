@@ -1,9 +1,17 @@
 /**
  * pages/Users.tsx — 用户设置：profile 列表 + 创建向导 + 删除。
+ *
+ * React Query 改造：
+ * - 列表拉取：useQuery(queryKeys.users)
+ * - 创建/切换/删除/验证：useMutation + invalidate
+ * - Wizard 表单字段保持本地 useState（属于 UI 输入状态，非服务端状态）
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient, apiPost, apiPut } from '../api/client'
+import { queryKeys } from '../queries/queryClient'
 import { useProfileStore } from '../stores/profile'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type {
   UsersListResponse,
   UserProfile,
@@ -24,64 +32,48 @@ import {
 type WizardStep = 'idle' | 'form' | 'validating' | 'result'
 
 export default function Users() {
-  const [data, setData] = useState<UsersListResponse | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
+  const { data, error, isLoading } = useQuery({
+    queryKey: queryKeys.users(),
+    queryFn: async () => {
+      const r = await apiClient<UsersListResponse>('/api/users')
+      return r.data
+    },
+  })
 
-  // Wizard state
+  const invalidateUsers = () => queryClient.invalidateQueries({ queryKey: queryKeys.users() })
+
+  // Wizard 表单本地状态
   const [wizardStep, setWizardStep] = useState<WizardStep>('idle')
   const [wizUsername, setWizUsername] = useState('')
   const [wizMomoToken, setWizMomoToken] = useState('')
   const [wizProvider, setWizProvider] = useState('')
   const [wizApiKey, setWizApiKey] = useState('')
   const [wizEmail, setWizEmail] = useState('')
-  const [wizValidating, setWizValidating] = useState(false)
   const [wizValidateResult, setWizValidateResult] = useState<Record<string, ValidateResponse>>({})
-  const [wizCreating, setWizCreating] = useState(false)
   const [wizResult, setWizResult] = useState<WizardCreateResponse | null>(null)
   const [wizError, setWizError] = useState('')
+  const [actionError, setActionError] = useState('')
 
-  // Delete state
-  const [deleting, setDeleting] = useState<string | null>(null)
-  const [switching, setSwitching] = useState<string | null>(null)
-  const users = data?.users ?? []
-
-  const load = () => {
-    setLoading(true)
-    apiClient<UsersListResponse>('/api/users')
-      .then(r => setData(r.data))
-      .catch(e => setError(String(e)))
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(load, [])
-
-  const handleValidateField = async (field: string, value: string) => {
-    if (!value) return
-    setWizValidating(true)
-    try {
+  // 验证字段
+  const validateMutation = useMutation({
+    mutationFn: async ({ field, value }: { field: string; value: string }) => {
       const res = await apiPost<ValidateResponse>('/api/users/validate', { field, value })
-      if (res.data) {
-        setWizValidateResult(prev => ({ ...prev, [field]: res.data! }))
-      }
-    } catch (e) {
+      return { field, result: res.data }
+    },
+    onSuccess: ({ field, result }) => {
+      if (result) setWizValidateResult(prev => ({ ...prev, [field]: result }))
+    },
+    onError: (e, vars) => {
       setWizValidateResult(prev => ({
         ...prev,
-        [field]: { field, valid: false, message: String(e) },
+        [vars.field]: { field: vars.field, valid: false, message: String(e) },
       }))
-    } finally {
-      setWizValidating(false)
-    }
-  }
+    },
+  })
 
-  const handleCreate = async () => {
-    if (!wizUsername.trim()) {
-      setWizError('用户名不能为空')
-      return
-    }
-    setWizCreating(true)
-    setWizError('')
-    try {
+  const createMutation = useMutation({
+    mutationFn: async () => {
       const res = await apiPost<WizardCreateResponse>('/api/users/wizard', {
         username: wizUsername,
         momo_token: wizMomoToken,
@@ -89,43 +81,58 @@ export default function Users() {
         ai_api_key: wizApiKey,
         user_email: wizEmail,
       })
-      if (res.data) {
-        setWizResult(res.data)
+      return res.data
+    },
+    onSuccess: (data) => {
+      if (data) {
+        setWizResult(data)
         setWizardStep('result')
-        load() // refresh list
+        invalidateUsers()
       }
-    } catch (e) {
-      setWizError(String(e))
-    } finally {
-      setWizCreating(false)
-    }
-  }
+      setWizError('')
+    },
+    onError: (e) => setWizError(String(e instanceof Error ? e.message : e)),
+  })
 
-  const handleSwitch = async (username: string) => {
-    setSwitching(username)
-    try {
+  const switchMutation = useMutation({
+    mutationFn: async (username: string) => {
       await apiPut(`/api/users/active?username=${encodeURIComponent(username)}`)
+      return username
+    },
+    onSuccess: (username) => {
       useProfileStore.getState().setActiveProfile(username)
       window.dispatchEvent(new CustomEvent('active-user-changed', { detail: { username } }))
-      load()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setSwitching(null)
+      invalidateUsers()
+      setActionError('')
+    },
+    onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: async (username: string) => {
+      await apiClient(`/api/users/${username}`, { method: 'DELETE' })
+      return username
+    },
+    onSuccess: () => {
+      invalidateUsers()
+      setActionError('')
+    },
+    onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
+  })
+
+  const handleCreate = () => {
+    if (!wizUsername.trim()) {
+      setWizError('用户名不能为空')
+      return
     }
+    createMutation.mutate()
   }
 
-  const handleDelete = async (username: string) => {
+  const handleSwitch = (username: string) => switchMutation.mutate(username)
+
+  const handleDelete = (username: string) => {
     if (!confirm(`确认删除用户 "${username}" 的本地 profile？此操作不可恢复。`)) return
-    setDeleting(username)
-    try {
-      await apiClient(`/api/users/${username}`, { method: 'DELETE' })
-      load()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setDeleting(null)
-    }
+    deleteMutation.mutate(username)
   }
 
   const closeWizard = () => {
@@ -140,12 +147,17 @@ export default function Users() {
     setWizError('')
   }
 
+  const users = data?.users ?? []
+  const errMsg = actionError || (error ? String(error instanceof Error ? error.message : error) : '')
+  const switching = switchMutation.isPending ? switchMutation.variables : null
+  const deleting = deleteMutation.isPending ? deleteMutation.variables : null
+
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold">用户设置</h2>
-          <p className="text-gray-500">{data ? `当前用户: ${data.active_profile}` : loading ? '加载中...' : ''}</p>
+          <p className="text-gray-500">{data ? `当前用户: ${data.active_profile}` : isLoading ? '加载中...' : ''}</p>
         </div>
         <button
           onClick={() => setWizardStep('form')}
@@ -155,7 +167,7 @@ export default function Users() {
         </button>
       </div>
 
-      {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4 text-sm">{error}</div>}
+      <ErrorBanner message={errMsg} />
 
       {data && (
         <div className="space-y-3 max-w-2xl">
@@ -252,11 +264,11 @@ export default function Users() {
                       <label className="block text-sm font-medium text-gray-700">墨墨 Token</label>
                       {wizMomoToken && (
                         <button
-                          onClick={() => handleValidateField('momo_token', wizMomoToken)}
-                          disabled={wizValidating}
+                          onClick={() => validateMutation.mutate({ field: 'momo_token', value: wizMomoToken })}
+                          disabled={validateMutation.isPending}
                           className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
                         >
-                          {wizValidating ? '验证中...' : '验证'}
+                          {validateMutation.isPending ? '验证中...' : '验证'}
                         </button>
                       )}
                     </div>
@@ -295,11 +307,11 @@ export default function Users() {
                         <label className="block text-sm font-medium text-gray-700">{wizProvider.toUpperCase()} API Key</label>
                         {wizApiKey && (
                           <button
-                            onClick={() => handleValidateField(`${wizProvider}_api_key`, wizApiKey)}
-                            disabled={wizValidating}
+                            onClick={() => validateMutation.mutate({ field: `${wizProvider}_api_key`, value: wizApiKey })}
+                            disabled={validateMutation.isPending}
                             className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
                           >
-                            {wizValidating ? '验证中...' : '验证'}
+                            {validateMutation.isPending ? '验证中...' : '验证'}
                           </button>
                         )}
                       </div>
@@ -332,11 +344,11 @@ export default function Users() {
 
                   <button
                     onClick={handleCreate}
-                    disabled={wizCreating || !wizUsername.trim()}
+                    disabled={createMutation.isPending || !wizUsername.trim()}
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                   >
-                    {wizCreating && <Loader2 size={16} className="animate-spin" />}
-                    {wizCreating ? '创建中...' : '创建用户'}
+                    {createMutation.isPending && <Loader2 size={16} className="animate-spin" />}
+                    {createMutation.isPending ? '创建中...' : '创建用户'}
                   </button>
                 </>
               )}
@@ -380,3 +392,4 @@ export default function Users() {
     </div>
   )
 }
+

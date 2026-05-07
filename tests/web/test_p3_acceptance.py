@@ -352,6 +352,7 @@ class TestStudyProcessHappyPath:
             from web.backend.routers.study import router as study_router
             app.include_router(study_router)
             app.dependency_overrides[deps.get_active_user] = lambda: "alice"
+            app.dependency_overrides[deps.get_user_context] = lambda: ctx
             app.dependency_overrides[deps.get_momo_api] = lambda: ctx.momo_api
             app.dependency_overrides[deps.get_workflow] = lambda: ctx.workflow
             app.dependency_overrides[deps.get_logger] = lambda: ctx.logger
@@ -406,6 +407,7 @@ class TestStudyProcessHappyPath:
             from web.backend.routers.study import router as study_router
             app.include_router(study_router)
             app.dependency_overrides[deps.get_active_user] = lambda: "alice"
+            app.dependency_overrides[deps.get_user_context] = lambda: ctx
             app.dependency_overrides[deps.get_momo_api] = lambda: ctx.momo_api
             app.dependency_overrides[deps.get_workflow] = lambda: ctx.workflow
             app.dependency_overrides[deps.get_logger] = lambda: ctx.logger
@@ -453,6 +455,7 @@ class TestStudyProcessFutureHappyPath:
             from web.backend.routers.study import router as study_router
             app.include_router(study_router)
             app.dependency_overrides[deps.get_active_user] = lambda: "alice"
+            app.dependency_overrides[deps.get_user_context] = lambda: ctx
             app.dependency_overrides[deps.get_momo_api] = lambda: ctx.momo_api
             app.dependency_overrides[deps.get_workflow] = lambda: ctx.workflow
             app.dependency_overrides[deps.get_logger] = lambda: ctx.logger

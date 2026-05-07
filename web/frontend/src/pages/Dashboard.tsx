@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiClient } from '../api/client'
 import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type { StatsSummary, SessionInfo } from '../api/types'
 import { BookOpen, Brain, Zap, AlertTriangle, Database, Clock } from 'lucide-react'
 
@@ -40,7 +41,7 @@ export default function Dashboard() {
         {session ? `Profile: ${session.active_profile}` : '加载中...'}
       </p>
 
-      {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4">{error}</div>}
+      <ErrorBanner message={error} size="base" />
 
       {!stats && !error && <div className="text-gray-400 py-12 text-center">加载统计数据中...</div>}
 

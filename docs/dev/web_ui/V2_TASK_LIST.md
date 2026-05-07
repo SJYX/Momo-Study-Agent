@@ -52,11 +52,11 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
    - 新增 `TaskListItem`、`TaskListResponse` 类型
 
 **验收**：
-- [ ] V2_FLAGS 注册表存在
-- [ ] `?ff_off=v2` 关闭所有 V2 flag
-- [ ] TaskRecord 包含 task_type/profile 字段
-- [ ] TaskRegistry.list_all() 可用
-- [ ] 前端 build + test 通过
+- [x] V2_FLAGS 注册表存在
+- [x] `?ff_off=v2` 关闭所有 V2 flag
+- [x] TaskRecord 包含 task_type/profile 字段
+- [x] TaskRegistry.list_all() 可用
+- [x] 前端 build + test 通过
 
 ---
 
@@ -84,10 +84,10 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
    - `_submit_with_profile_lock()` 传入 `task_type` 参数
 
 **验收**：
-- [ ] `GET /api/tasks?profile=xxx` 返回任务列表
-- [ ] `GET /api/stats/ops?profile=xxx&window=1h` 返回四卡片数据
-- [ ] 新任务记录了 task_type
-- [ ] 后端 pytest 通过
+- [x] `GET /api/tasks?profile=xxx` 返回任务列表
+- [x] `GET /api/stats/ops?profile=xxx&window=1h` 返回四卡片数据
+- [x] 新任务记录了 task_type
+- [x] 后端 pytest 通过
 
 **依赖**：T0
 
@@ -106,11 +106,11 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
 - `web/frontend/src/components/tasks/TaskDrawer.tsx` — 新增 Icon 渲染分支
 
 **验收**：
-- [ ] smart icon=on 时，任务触发后右下角出现圆形图标
-- [ ] 点击图标展开 Drawer
-- [ ] smart icon=off 时行为与 V1 一致
-- [ ] 运行中图标有 pulse 动效
-- [ ] 无任务时不渲染
+- [x] smart icon=on 时，任务触发后右下角出现圆形图标
+- [x] 点击图标展开 Drawer
+- [x] smart icon=off 时行为与 V1 一致
+- [x] 运行中图标有 pulse 动效
+- [x] 无任务时不渲染
 
 **依赖**：T0
 
@@ -130,10 +130,10 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
 - `web/frontend/src/components/tasks/TaskDrawer.tsx`
 
 **验收**：
-- [ ] 高风险错误自动展开
-- [ ] 终态 3 秒自动收起
-- [ ] 用户操作取消自动收起
-- [ ] auto_open=off 时不触发
+- [x] 高风险错误自动展开
+- [x] 终态 3 秒自动收起
+- [x] 用户操作取消自动收起
+- [x] auto_open=off 时不触发
 
 **依赖**：T2
 
@@ -152,10 +152,10 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
 - 空态/错误态
 
 **验收**：
-- [ ] flag=on 时 `/` 显示 OpsMonitor
-- [ ] flag=off 时 `/` 显示原 Dashboard
-- [ ] Sidebar 导航正确
-- [ ] build + typecheck 通过
+- [x] flag=on 时 `/` 显示 OpsMonitor
+- [x] flag=off 时 `/` 显示原 Dashboard
+- [x] Sidebar 导航正确
+- [x] build + typecheck 通过
 
 **依赖**：T0
 
@@ -180,10 +180,10 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
 - 手动刷新
 
 **验收**：
-- [ ] 计数和任务列表正确
-- [ ] 轮询可切换
-- [ ] 页面不可见暂停
-- [ ] polling=off 不轮询
+- [x] 计数和任务列表正确
+- [x] 轮询可切换
+- [x] 页面不可见暂停
+- [x] polling=off 不轮询
 
 **依赖**：T1, T4
 
@@ -202,10 +202,10 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
 **告警条**：system_ok=false 时红色条，点击跳转详情
 
 **验收**：
-- [ ] 失败热点分组正确
-- [ ] 点击跳转 Today 携带参数
-- [ ] 健康检查显示正确
-- [ ] 异常时红色告警条出现
+- [x] 失败热点分组正确
+- [x] 点击跳转 Today 携带参数
+- [x] 健康检查显示正确
+- [x] 异常时红色告警条出现
 
 **依赖**：T5
 
@@ -225,10 +225,10 @@ Kill switch：`ff_off=v2` 关闭所有 `killable=true` 的 V2 flag。
 **静音模式**：仅保留告警条
 
 **验收**：
-- [ ] 队列数据正确
-- [ ] 时间窗口切换刷新数据
-- [ ] CSV 导出可用
-- [ ] 静音模式生效
+- [x] 队列数据正确
+- [x] 时间窗口切换刷新数据
+- [x] CSV 导出可用
+- [x] 静音模式生效
 
 **依赖**：T6
 

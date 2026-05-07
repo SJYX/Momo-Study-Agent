@@ -1,54 +1,64 @@
 /**
  * pages/SyncStatus.tsx — 同步状态：队列深度 + 冲突列表 + 重试。
+ *
+ * React Query 改造：拉取改 useQuery；flush/retry 改 useMutation；mutation 终态 invalidate 重拉。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient, apiPost } from '../api/client'
 import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
+import { queryKeys } from '../queries/queryClient'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type { SyncStatusResponse } from '../api/types'
 import { RefreshCcw, Loader2, AlertTriangle, RotateCcw } from 'lucide-react'
 
 export default function SyncStatus() {
-  const [data, setData] = useState<SyncStatusResponse | null>(null)
-  const [error, setError] = useState('')
-  const [flushing, setFlushing] = useState(false)
-  const [retrying, setRetrying] = useState(false)
+  const queryClient = useQueryClient()
   const [retryResult, setRetryResult] = useState('')
+
+  const { data, error, refetch } = useQuery({
+    queryKey: queryKeys.syncStatus(),
+    queryFn: async () => {
+      const r = await apiClient<SyncStatusResponse>('/api/sync/status')
+      return r.data
+    },
+  })
+
+  useOnActiveUserChanged(() => {
+    queryClient.invalidateQueries({ queryKey: ['sync_status'] })
+  })
+
+  const flushMutation = useMutation({
+    mutationFn: () => apiPost('/api/sync/flush'),
+    onSuccess: () => {
+      // 后端写入后小延迟再重拉，让队列状态有时间更新
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ['sync_status'] }), 1000)
+    },
+  })
+
+  const retryMutation = useMutation({
+    mutationFn: () => apiPost<{ retried: number; total_conflicts: number; message?: string }>('/api/sync/retry'),
+    onSuccess: (res) => {
+      if (res.data) {
+        setRetryResult(`已重试 ${res.data.retried} / ${res.data.total_conflicts} 项`)
+      }
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ['sync_status'] }), 1500)
+    },
+    onError: () => setRetryResult(''),
+  })
+
   const queueDepth = data?.queue_depth ?? 0
   const conflictCount = data?.conflict_count ?? 0
   const conflicts = data?.conflicts ?? []
 
-  const load = useCallback(() => {
-    apiClient<SyncStatusResponse>('/api/sync/status')
-      .then(r => setData(r.data))
-      .catch(e => setError(String(e)))
-  }, [])
-
-  useEffect(() => { load() }, [load])
-  useOnActiveUserChanged(load)
-
-  const handleFlush = async () => {
-    setFlushing(true)
-    setError('')
-    try {
-      await apiPost('/api/sync/flush')
-      setTimeout(load, 1000)
-    } catch (e) { setError(String(e)) }
-    finally { setFlushing(false) }
-  }
-
-  const handleRetry = async () => {
-    setRetrying(true)
-    setError('')
-    setRetryResult('')
-    try {
-      const res = await apiPost<{ retried: number; total_conflicts: number; message?: string }>('/api/sync/retry')
-      if (res.data) {
-        setRetryResult(`已重试 ${res.data.retried} / ${res.data.total_conflicts} 项`)
-      }
-      setTimeout(load, 1500)
-    } catch (e) { setError(String(e)) }
-    finally { setRetrying(false) }
-  }
+  // 错误展示：query / 任一 mutation 出错都显示
+  const errorMsg = (
+    error || flushMutation.error || retryMutation.error
+      ? String((error ?? flushMutation.error ?? retryMutation.error) instanceof Error
+          ? (error ?? flushMutation.error ?? retryMutation.error as Error).message
+          : (error ?? flushMutation.error ?? retryMutation.error))
+      : ''
+  )
 
   return (
     <div className="p-6">
@@ -58,23 +68,23 @@ export default function SyncStatus() {
           <p className="text-gray-500">{data ? `队列深度: ${queueDepth} · 冲突: ${conflictCount}` : '加载中...'}</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={load} className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50">刷新</button>
+          <button onClick={() => refetch()} className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50">刷新</button>
           {data && conflictCount > 0 && (
-            <button onClick={handleRetry} disabled={retrying}
+            <button onClick={() => retryMutation.mutate()} disabled={retryMutation.isPending}
               className="flex items-center gap-1 px-3 py-1.5 bg-orange-500 text-white rounded text-sm hover:bg-orange-600 disabled:opacity-50">
-              {retrying ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              {retryMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
               重试冲突
             </button>
           )}
-          <button onClick={handleFlush} disabled={flushing}
+          <button onClick={() => flushMutation.mutate()} disabled={flushMutation.isPending}
             className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-            {flushing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+            {flushMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
             立即同步
           </button>
         </div>
       </div>
 
-      {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4 text-sm">{error}</div>}
+      <ErrorBanner message={errorMsg} />
       {retryResult && <div className="bg-green-50 text-green-700 p-3 rounded mb-4 text-sm">✅ {retryResult}</div>}
 
       {data && conflicts.length > 0 && (

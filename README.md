@@ -68,4 +68,12 @@
 
 ---
 
-请参考本文件进行架构理解与开发协作。
+## 开发者文档入口
+
+- **项目地图与红线** → [`CLAUDE.md`](CLAUDE.md) / [`docs/dev/AI_CONTEXT.md`](docs/dev/AI_CONTEXT.md)
+- **开发指引（导航索引）** → [`docs/dev/DEVELOPMENT.md`](docs/dev/DEVELOPMENT.md)
+- **系统架构** → [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)
+- **当前重构进度** → [`docs/dev/REFACTOR_PROGRESS.md`](docs/dev/REFACTOR_PROGRESS.md)
+- **变更历史** → [`CHANGELOG.md`](CHANGELOG.md)
+
+> 自动化代理（Codex / Claude Code）工作纪律见 [`AGENTS.md`](AGENTS.md)。

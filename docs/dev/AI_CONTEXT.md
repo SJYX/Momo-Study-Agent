@@ -27,7 +27,7 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 - **版本**：1.0.0；Python 3.12+。
 - **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；**`core/db_manager.py` 已于 2026-04-22 移除**——所有持久层操作一律经 `database/` 包 5 个子模块（老调用点可经 `database/legacy.py` 门面过渡）。
 - **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定（feat/high-perf-sync 已合回 main）。
-- **正在进行**：Web 前端界面初版（`feat/web-ui` 分支，方案见 `docs/dev/WEB_UI_PLAN.md`）。
+- **正在进行**：Web 前端界面初版（`feat/web-ui` 分支，方案见 `docs/dev/web_ui/README.md`）。
 - **最近变更**：
   - 2026-04-22 彻底删除 `core/db_manager.py`（3972 行僵尸副本）；顺带修 `database/legacy.py` + `database/hub_users.py` 的 `__future__` 位置 bug。
   - 2026-04-21 文档大清理（归档 8 份已完成 PHASE/FIX 文档、architecture 三合一为 `ARCHITECTURE.md`、`CLAUDE.md` 升级为 AI 会话首页）。

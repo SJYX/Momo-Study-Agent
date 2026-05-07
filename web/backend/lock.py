@@ -183,10 +183,14 @@ def release_process_lock() -> None:
 # Profile 级重任务互斥锁（Web 专用）
 # ---------------------------------------------------------------------------
 import threading as _threading
+from typing import Optional, Tuple
 
 _profile_locks: dict[str, _threading.Lock] = {}
 _profile_locks_guard = _threading.Lock()
 _profile_lock_holders: dict[str, str] = {}  # profile -> task_id
+
+#: 占位 task_id，用于「先抢锁、再生成真实 task_id」两段式提交。
+PROFILE_LOCK_PLACEHOLDER = "__pending__"
 
 
 def acquire_profile_lock(profile_name: str, task_id: str) -> bool:
@@ -222,3 +226,32 @@ def get_profile_lock_holder(profile_name: str) -> str | None:
     """查询当前持有锁的 task_id，无持有者返回 None。"""
     with _profile_locks_guard:
         return _profile_lock_holders.get(profile_name)
+
+
+def claim_profile_lock_with_placeholder(profile_name: str) -> Tuple[bool, Optional[str]]:
+    """两段式占用第 1 步：用占位 task_id 抢锁。
+
+    返回 (acquired, prior_holder)：
+    - 成功：(True, None)
+    - 失败：(False, 当前持有者的 task_id 或 None)
+
+    成功后调用方应：
+    1. 生成真实 task_id
+    2. 调用 update_profile_lock_holder(profile_name, real_task_id)
+    3. 在任务终态执行 release_profile_lock(profile_name)
+
+    把这两步从调用方搬到本模块，避免 router 层 import 私有变量
+    `_profile_locks_guard` / `_profile_lock_holders`。
+    """
+    if not acquire_profile_lock(profile_name, PROFILE_LOCK_PLACEHOLDER):
+        return False, get_profile_lock_holder(profile_name)
+    return True, None
+
+
+def update_profile_lock_holder(profile_name: str, new_task_id: str) -> None:
+    """两段式占用第 2 步：把占位 task_id 替换为真实 task_id。
+
+    幂等：即使锁已被其他线程释放也安全；保留新值。
+    """
+    with _profile_locks_guard:
+        _profile_lock_holders[profile_name] = new_task_id

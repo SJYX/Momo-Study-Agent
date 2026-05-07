@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 import config
 from web.backend.deps import get_user_context
+from web.backend.router_helpers import catch_api_errors
 from web.backend.schemas import (
     ApiResponse,
     WordIterationsResponse,
@@ -113,6 +114,7 @@ async def get_word_detail(voc_id: str, ctx = Depends(get_user_context)):
 
 
 @router.put("/{voc_id}")
+@catch_api_errors("UPDATE_ERROR")
 async def update_word_note(
     voc_id: str,
     body: dict,
@@ -124,18 +126,15 @@ async def update_word_note(
     if not memory_aid:
         return error_response("INVALID_INPUT", "memory_aid 不能为空", user_id=user)
 
-    try:
-        from database.connection import _execute_write_sql_sync
-        from database.utils import get_timestamp_with_tz
+    from database.connection import _execute_write_sql_sync
+    from database.utils import get_timestamp_with_tz
 
-        sql = "UPDATE ai_word_notes SET memory_aid = ?, updated_at = ? WHERE voc_id = ?"
-        args = (memory_aid, get_timestamp_with_tz(), str(voc_id))
-        
-        # Web 环境下多用户并发，必须使用同步写入指定 db_path，不能使用全局的 _queue_write_operation
-        _execute_write_sql_sync(sql, args, db_path=ctx.db_path)
-        return ok_response({"updated": True, "voc_id": voc_id}, user_id=user)
-    except Exception as e:
-        return error_response("UPDATE_ERROR", str(e), user_id=user)
+    sql = "UPDATE ai_word_notes SET memory_aid = ?, updated_at = ? WHERE voc_id = ?"
+    args = (memory_aid, get_timestamp_with_tz(), str(voc_id))
+
+    # Web 环境下多用户并发，必须使用同步写入指定 db_path，不能使用全局的 _queue_write_operation
+    _execute_write_sql_sync(sql, args, db_path=ctx.db_path)
+    return ok_response({"updated": True, "voc_id": voc_id}, user_id=user)
 
 
 @router.get("/{voc_id}/iterations", response_model=ApiResponse[WordIterationsResponse])

@@ -1,9 +1,14 @@
 /**
  * pages/WordLibrary.tsx — 单词库：分页 + 搜索 + 筛选 + 详情 + 迭代历史。
+ *
+ * React Query 改造：列表/详情/迭代分别用独立 query；编辑用 mutation + invalidate。
  */
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
 import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
+import { activeProfile, queryKeys } from '../queries/queryClient'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type { WordsListResponse, WordNoteDetail, WordIterationsResponse, WordIteration } from '../api/types'
 import { Search, ChevronLeft, ChevronRight, Eye, X, Save, Loader2, History } from 'lucide-react'
 
@@ -14,93 +19,131 @@ const SYNC_LABELS: Record<number, { label: string; cls: string }> = {
 }
 
 export default function WordLibrary() {
-  const [data, setData] = useState<WordsListResponse | null>(null)
+  const queryClient = useQueryClient()
+  const profile = activeProfile()
+
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [filterSync, setFilterSync] = useState<string>('')
   const [filterLevel, setFilterLevel] = useState<string>('')
-  const [detail, setDetail] = useState<WordNoteDetail | null>(null)
   const [editMemory, setEditMemory] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [detailTab, setDetailTab] = useState<'note' | 'iterations'>('note')
-  const [iterations, setIterations] = useState<WordIteration[]>([])
-  const [loadingIterations, setLoadingIterations] = useState(false)
-  const total = data?.total ?? 0
-  const pageSize = data?.page_size ?? 30
-  const items = data?.items ?? []
+  const [openVocId, setOpenVocId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState('')
 
-  const load = useCallback(() => {
-    const params = new URLSearchParams({ page: String(page), page_size: '30' })
-    if (search) params.set('search', search)
-    if (filterSync) params.set('sync_status', filterSync)
-    if (filterLevel) params.set('it_level', filterLevel)
-    apiClient<WordsListResponse>(`/api/words?${params}`)
-      .then(r => setData(r.data))
-      .catch(e => setError(String(e)))
-  }, [page, search, filterSync, filterLevel])
+  // -------------------------------------------------------------------------
+  // List query
+  // -------------------------------------------------------------------------
+  const { data, error: listError } = useQuery({
+    queryKey: queryKeys.wordLibrary(
+      profile,
+      page,
+      30,
+      search || undefined,
+      filterSync ? Number(filterSync) : null,
+      filterLevel ? Number(filterLevel) : null,
+    ),
+    queryFn: async () => {
+      const params = new URLSearchParams({ page: String(page), page_size: '30' })
+      if (search) params.set('search', search)
+      if (filterSync) params.set('sync_status', filterSync)
+      if (filterLevel) params.set('it_level', filterLevel)
+      const r = await apiClient<WordsListResponse>(`/api/words?${params}`)
+      return r.data
+    },
+  })
 
-  useEffect(load, [load])
-  useOnActiveUserChanged(load)
+  useOnActiveUserChanged(() => {
+    queryClient.invalidateQueries({ queryKey: ['word_library'] })
+    queryClient.invalidateQueries({ queryKey: ['word_detail'] })
+    queryClient.invalidateQueries({ queryKey: ['word_iterations'] })
+  })
 
+  // -------------------------------------------------------------------------
+  // Detail query (only when openVocId set)
+  // -------------------------------------------------------------------------
+  const { data: detail, error: detailError } = useQuery({
+    queryKey: queryKeys.wordDetail(profile, openVocId ?? ''),
+    queryFn: async () => {
+      const r = await apiClient<WordNoteDetail>(`/api/words/${openVocId}`)
+      return r.data
+    },
+    enabled: !!openVocId,
+  })
+
+  // 同步 detail.memory_aid → editMemory（仅在打开新词时初始化一次）
+  useEffect(() => {
+    if (detail && detail.voc_id === openVocId) {
+      setEditMemory(detail.memory_aid || '')
+    }
+  }, [detail, openVocId])
+
+  // -------------------------------------------------------------------------
+  // Iterations query (lazy: only when iterations tab clicked)
+  // -------------------------------------------------------------------------
+  const { data: iterationsData, isFetching: loadingIterations } = useQuery({
+    queryKey: ['word_iterations', profile, openVocId ?? ''],
+    queryFn: async () => {
+      const r = await apiClient<WordIterationsResponse>(`/api/words/${openVocId}/iterations`)
+      return r.data?.iterations || ([] as WordIteration[])
+    },
+    enabled: !!openVocId && detailTab === 'iterations',
+  })
+  const iterations = iterationsData ?? []
+
+  // -------------------------------------------------------------------------
+  // Save mutation
+  // -------------------------------------------------------------------------
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!detail) return
+      await apiClient(`/api/words/${detail.voc_id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ memory_aid: editMemory }),
+      })
+    },
+    onSuccess: () => {
+      if (openVocId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.wordDetail(profile, openVocId) })
+      }
+      queryClient.invalidateQueries({ queryKey: ['word_library'] })
+      setActionError('')
+    },
+    onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
+  })
+
+  // -------------------------------------------------------------------------
+  // Handlers
+  // -------------------------------------------------------------------------
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
     setPage(1)
     setSearch(searchInput)
   }
 
-  const handleFilterSync = (v: string) => {
-    setFilterSync(v)
-    setPage(1)
-  }
-
-  const handleFilterLevel = (v: string) => {
-    setFilterLevel(v)
-    setPage(1)
-  }
-
   const openDetail = (vocId: string) => {
+    setEditMemory('')
     setDetailTab('note')
-    setIterations([])
-    apiClient<WordNoteDetail>(`/api/words/${vocId}`)
-      .then(r => {
-        setDetail(r.data)
-        setEditMemory(r.data?.memory_aid || '')
-      })
-      .catch(e => setError(String(e)))
+    setOpenVocId(vocId)
   }
 
-  const loadIterations = (vocId: string) => {
-    setLoadingIterations(true)
-    apiClient<WordIterationsResponse>(`/api/words/${vocId}/iterations`)
-      .then(r => setIterations(r.data?.iterations || []))
-      .catch(e => setError(String(e)))
-      .finally(() => setLoadingIterations(false))
+  const closeDetail = () => {
+    setOpenVocId(null)
+    setEditMemory('')
   }
 
   const switchTab = (tab: 'note' | 'iterations') => {
     setDetailTab(tab)
-    if (tab === 'iterations' && detail && iterations.length === 0) {
-      loadIterations(detail.voc_id)
-    }
   }
 
-  const handleSave = async () => {
-    if (!detail) return
-    setSaving(true)
-    try {
-      await apiClient(`/api/words/${detail.voc_id}`, {
-        method: 'PUT',
-        body: JSON.stringify({ memory_aid: editMemory }),
-      })
-      const res = await apiClient<WordNoteDetail>(`/api/words/${detail.voc_id}`)
-      setDetail(res.data)
-    } catch (e) { setError(String(e)) }
-    finally { setSaving(false) }
-  }
-
+  const total = data?.total ?? 0
+  const pageSize = data?.page_size ?? 30
+  const items = data?.items ?? []
   const totalPages = data ? Math.ceil(total / pageSize) : 0
+  const errMsg = actionError
+    || (listError ? String(listError instanceof Error ? listError.message : listError) : '')
+    || (detailError ? String(detailError instanceof Error ? detailError.message : detailError) : '')
 
   return (
     <div className="p-6">
@@ -124,7 +167,7 @@ export default function WordLibrary() {
 
         <select
           value={filterSync}
-          onChange={e => handleFilterSync(e.target.value)}
+          onChange={e => { setFilterSync(e.target.value); setPage(1) }}
           className="border rounded px-2 py-1.5 text-sm"
         >
           <option value="">所有同步状态</option>
@@ -135,7 +178,7 @@ export default function WordLibrary() {
 
         <select
           value={filterLevel}
-          onChange={e => handleFilterLevel(e.target.value)}
+          onChange={e => { setFilterLevel(e.target.value); setPage(1) }}
           className="border rounded px-2 py-1.5 text-sm"
         >
           <option value="">所有 Level</option>
@@ -149,7 +192,7 @@ export default function WordLibrary() {
 
         {(filterSync || filterLevel) && (
           <button
-            onClick={() => { handleFilterSync(''); handleFilterLevel(''); }}
+            onClick={() => { setFilterSync(''); setFilterLevel(''); setPage(1) }}
             className="text-xs text-gray-500 hover:text-gray-700 underline"
           >
             清除筛选
@@ -157,7 +200,7 @@ export default function WordLibrary() {
         )}
       </div>
 
-      {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4 text-sm">{error}</div>}
+      <ErrorBanner message={errMsg} />
 
       {data && (
         <>
@@ -204,13 +247,13 @@ export default function WordLibrary() {
       )}
 
       {/* Detail drawer */}
-      {detail && (
+      {detail && openVocId && (
         <div className="fixed inset-0 z-40 flex">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setDetail(null)} />
+          <div className="absolute inset-0 bg-black/30" onClick={closeDetail} />
           <div className="ml-auto w-[520px] bg-white shadow-xl overflow-y-auto relative z-50">
             <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between z-10">
               <h3 className="text-xl font-bold">{detail.spelling}</h3>
-              <button onClick={() => setDetail(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+              <button onClick={closeDetail} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
             </div>
 
             {/* Tabs */}
@@ -252,11 +295,11 @@ export default function WordLibrary() {
                     <div className="flex items-center justify-between mb-1">
                       <div className="text-xs font-medium text-gray-500">记忆法（可编辑）</div>
                       <button
-                        onClick={handleSave}
-                        disabled={saving || editMemory === detail.memory_aid}
+                        onClick={() => saveMutation.mutate()}
+                        disabled={saveMutation.isPending || editMemory === detail.memory_aid}
                         className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
                       >
-                        {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                        {saveMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
                         保存
                       </button>
                     </div>

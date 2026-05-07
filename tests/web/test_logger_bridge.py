@@ -28,11 +28,11 @@ class TestLoggerBridge:
         reg = TaskRegistry(max_workers=1)
         bridge = LoggerBridge(reg)
         logger = _FakeLogger()
-        orig_id = id(logger.info)
+        orig_info = logger.info
         bridge.attach(logger)
-        assert id(logger.info) != orig_id
+        assert logger.info != orig_info
         bridge.detach(logger)
-        assert id(logger.info) == orig_id
+        assert logger.info == orig_info
         reg.shutdown()
 
     def test_attach_idempotent(self):

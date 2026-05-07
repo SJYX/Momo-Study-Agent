@@ -73,3 +73,37 @@ pytest tests/core/test_db_manager.py::test_db_concurrent_readonly_leak -v
 > [!WARNING]
 > 不要过度使用 **Mock（桩函数）**！我们已经见识过了把 `_get_user_stats` Mock 掉之后将一个低级的变量 `NameError` 放进生产系统的教训；对于关键 IO 计算必须用内存 sqlite3 实现模拟；
 > 严禁向读取性质或短命的 Python 局部函数滥用 **_get_conn()**！在支持 LibSQL 环境的机制下每次该方法被建立，都等价于在 Rust 底层召唤了一个永不死亡跟 WAL 死磕的同步死神！必须以调用带有独立线程缓存与限制特性的 **_get_read_conn()** 替换！
+
+---
+
+## 6. tests/ 目录结构与 in-memory fixture（Phase 3 整理后）
+
+```
+tests/
+├── conftest.py             # 全局 cloud isolation autouse fixture
+├── unit/                   # 纯单测：mock 全部外部依赖，无真实 IO
+│   ├── database/           # repo / SQL 常量 / dispatch 路径单测（Phase 1.5 引入）
+│   ├── logging/            # logger / log_archiver 等单测
+│   └── config/             # config 系统单测
+├── integration/            # 集成：真实 DB / 子进程 / 网络
+│   ├── conftest.py         # memory_sqlite_db / shared_memory_sqlite_uri fixtures
+│   ├── database/           # _get_cloud_conn 自愈、Embedded Replica 边界
+│   ├── logging/            # 端到端日志管线
+│   ├── bootstrap/          # StudyFlowManager 初始化、subprocess 多环境
+│   ├── pipeline/           # mimo / 笔记保存 真跑 DB
+│   └── test_cloud_sync.py  # libsql 云端 + 同步
+├── core/                   # 业务编排测试（study_workflow / iteration_manager 等）
+└── web/                    # FastAPI 路由 + acceptance
+```
+
+### 何时用什么 fixture
+
+| 场景 | fixture | 来源 |
+|---|---|---|
+| 纯 SQL 操作（CREATE/INSERT/SELECT），单连接 | `memory_sqlite_db` | tests/integration/conftest.py |
+| 多连接共享同一 in-memory DB | `shared_memory_sqlite_uri` | 同上 |
+| 走 `database/connection.py` 真实建连流程 | `tmp_path / "x.db"` 文件 DB | 内置 |
+| Embedded Replica（带 `sync_url`） | `cloud_integ_env` + `tmp_path` | tests/conftest.py |
+| 需要 Turso 真实云端 | `cloud_integ_env`（自动 skip 未配置环境） | 同上 |
+
+**红线**：`memory_sqlite_db` 不能用于测试 `database.connection` 的内部行为——它绕开了所有连接池/锁/守护线程逻辑，只验证纯 SQL。要测连接管理本身仍用 `tmp_path` 文件 DB。

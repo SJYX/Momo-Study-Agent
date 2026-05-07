@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Query
 
 import config
 from web.backend.deps import get_user_context, get_workflow
+from web.backend.router_helpers import catch_api_errors
 from web.backend.schemas import (
     ApiResponse,
     SyncFlushResponse,
@@ -83,17 +84,15 @@ async def sync_status(
 
 
 @router.post("/flush", response_model=ApiResponse[SyncFlushResponse])
+@catch_api_errors("SYNC_FLUSH_ERROR")
 async def flush_sync(
     ctx = Depends(get_user_context),
     workflow=Depends(get_workflow),
 ):
     """触发一次立即收尾同步。"""
     user = ctx.profile_name
-    try:
-        workflow.sync_manager.flush_pending_syncs("Web手动触发")
-        return ok_response({"flushed": True}, user_id=user)
-    except Exception as e:
-        return error_response("SYNC_FLUSH_ERROR", str(e), user_id=user)
+    workflow.sync_manager.flush_pending_syncs("Web手动触发")
+    return ok_response({"flushed": True}, user_id=user)
 
 
 @router.post("/retry", response_model=ApiResponse[SyncRetryResponse])

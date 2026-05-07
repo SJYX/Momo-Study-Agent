@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiClient, apiPost } from '../api/client'
 import { useTaskStore } from '../stores/tasks'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type { IterationCandidatesResponse, TaskSubmitResponse } from '../api/types'
 import { RefreshCw, Loader2 } from 'lucide-react'
 import { buildRowStatusMap, rowDisplayLabel, rowPhaseLabel } from '../utils/rowProgress'
@@ -68,7 +69,7 @@ export default function Iteration() {
         </div>
       </div>
 
-      {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-4">{error}</div>}
+      <ErrorBanner message={error} size="base" />
       {loading && <div className="text-gray-400">加载中...</div>}
 
       {!loading && items.length > 0 && (

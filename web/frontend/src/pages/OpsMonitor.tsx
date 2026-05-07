@@ -3,9 +3,15 @@
  *
  * 默认首页，提供任务态势、失败热点、系统健康、队列深度四卡片。
  * 支持自动轮询 + 手动刷新 + 时间窗口切换 + 静音模式 + CSV 导出。
+ *
+ * React Query 改造：
+ * - 用 useQuery 的 refetchInterval 替代手写 setTimeout 轮询
+ * - 静音/可见性通过 enabled 与 refetchIntervalInBackground 控制
+ * - 用户切换、时间窗口切换通过 queryKey 自然区分缓存
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity, RefreshCw, BellOff, Bell, Download, PlayCircle,
   Loader2, CheckCircle2, XCircle, Clock, AlertTriangle,
@@ -16,6 +22,8 @@ import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { useProfileStore } from '../stores/profile'
 import { isEnabled } from '../utils/featureFlags'
 import { opsDataToCsv } from '../utils/opsCsv'
+import { queryKeys } from '../queries/queryClient'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type { OpsStatsResponse, TaskListItem, FailureHotspot, PreflightCheck } from '../api/types'
 
 const POLL_INTERVALS = [
@@ -70,61 +78,42 @@ function TaskTypeTag({ taskType }: { taskType: string }) {
 }
 
 export default function OpsMonitor() {
+  const queryClient = useQueryClient()
   const activeProfile = useProfileStore(s => s.activeProfile)
   const navigate = useNavigate()
 
-  const [data, setData] = useState<OpsStatsResponse | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
   const [pollInterval, setPollInterval] = useState(10000)
   const [timeWindow, setTimeWindow] = useState('1h')
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem('ops_muted') === 'true' } catch { return false }
   })
   const [healthExpanded, setHealthExpanded] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const visibleRef = useRef(true)
 
-  const fetchData = useCallback(async () => {
-    if (!activeProfile) return
-    try {
+  const pollingEnabled = isEnabled('ff_ops_monitor_polling')
+
+  const { data, error, isFetching, refetch } = useQuery({
+    queryKey: queryKeys.opsMonitor(activeProfile ?? '', timeWindow),
+    queryFn: async () => {
       const res = await apiClient<OpsStatsResponse>(
-        `/api/stats/ops?profile=${encodeURIComponent(activeProfile)}&window=${timeWindow}`,
+        `/api/stats/ops?profile=${encodeURIComponent(activeProfile ?? '')}&window=${timeWindow}`,
       )
-      setData(res.data)
-      setError('')
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [activeProfile, timeWindow])
+      return res.data
+    },
+    enabled: !!activeProfile,
+    // 静音时仍拉取（数据要保鲜），只是 UI 不显示告警/卡片；
+    // 不可见时由 refetchIntervalInBackground=false 自动停止。
+    refetchInterval: pollingEnabled ? pollInterval : false,
+    refetchIntervalInBackground: false,
+  })
 
-  // 轮询
-  useEffect(() => {
-    if (!isEnabled('ff_ops_monitor_polling')) {
-      fetchData()
-      return
-    }
+  useOnActiveUserChanged(() => {
+    queryClient.invalidateQueries({ queryKey: ['ops_monitor'] })
+  })
 
-    fetchData()
+  const loading = isFetching && !data
+  const errorMsg = error ? String(error instanceof Error ? error.message : error) : ''
 
-    const onVisibility = () => { visibleRef.current = !document.hidden }
-    document.addEventListener('visibilitychange', onVisibility)
-
-    const tick = () => {
-      if (visibleRef.current) fetchData()
-      timerRef.current = setTimeout(tick, pollInterval)
-    }
-    timerRef.current = setTimeout(tick, pollInterval)
-
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility)
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [fetchData, pollInterval])
-
-  useOnActiveUserChanged(fetchData)
+  const fetchData = () => refetch()
 
   const toggleMute = () => {
     setMuted(v => {
@@ -257,12 +246,12 @@ export default function OpsMonitor() {
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-50 text-red-700 p-3 rounded flex items-center justify-between">
-          <span>{error}</span>
-          <button onClick={fetchData} className="text-sm underline">重试</button>
-        </div>
-      )}
+      <ErrorBanner
+        message={errorMsg}
+        mb="mb-0"
+        size="base"
+        trailing={errorMsg ? <button onClick={fetchData} className="text-sm underline">重试</button> : undefined}
+      />
 
       {/* 四卡片网格 */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

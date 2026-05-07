@@ -4,12 +4,15 @@
  * Step 1: 选择已有 profile 或输入新名称
  * Step 2: 配置 token/AI provider（可跳过）
  *
- * P0-T1
+ * P0-T1（React Query 改造版）：列表用 useQuery；创建/切换/保存/验证用 useMutation。
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProfileStore } from '../stores/profile'
 import { apiClient, apiPost, apiPut } from '../api/client'
+import { queryKeys } from '../queries/queryClient'
+import ErrorBanner from '../components/ui/ErrorBanner'
 import type { UsersListResponse, UserProfile, ValidateResponse, ProfileCreateResponse } from '../api/types'
 import { User, Plus, ArrowRight, ArrowLeft, Loader2, CheckCircle2, XCircle, SkipForward } from 'lucide-react'
 
@@ -17,70 +20,65 @@ type Step = 'select' | 'configure'
 
 export default function UserGateway() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { activeProfile, setActiveProfile } = useProfileStore()
 
-  // Step 1 state
-  const [profiles, setProfiles] = useState<UserProfile[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [newName, setNewName] = useState('')
-  const [creating, setCreating] = useState(false)
-
-  // Step 2 state
   const [step, setStep] = useState<Step>('select')
+  const [newName, setNewName] = useState('')
   const [configName, setConfigName] = useState('')
   const [momoToken, setMomoToken] = useState('')
   const [provider, setProvider] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [saving, setSaving] = useState(false)
   const [validateResult, setValidateResult] = useState<Record<string, ValidateResponse>>({})
-  const [validating, setValidating] = useState(false)
+  const [actionError, setActionError] = useState('')
 
-  // Load profiles
-  const loadProfiles = () => {
-    setLoading(true)
-    apiClient<UsersListResponse>('/api/users')
-      .then((r) => {
-        if (r.data) setProfiles(r.data.users ?? [])
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false))
-  }
+  // 列表查询（与 Users 页共享 cache key）
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.users(),
+    queryFn: async () => {
+      const r = await apiClient<UsersListResponse>('/api/users')
+      return r.data
+    },
+  })
+  const profiles = data?.users ?? []
 
-  useEffect(() => { loadProfiles() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // 验证字段
+  const validateMutation = useMutation({
+    mutationFn: async ({ field, value }: { field: string; value: string }) => {
+      const res = await apiPost<ValidateResponse>('/api/users/validate', { field, value })
+      return { field, result: res.data }
+    },
+    onSuccess: ({ field, result }) => {
+      if (result) setValidateResult(prev => ({ ...prev, [field]: result }))
+    },
+    onError: (e, vars) => {
+      setValidateResult(prev => ({
+        ...prev,
+        [vars.field]: { field: vars.field, valid: false, message: String(e) },
+      }))
+    },
+  })
 
-  // 已有 profile 直接选择并进入
-  const handleSelectExisting = (username: string) => {
-    setActiveProfile(username)
-    apiPut(`/api/users/active?username=${encodeURIComponent(username)}`).catch(() => {})
-    navigate('/', { replace: true })
-  }
-
-  // Step 1: 创建新 profile（仅名称）
-  const handleCreateNew = async () => {
-    const name = newName.trim().toLowerCase()
-    if (!name) return
-    setCreating(true)
-    setError('')
-    try {
-      await apiPost<ProfileCreateResponse>('/api/users', {
-        profile_name: name,
-      })
+  // 创建新 profile（仅名称）
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const name = newName.trim().toLowerCase()
+      if (!name) throw new Error('用户名不能为空')
+      await apiPost<ProfileCreateResponse>('/api/users', { profile_name: name })
+      return name
+    },
+    onSuccess: (name) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.users() })
       setConfigName(name)
       setStep('configure')
-      loadProfiles()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setCreating(false)
-    }
-  }
+      setActionError('')
+    },
+    onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
+  })
 
-  // Step 2: 保存配置（更新已有 profile）
-  const handleSaveConfig = async () => {
-    setSaving(true)
-    setError('')
-    try {
+  // 保存配置
+  const saveConfigMutation = useMutation({
+    mutationFn: async () => {
       if (momoToken || provider) {
         await apiPut(`/api/users/${encodeURIComponent(configName)}/config`, {
           momo_token: momoToken || undefined,
@@ -88,41 +86,31 @@ export default function UserGateway() {
           ai_api_key: apiKey || undefined,
         })
       }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.users() })
       finishAndEnter(configName)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setSaving(false)
-    }
-  }
+    },
+    onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
+  })
 
-  // Step 2: 跳过配置
-  const handleSkipConfig = () => {
-    finishAndEnter(configName)
-  }
-
-  // 完成并进入
   const finishAndEnter = (name: string) => {
     setActiveProfile(name)
     apiPut(`/api/users/active?username=${encodeURIComponent(name)}`).catch(() => {})
     navigate('/', { replace: true })
   }
 
-  // 验证字段
-  const handleValidate = async (field: string, value: string) => {
-    if (!value) return
-    setValidating(true)
-    try {
-      const res = await apiPost<ValidateResponse>('/api/users/validate', { field, value })
-      if (res.data) setValidateResult((prev) => ({ ...prev, [field]: res.data! }))
-    } catch (e) {
-      setValidateResult((prev) => ({ ...prev, [field]: { field, valid: false, message: String(e) } }))
-    } finally {
-      setValidating(false)
-    }
+  const handleSelectExisting = (username: string) => {
+    setActiveProfile(username)
+    apiPut(`/api/users/active?username=${encodeURIComponent(username)}`).catch(() => {})
+    navigate('/', { replace: true })
   }
 
-  // 如果已有 activeProfile，显示"继续"或"切换"
+  const errMsg = actionError
+    || (error ? String(error instanceof Error ? error.message : error) : '')
+  const validating = validateMutation.isPending
+  const creating = createMutation.isPending
+  const saving = saveConfigMutation.isPending
   const showCurrentProfileHint = activeProfile && step === 'select'
 
   return (
@@ -139,14 +127,11 @@ export default function UserGateway() {
           </p>
         </div>
 
-        {error && (
-          <div className="bg-red-50 text-red-700 p-3 rounded-lg mb-4 text-sm">{error}</div>
-        )}
+        <ErrorBanner message={errMsg} />
 
         {/* Step 1: Select / Create */}
         {step === 'select' && (
           <div className="bg-white rounded-xl shadow-sm border p-6">
-            {/* Current profile hint */}
             {showCurrentProfileHint && (
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex items-center justify-between">
                 <span className="text-sm text-blue-700">
@@ -161,15 +146,14 @@ export default function UserGateway() {
               </div>
             )}
 
-            {/* Existing profiles */}
             <h3 className="text-sm font-medium text-gray-700 mb-3">已有 Profile</h3>
-            {loading ? (
+            {isLoading ? (
               <div className="flex items-center justify-center py-6 text-gray-400">
                 <Loader2 size={20} className="animate-spin mr-2" /> 加载中...
               </div>
             ) : profiles.length > 0 ? (
               <div className="space-y-2 mb-6">
-                {profiles.map((p) => (
+                {profiles.map((p: UserProfile) => (
                   <button
                     key={p.username}
                     onClick={() => handleSelectExisting(p.username)}
@@ -207,19 +191,18 @@ export default function UserGateway() {
               <div className="text-center py-6 text-gray-400 text-sm mb-6">暂无 profile，请创建一个</div>
             )}
 
-            {/* Create new */}
             <h3 className="text-sm font-medium text-gray-700 mb-3">新建 Profile</h3>
             <div className="flex gap-2">
               <input
                 type="text"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value.toLowerCase())}
-                onKeyDown={(e) => e.key === 'Enter' && handleCreateNew()}
+                onKeyDown={(e) => e.key === 'Enter' && createMutation.mutate()}
                 placeholder="输入用户名（小写，不重复）"
                 className="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
               <button
-                onClick={handleCreateNew}
+                onClick={() => createMutation.mutate()}
                 disabled={creating || !newName.trim()}
                 className="flex items-center gap-1 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
               >
@@ -244,7 +227,7 @@ export default function UserGateway() {
                 <label className="block text-sm font-medium text-gray-700">墨墨 Token</label>
                 {momoToken && (
                   <button
-                    onClick={() => handleValidate('momo_token', momoToken)}
+                    onClick={() => validateMutation.mutate({ field: 'momo_token', value: momoToken })}
                     disabled={validating}
                     className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
                   >
@@ -287,7 +270,7 @@ export default function UserGateway() {
                   <label className="block text-sm font-medium text-gray-700">{provider.toUpperCase()} API Key</label>
                   {apiKey && (
                     <button
-                      onClick={() => handleValidate(`${provider}_api_key`, apiKey)}
+                      onClick={() => validateMutation.mutate({ field: `${provider}_api_key`, value: apiKey })}
                       disabled={validating}
                       className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
                     >
@@ -319,13 +302,13 @@ export default function UserGateway() {
                 <ArrowLeft size={14} /> 返回
               </button>
               <button
-                onClick={handleSkipConfig}
+                onClick={() => finishAndEnter(configName)}
                 className="flex items-center gap-1 px-4 py-2 border border-gray-300 text-gray-500 rounded-lg text-sm hover:bg-gray-50 transition-colors"
               >
                 <SkipForward size={14} /> 跳过
               </button>
               <button
-                onClick={handleSaveConfig}
+                onClick={() => saveConfigMutation.mutate()}
                 disabled={saving}
                 className="flex-1 flex items-center justify-center gap-1 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
               >

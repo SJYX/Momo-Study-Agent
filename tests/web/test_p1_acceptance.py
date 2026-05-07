@@ -219,6 +219,7 @@ class TestProfileTaskLock:
             app.include_router(study_router)
 
             app.dependency_overrides[deps.get_active_user] = lambda: "alice"
+            app.dependency_overrides[deps.get_user_context] = lambda: ctx_alice
             app.dependency_overrides[deps.get_momo_api] = lambda: mock_momo
             app.dependency_overrides[deps.get_workflow] = lambda: mock_workflow
             app.dependency_overrides[deps.get_logger] = lambda: mock_logger
