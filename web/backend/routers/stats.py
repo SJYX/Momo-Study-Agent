@@ -91,11 +91,24 @@ async def stats_summary(ctx = Depends(get_user_context)):
         if not _is_main_write_singleton_conn(conn):
             conn.close()
 
-    # 同步队列深度（通过 SyncManager 获取，但这里直接查 pending notes）
+    # 同步队列深度：仅计数，不拉取全量记录
     try:
-        from database.momo_words import get_unsynced_notes
-        unsynced = get_unsynced_notes(db_path=ctx.db_path)
-        sync_queue_depth = len(unsynced) if unsynced else 0
+        conn2 = _get_read_conn(ctx.db_path)
+        lock2 = _get_singleton_conn_op_lock(conn2)
+        cur2 = conn2.cursor()
+        try:
+            if lock2 is not None:
+                with lock2:
+                    cur2.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+                    row2 = cur2.fetchone()
+            else:
+                cur2.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+                row2 = cur2.fetchone()
+            sync_queue_depth = int((row2 or [0])[0] or 0)
+        finally:
+            cur2.close()
+        if not _is_main_write_singleton_conn(conn2):
+            conn2.close()
     except Exception:
         sync_queue_depth = 0
 
@@ -190,9 +203,23 @@ async def stats_ops(
 
     # --- 卡片4：队列 ---
     try:
-        from database.momo_words import get_unsynced_notes
-        unsynced = get_unsynced_notes(db_path=ctx.db_path)
-        sync_queue_depth = len(unsynced) if unsynced else 0
+        from database.connection import _get_read_conn as _rc1, _get_singleton_conn_op_lock as _lk1, _is_main_write_singleton_conn as _im1
+        conn1 = _rc1(ctx.db_path)
+        lock1 = _lk1(conn1)
+        cur1 = conn1.cursor()
+        try:
+            if lock1 is not None:
+                with lock1:
+                    cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+                    row = cur1.fetchone()
+            else:
+                cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+                row = cur1.fetchone()
+            sync_queue_depth = int((row or [0])[0] or 0)
+        finally:
+            cur1.close()
+        if not _im1(conn1):
+            conn1.close()
     except Exception:
         sync_queue_depth = 0
 

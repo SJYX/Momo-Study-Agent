@@ -351,6 +351,9 @@ class SyncStatusResponse(BaseModel):
     queue_depth: int = 0
     conflict_count: int = 0
     conflicts: list[SyncConflict] = Field(default_factory=list)
+    # PLAYBOOK A4 Kill Switch 降级指示：当 SYNC_STATUS_HEAVY_QUERY_ENABLED=False 时为 true
+    degraded: bool = False
+    degraded_reason: Optional[str] = None
 
 
 class SyncFlushResponse(BaseModel):

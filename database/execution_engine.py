@@ -7,7 +7,10 @@ import threading
 import time
 from typing import Any, Dict, List, Tuple, Optional
 
-# 稍后我们需要依赖底层的连接管理功能，所以要向 connection.py 拿连接单例
+import config as _config
+# 稍后我们需要依赖底层的连接管理功能，所以要向 connection.py 拿连接单例。
+# 注意：不再从 connection 导入 DB_PATH（Phase 6.4 起它不在 connection 模块级了）；
+# 直接读 `_config.DB_PATH` 让 switch_user 立即生效。HUB_DB_PATH 仍是静态可缓存的。
 from database.connection import (
     _get_dedicated_write_conn,
     _get_main_write_conn_singleton,
@@ -17,8 +20,7 @@ from database.connection import (
     _is_main_db_path,
     _is_main_write_singleton_conn,
     _get_local_conn,
-    DB_PATH,
-    HUB_DB_PATH
+    HUB_DB_PATH,
 )
 from core.logger import get_logger
 
@@ -39,6 +41,11 @@ _write_queue_stats = {
     "total_errors": 0,
     "last_batch_size": 0,
 }
+
+# 慢阈值（毫秒）：批写超过此值会被打成 WARNING（Phase 4.5 P95<100ms 对齐）
+_SLOW_BATCH_WRITE_MS = 100
+# 同步线程 sync() 慢阈值：网络往返 + 远端 commit，>500ms 视为慢
+_SLOW_SYNC_MS = 500
 
 def _debug_log(msg: str, level: str = "DEBUG") -> None:
     try:
@@ -86,6 +93,7 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
     retry_count = 0
     last_error = None
     conn_lock = _get_singleton_conn_op_lock(write_conn)
+    started_at = time.time()
 
     while retry_count < max_retries:
         try:
@@ -94,6 +102,24 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
             else:
                 with conn_lock:
                     _execute_batch_writes_unlocked(write_conn, batch)
+            duration_ms = int((time.time() - started_at) * 1000)
+            is_slow = duration_ms >= _SLOW_BATCH_WRITE_MS
+            try:
+                logger = get_logger()
+                msg = f"batch_write done | size={len(batch)} | duration_ms={duration_ms} | retries={retry_count}"
+                kwargs = dict(
+                    module="database.execution_engine",
+                    batch_size=len(batch),
+                    duration_ms=duration_ms,
+                    retries=retry_count,
+                    is_slow=is_slow,
+                )
+                if is_slow:
+                    logger.warning(msg + " | slow=true", **kwargs)
+                else:
+                    logger.info(msg, **kwargs)
+            except Exception:
+                pass
             return
         except Exception as e:
             # Catch ALL exceptions here to check for libsql WalConflicts
@@ -161,7 +187,7 @@ def _writer_daemon() -> None:
 
                 if should_commit and pending_batch:
                     try:
-                        write_conn = _get_dedicated_write_conn(DB_PATH)
+                        write_conn = _get_dedicated_write_conn(_config.DB_PATH)
                         _execute_batch_writes(write_conn, pending_batch)
                         _write_queue_stats["total_written"] += len(pending_batch)
                         _write_queue_stats["last_batch_size"] = len(pending_batch)
@@ -194,7 +220,7 @@ def _writer_daemon() -> None:
 
         if pending_batch:
             try:
-                write_conn = _get_dedicated_write_conn(DB_PATH)
+                write_conn = _get_dedicated_write_conn(_config.DB_PATH)
                 _execute_batch_writes(write_conn, pending_batch)
                 _write_queue_stats["total_written"] += len(pending_batch)
                 _needs_sync = True
@@ -224,13 +250,29 @@ def _sync_daemon() -> None:
             if not hasattr(conn, "sync"):
                 continue
             conn_lock = _get_singleton_conn_op_lock(conn)
+            sync_started_at = time.time()
             if conn_lock is not None:
                 with conn_lock:
                     conn.sync()
             else:
                 conn.sync()
             _needs_sync = False
-            _debug_log("闲时后台自动同步完成", level="INFO")
+            sync_duration_ms = int((time.time() - sync_started_at) * 1000)
+            is_slow = sync_duration_ms >= _SLOW_SYNC_MS
+            try:
+                logger = get_logger()
+                msg = f"idle_sync done | duration_ms={sync_duration_ms}"
+                kwargs = dict(
+                    module="database.execution_engine",
+                    duration_ms=sync_duration_ms,
+                    is_slow=is_slow,
+                )
+                if is_slow:
+                    logger.warning(msg + " | slow=true", **kwargs)
+                else:
+                    logger.info(msg, **kwargs)
+            except Exception:
+                pass
         except BaseException as e:
             _debug_log(f"闲时后台自动同步失败: {e}", level="WARNING")
 
@@ -300,7 +342,7 @@ def cleanup_concurrent_system() -> None:
 
 def _release_db_file_handles_for_recovery(db_path: str) -> None:
     import os
-    abs_path = os.path.abspath(db_path or DB_PATH)
+    abs_path = os.path.abspath(db_path or _config.DB_PATH)
     try:
         _stop_sync_daemon(timeout_seconds=1.5)
     except Exception:
@@ -311,7 +353,7 @@ def _release_db_file_handles_for_recovery(db_path: str) -> None:
         pass
 
     try:
-        if abs_path == os.path.abspath(DB_PATH):
+        if abs_path == os.path.abspath(_config.DB_PATH):
             _close_main_write_conn_singleton()
         if abs_path == os.path.abspath(HUB_DB_PATH):
             _close_hub_write_conn_singleton()
@@ -331,7 +373,7 @@ def _mark_main_db_needs_sync(db_path: Optional[str] = None, conn: Any = None) ->
 
 def _execute_write_sql_sync(sql: str, params: tuple = (), db_path: Optional[str] = None, conn: Any = None) -> None:
     owned = conn is None
-    target_conn = conn or _get_local_conn(db_path or DB_PATH)
+    target_conn = conn or _get_local_conn(db_path or _config.DB_PATH)
     try:
         cur = target_conn.cursor()
         try:
@@ -357,7 +399,7 @@ def _execute_batch_write_sql_sync(
         return
 
     owned = conn is None
-    target_conn = conn or _get_local_conn(db_path or DB_PATH)
+    target_conn = conn or _get_local_conn(db_path or _config.DB_PATH)
     try:
         cur = target_conn.cursor()
         try:

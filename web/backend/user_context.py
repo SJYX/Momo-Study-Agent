@@ -226,8 +226,19 @@ class UserContextManager:
 
     def _warmup_async(self, ctx: UserContext) -> None:
         """异步执行：把未同步笔记重新入队同步。"""
+        from core.feature_flags import is_enabled
+        from core.sync_priority import Priority
         from database.momo_words import get_unsynced_notes
         from database.utils import clean_for_maimemo
+
+        # PLAYBOOK A4 Kill Switch：性能回退时 ops 可关闭自动 warmup 同步。
+        # 注意 _warmup_sync（DB schema 初始化）始终运行，因为 ctx 必须可用。
+        if not is_enabled("AUTO_WARMUP_SYNC_ENABLED", default=True):
+            ctx.logger.warning(
+                "[Web] AUTO_WARMUP_SYNC_ENABLED=False，跳过未同步笔记扫描与入队",
+                module="user_context",
+            )
+            return
 
         # 异步线程也要确保 DB globals 指向正确的 profile，否则会拉错库
         UserContextManager.prepare_for_task(ctx)
@@ -247,6 +258,8 @@ class UserContextManager:
                 clean_for_maimemo(note.get("basic_meanings", "")),
                 ["雅思"],
                 force_sync=True,
+                priority=Priority.P3,
+                profile_name=ctx.profile_name,
             )
 
     @staticmethod
