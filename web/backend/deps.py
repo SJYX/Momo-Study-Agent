@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import Header, Request
+from core.active_profile_registry import set_active
 
 # ---------------------------------------------------------------------------
 # 模块级单例（由 app.py lifespan 负责初始化 & 清理）
@@ -40,8 +41,11 @@ def _resolve_profile(
 ) -> str:
     """从 X-Momo-Profile header 解析 profile name，fallback 到启动用户。"""
     if x_momo_profile:
-        return x_momo_profile.strip().lower()
-    return _fallback_user or "default"
+        profile = x_momo_profile.strip().lower()
+    else:
+        profile = _fallback_user or "default"
+    set_active(profile)
+    return profile
 
 
 def _get_context(profile: str):
