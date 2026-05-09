@@ -14,7 +14,6 @@ class TestSyncStatus:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [])
         app.include_router(sync_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -29,12 +28,15 @@ class TestSyncStatus:
         conn = sqlite3.connect(test_db)
         conn.execute("INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, updated_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)", ("v1","abandon","v. abandon",2))
         conn.execute("INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, updated_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)", ("v2","bizarre","adj. bizarre",2))
+        conn.execute(
+            "INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, content_origin, updated_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+            ("v3", "queue_item", "n. q", 0, "ai_generated"),
+        )
         conn.commit()
         conn.close()
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [{"voc_id":"v1"}])
         app.include_router(sync_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -43,6 +45,28 @@ class TestSyncStatus:
         body = resp.json()
         assert body["data"]["queue_depth"] == 1
         assert body["data"]["conflict_count"] == 2
+
+    def test_sync_status_conflicts_paged_default_20(self, app, test_db, monkeypatch, override_ctx):
+        conn = sqlite3.connect(test_db)
+        for i in range(25):
+            conn.execute(
+                "INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, updated_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)",
+                (f"v{i}", f"w{i}", "x", 2),
+            )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
+        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
+        app.include_router(sync_router)
+        override_ctx(test_db)
+        from fastapi.testclient import TestClient
+        with TestClient(app, raise_server_exceptions=False) as c:
+            resp = c.get("/api/sync/status")
+        body = resp.json()
+        assert body["ok"] is True
+        assert len(body["data"]["conflicts"]) == 20
 
 
 class TestSyncFlush:

@@ -19,7 +19,6 @@ class TestStatsSummary:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [])
         app.include_router(stats_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -46,8 +45,8 @@ class TestStatsSummary:
             "INSERT INTO processed_words (voc_id, spelling) VALUES (?, ?)", ("v1", "abandon")
         )
         conn.execute(
-            "INSERT INTO ai_word_notes (voc_id, spelling, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-            ("v1", "abandon"),
+            "INSERT INTO ai_word_notes (voc_id, spelling, sync_status, content_origin, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            ("v1", "abandon", 0, "ai_generated"),
         )
         conn.execute(
             "INSERT INTO ai_batches (batch_id, total_tokens, total_latency_ms) VALUES (?, ?, ?)",
@@ -63,7 +62,6 @@ class TestStatsSummary:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [{"voc_id": "v1"}])
         app.include_router(stats_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -87,7 +85,6 @@ class TestStatsSummary:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
-        monkeypatch.setattr("database.momo_words.get_unsynced_notes", lambda **kw: [])
         app.include_router(stats_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient

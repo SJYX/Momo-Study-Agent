@@ -12,9 +12,9 @@ def temp_db(tmp_path, mocker):
     """提供一个完全隔离的临时测试数据库。"""
     db_path = str(tmp_path / "test_it.db")
     
-    # 彻底 Patch 掉所有模块里的 DB_PATH，确保它们都指向这个临时文件
-    mocker.patch("database.connection.DB_PATH", db_path)
-    mocker.patch("core.iteration_manager.DB_PATH", db_path)
+    # Phase 6.4 起 DB_PATH 唯一权威源是 config 模块；patch config.DB_PATH 即可
+    # 让所有下游模块（直接读 _config.DB_PATH）看到测试库
+    mocker.patch("config.DB_PATH", db_path)
     
     init_db(db_path)
     return db_path
