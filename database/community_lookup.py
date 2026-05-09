@@ -13,7 +13,7 @@ import os
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from config import DB_PATH
+import config as _config
 
 from . import connection
 from .sql_constants import COMMUNITY_NOTE_LOOKUP_SQL_TEMPLATE
@@ -106,8 +106,8 @@ def _absorb_lookup_results(
 
 def _list_history_db_files() -> List[str]:
     """枚举与当前 DB 同目录下的历史库文件，按修改时间倒序。"""
-    cdb = os.path.basename(DB_PATH)
-    dr = os.path.dirname(DB_PATH)
+    cdb = os.path.basename(_config.DB_PATH)
+    dr = os.path.dirname(_config.DB_PATH)
     try:
         return sorted(
             [
@@ -137,7 +137,7 @@ def find_words_in_community_batch(
 
     # 1) 本地历史库（按 mtime 倒序逐个尝试，命中即继续下一个未命中的 voc）
     if remaining_ids:
-        dr = os.path.dirname(DB_PATH)
+        dr = os.path.dirname(_config.DB_PATH)
         for df in _list_history_db_files():
             if not remaining_ids:
                 break
@@ -164,7 +164,7 @@ def find_words_in_community_batch(
     if remaining_ids:
         c = None
         try:
-            c = connection._get_read_conn(DB_PATH)
+            c = connection._get_read_conn(_config.DB_PATH)
             conn_lock = connection._get_singleton_conn_op_lock(c)
             with _safe_cursor(c, lock=conn_lock) as cur:
                 mapped_rows = _query_notes_from_cursor(cur, remaining_ids)

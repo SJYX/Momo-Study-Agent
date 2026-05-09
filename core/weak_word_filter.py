@@ -12,7 +12,7 @@ import json
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple
-from config import DB_PATH
+import config as _config
 from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
 
 
@@ -120,7 +120,7 @@ class WeakWordFilter:
 
     def _get_user_stats(self) -> Dict:
         """获取用户统计信息"""
-        conn = _get_read_conn(DB_PATH)
+        conn = _get_read_conn(_config.DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
         try:
@@ -198,7 +198,7 @@ class WeakWordFilter:
             min_score: 最低薄弱分数
             limit: 最大返回数量
         """
-        conn = _get_read_conn(DB_PATH)
+        conn = _get_read_conn(_config.DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
         try:
@@ -269,7 +269,7 @@ class WeakWordFilter:
                 'potential': List[Dict]  # 潜在薄弱词
             }
         """
-        conn = _get_read_conn(DB_PATH)
+        conn = _get_read_conn(_config.DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
         try:

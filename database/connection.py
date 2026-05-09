@@ -23,10 +23,13 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import config as _config
-DB_PATH = _config.DB_PATH
-HUB_DB_PATH = _config.HUB_DB_PATH
+HUB_DB_PATH = _config.HUB_DB_PATH  # Hub 是全局静态库，不随 switch_user 变化，可缓存
 TURSO_HUB_AUTH_TOKEN = _config.TURSO_HUB_AUTH_TOKEN
 TURSO_HUB_DB_URL = _config.TURSO_HUB_DB_URL
+
+# 注意：DB_PATH 不再缓存到本模块级。Phase 6.4 起 switch_user 不会反向 patch
+# 任何 database 子模块的全局；所有需要"当前用户 DB 路径"的位置都直接读
+# `_config.DB_PATH`（config 自己在 switch_user 时更新了模块级值）。
 
 try:
     import libsql
@@ -91,9 +94,6 @@ _hub_write_conn_singleton: Any = None
 _hub_write_conn_lock = threading.Lock()
 _hub_write_conn_op_lock = threading.RLock()
 
-_throttled_log_state: Dict[str, float] = {}
-_throttled_log_lock = threading.Lock()
-
 
 # Schema callback registry to avoid circular imports with database/schema.py
 _schema_init_callbacks: Dict[str, Optional[Callable[[Any], None]]] = {
@@ -133,24 +133,6 @@ def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG
         pass
 
 
-def _debug_log_throttled(
-    key: str,
-    msg: str,
-    interval_seconds: float = 30.0,
-    start_time: Optional[float] = None,
-    level: str = "DEBUG",
-) -> None:
-    now = time.time()
-    should_log = False
-    with _throttled_log_lock:
-        last_ts = float(_throttled_log_state.get(key, 0.0) or 0.0)
-        if now - last_ts >= float(interval_seconds):
-            _throttled_log_state[key] = now
-            should_log = True
-    if should_log:
-        _debug_log(msg, start_time=start_time, level=level)
-
-
 def _normalize_turso_url(hostname: str) -> str:
     if not hostname:
         return ""
@@ -163,8 +145,8 @@ def _normalize_turso_url(hostname: str) -> str:
 
 
 def _is_main_db_path(db_path: Optional[str] = None) -> bool:
-    target = os.path.abspath(db_path or DB_PATH)
-    return target == os.path.abspath(DB_PATH)
+    target = os.path.abspath(db_path or _config.DB_PATH)
+    return target == os.path.abspath(_config.DB_PATH)
 
 
 def _is_hub_db_path(db_path: Optional[str] = None) -> bool:
@@ -180,9 +162,9 @@ def _is_replica_metadata_missing_error(error: Exception) -> bool:
 
 
 def _resolve_conn_context(db_path: Optional[str] = None) -> Dict[str, Any]:
-    path = db_path or DB_PATH
+    path = db_path or _config.DB_PATH
     target_abs = os.path.abspath(path)
-    main_abs = os.path.abspath(DB_PATH)
+    main_abs = os.path.abspath(_config.DB_PATH)
 
     url = os.getenv("TURSO_DB_URL")
     token = os.getenv("TURSO_AUTH_TOKEN")
@@ -281,7 +263,7 @@ def _get_singleton_conn_op_lock(conn: Any):
 
 
 def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
-    path = db_path or DB_PATH
+    path = db_path or _config.DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 
     def _open_local_connection() -> sqlite3.Connection:
@@ -373,9 +355,9 @@ def _get_main_write_conn_singleton(
 ) -> Any:
     global _main_write_conn_singleton
 
-    ctx = _resolve_conn_context(DB_PATH)
+    ctx = _resolve_conn_context(_config.DB_PATH)
     if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
-        return _get_local_conn(DB_PATH)
+        return _get_local_conn(_config.DB_PATH)
 
     with _main_write_conn_lock:
         if _main_write_conn_singleton is not None:
@@ -396,7 +378,7 @@ def _get_main_write_conn_singleton(
     last_error = None
     for attempt in range(max_retries):
         try:
-            conn = _connect_embedded_replica(DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+            conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
             with _main_write_conn_lock:
                 if _main_write_conn_singleton is None:
                     _main_write_conn_singleton = conn
@@ -411,7 +393,7 @@ def _get_main_write_conn_singleton(
         except Exception as e:
             last_error = e
             if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                _backup_broken_database_file(DB_PATH, "主库副本状态损坏，已备份后重试")
+                _backup_broken_database_file(_config.DB_PATH, "主库副本状态损坏，已备份后重试")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
@@ -477,8 +459,8 @@ def _should_use_local_only_connection(db_path: Optional[str] = None, conn: Any =
     if conn is not None:
         return True
 
-    path = db_path or DB_PATH
-    if os.path.abspath(path) != os.path.abspath(DB_PATH):
+    path = db_path or _config.DB_PATH
+    if os.path.abspath(path) != os.path.abspath(_config.DB_PATH):
         return True
 
     ctx = _resolve_conn_context(path)
@@ -496,7 +478,7 @@ def _get_read_conn(
     allow_local_fallback: bool = True,
 ) -> Any:
     return _get_read_conn_impl(
-        db_path or DB_PATH,
+        db_path or _config.DB_PATH,
         max_retries=max_retries,
         retry_delay=retry_delay,
         allow_local_fallback=allow_local_fallback,
@@ -596,7 +578,7 @@ def _get_cloud_conn(url: str, token: str, db_path: str = None, max_retries: int 
     if not url or not token:
         raise ValueError("Turso URL and token are required")
 
-    local_path = db_path or DB_PATH
+    local_path = db_path or _config.DB_PATH
 
     if _is_main_db_path(local_path):
         return _get_main_write_conn_singleton(do_sync=False)
@@ -745,10 +727,10 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
         return _row_to_dict(cur, row) if row else None
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
-            _debug_log_throttled(
+            get_logger().warning_throttled(
                 "hub_fetch_one_dict_corruption",
                 f"_hub_fetch_one_dict 数据损坏异常: {e}",
-                level="WARNING",
+                module="database.connection",
             )
             return None
         _debug_log(f"_hub_fetch_one_dict 异常: {e}", level="WARNING")
@@ -795,10 +777,10 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
         return [_row_to_dict(cur, row) for row in rows]
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
-            _debug_log_throttled(
+            get_logger().warning_throttled(
                 "hub_fetch_all_dicts_corruption",
                 f"_hub_fetch_all_dicts 数据损坏异常: {e}",
-                level="WARNING",
+                module="database.connection",
             )
             return []
         _debug_log(f"_hub_fetch_all_dicts 异常: {e}", level="WARNING")
