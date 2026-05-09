@@ -128,7 +128,12 @@ def _check_table_exists(cursor: Any, table_name: str, db_type: str = "main", cac
 
 
 def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
-    """Create/upgrade main DB schema."""
+    """Create main DB tables (idempotent CREATE IF NOT EXISTS).
+
+    Phase 6 起：列演进一律走 ``database/migrations/``（PRAGMA user_version + V001+）。
+    本函数只负责"v0 setup"：建表骨架 + 索引。`skip_migrations` 名字保留兼容，但
+    实际语义已变——已无内联 ALTER 逻辑。
+    """
     cur.execute(
         "CREATE TABLE IF NOT EXISTS processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT, "
         "processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
@@ -171,48 +176,6 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
         "sample_count INTEGER, sample_words TEXT, ai_calls INTEGER, success_parsed INTEGER, is_dry_run BOOLEAN, "
         "error_msg TEXT, ai_results_json TEXT)"
     )
-
-    for t, c, d in [
-        ("ai_word_notes", "it_level", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "it_history", "TEXT"),
-        ("ai_word_notes", "prompt_tokens", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "completion_tokens", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "total_tokens", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "batch_id", "TEXT"),
-        ("ai_word_notes", "original_meanings", "TEXT"),
-        ("ai_word_notes", "maimemo_context", "TEXT"),
-        ("ai_word_notes", "content_origin", "TEXT"),
-        ("ai_word_notes", "content_source_db", "TEXT"),
-        ("ai_word_notes", "content_source_scope", "TEXT"),
-        ("ai_word_notes", "raw_full_text", "TEXT"),
-        ("ai_word_notes", "word_ratings", "TEXT"),
-        ("ai_word_notes", "sync_status", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "updated_at", "TIMESTAMP"),
-        ("processed_words", "updated_at", "TIMESTAMP"),
-    ]:
-        try:
-            cur.execute(f"ALTER TABLE {t} ADD COLUMN {c} {d}")
-            _debug_log(f"列添加成功: {t}.{c}", module="database.schema")
-        except Exception as e:
-            if "duplicate column name" not in str(e).lower():
-                _debug_log(f"列添加失败: {t}.{c} -> {e}", level="WARNING", module="database.schema")
-
-    if skip_migrations:
-        return
-
-    try:
-        cur.execute("UPDATE ai_word_notes SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
-        cur.execute("UPDATE processed_words SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
-        cur.execute(
-            "UPDATE ai_word_notes SET content_origin = 'ai_generated', content_source_scope = 'ai_batch' "
-            "WHERE content_origin IS NULL AND batch_id IS NOT NULL"
-        )
-        cur.execute(
-            "UPDATE ai_word_notes SET content_origin = 'legacy_unknown', content_source_scope = 'legacy' "
-            "WHERE content_origin IS NULL AND batch_id IS NULL"
-        )
-    except Exception:
-        pass
 
 
 def _init_hub_schema(conn: Any) -> None:
@@ -262,7 +225,13 @@ def _init_hub_schema(conn: Any) -> None:
 
 
 def init_db(db_path: Optional[str] = None) -> None:
-    """Initialize main db schema locally/cloud and ensure hub schema is ready."""
+    """Initialize main db schema locally/cloud and ensure hub schema is ready.
+
+    Phase 6 起：建表后调用 ``database.migrations.apply_migrations`` 推进 PRAGMA user_version
+    到当前已知最高版本。第一次跑（v=0）会跑 V001 的幂等 ALTER + backfill。
+    """
+    from database.migrations import apply_migrations
+
     path = db_path or DB_PATH
     start_time = time.time()
 
@@ -298,10 +267,18 @@ def init_db(db_path: Optional[str] = None) -> None:
                     _create_tables(ccur, skip_migrations=True)
                     cc.commit()
 
+                # 应用迁移；用同一把 op_lock 与建表共用串行边界
+                start_v, end_v = apply_migrations(cc, lock=connection._main_write_conn_op_lock)
+                if start_v != end_v:
+                    _debug_log(
+                        f"云端数据库迁移完成 v{start_v} → v{end_v}",
+                        module="database.schema",
+                    )
+
                 if table_exists:
-                    _debug_log("云端数据库 schema 校验与补齐完成（跳过数据回填）", module="database.schema")
+                    _debug_log("云端数据库 schema 校验与补齐完成", module="database.schema")
                 else:
-                    _debug_log("云端数据库存储初始化完成（跳过迁移）", module="database.schema")
+                    _debug_log("云端数据库存储初始化完成", module="database.schema")
 
                 _mark_db_initialized("main", main_fp)
         except Exception as e:
@@ -312,6 +289,15 @@ def init_db(db_path: Optional[str] = None) -> None:
             lcur = lc.cursor()
             _create_tables(lcur)
             lc.commit()
+
+            # 本地连接直连，无并发锁；apply_migrations 在 BEGIN/COMMIT 内自管事务
+            start_v, end_v = apply_migrations(lc)
+            if start_v != end_v:
+                _debug_log(
+                    f"本地数据库迁移完成 v{start_v} → v{end_v}",
+                    module="database.schema",
+                )
+
             lc.close()
             _debug_log("本地数据库初始化/迁移完成", start_time=start_time, module="database.schema")
         except Exception as e:

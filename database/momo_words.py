@@ -21,7 +21,8 @@ import os
 import shutil
 from typing import Any, Optional, Tuple
 
-from config import DATA_DIR, DB_PATH, TEST_DB_PATH
+import config as _config
+from config import DATA_DIR
 
 from . import connection
 from database.session import with_read_session, DBSession
@@ -84,7 +85,7 @@ def _fetch_one_scalar(sql: str, params: Tuple = (), db_path: Optional[str] = Non
 
 
 def get_config(k: str, db: Optional[str] = None) -> Optional[str]:
-    return _fetch_one_scalar("SELECT value FROM system_config WHERE key = ?", (k,), db_path=(db or DB_PATH))
+    return _fetch_one_scalar("SELECT value FROM system_config WHERE key = ?", (k,), db_path=(db or _config.DB_PATH))
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +129,7 @@ def initialize_local_database_file(db_path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def save_test_word_note(voc_id: str, payload):
-    save_ai_word_note(voc_id, payload, db_path=TEST_DB_PATH)
+    save_ai_word_note(voc_id, payload, db_path=_config.TEST_DB_PATH)
 
 
 def log_test_run(
@@ -166,7 +167,7 @@ def log_test_run(
 
     words_sampled = ",".join(str(item) for item in w) if isinstance(w, (list, tuple)) else str(w)
 
-    c = connection._get_conn(TEST_DB_PATH)
+    c = connection._get_conn(_config.TEST_DB_PATH)
     cur = c.cursor()
     cur.execute(
         """
