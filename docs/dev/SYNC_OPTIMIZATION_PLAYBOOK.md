@@ -2,170 +2,152 @@
 
 ## 目的
 
-提供两套可执行路线：
-
-1. 最小改造路径（低风险、快落地）
-2. 完整改造路径（高收益、体系化）
+提供同步系统优化的可执行路线，以及与 REFACTOR_PROGRESS Phase 4/5/6 的依赖映射。
 
 适用问题：后台笔记同步影响前端页面加载、页面切换、任务响应速度。
 
-## A. 最小改造路径（Low Risk / Fast）
+---
 
-### A1. 查询降重（优先级最高）
+## 路径关系（修订）
 
-目标：
+原文档曾把"路径 A"（最小改造）与"路径 B"（完整改造）描述为可二选一，并宣称"跳过 A、直接 B"。复盘后发现：
 
-- 把“高频路径中的重查询”替换为“轻量统计”
+- A1（API 查询降重）是任何调度优化的**前置基石**——若 API 接口本身做全表扫描，再优秀的同步调度也救不了页面卡顿。
+- A4（运行期 Kill Switch）应与 Phase 6「配置现代化」合并落地，避免做两遍。
+- A2/A3（warmup 非阻塞 / 今日让路）的目标会被 Path B 的优先级调度天然吸收。
+
+因此修订后的关系为：
+
+```
+A1 查询降重           → 必做前置（独立 Phase 4.5，1 天工作量）
+A2/A3                 → 被 Path B 吸收
+A4 Kill Switch        → 合并到 Phase 6 配置现代化
+
+B1 优先队列 + 防饿死  → Phase 4 ★
+B2 单消费者维持       → Phase 4 ★（已是单消费者，本步只做"per-profile 暂停"）
+B3 闲时引擎           → 依赖 Phase 5 监控基础设施
+B4 前端协同           → 独立到 web_ui 工作区，依赖 Phase 4.5
+B5 可观测性           → Phase 5
+```
+
+---
+
+## A. 查询降重（Phase 4.5）
+
+### A1. API 接口查询降重
+
+目标：把"高频路径中的重查询"替换为"轻量统计"。
 
 执行项：
 
-1. `stats/summary` 中的待同步数量改为 `COUNT(*)`，禁止 `get_unsynced_notes()` 全量读取计数
-2. `sync/status` 的队列深度同样改为 `COUNT(*)`
-3. 冲突列表默认 limit 控制在小范围（如 20），保持分页
+1. `stats/summary` 中的待同步数量改为 `COUNT(*)`，禁止 `get_unsynced_notes()` 全量读取计数。
+2. `sync/status` 的队列深度同样改为 `COUNT(*)`。
+3. 冲突列表默认 limit 控制在小范围（如 20），保持分页。
+4. 任何高频 GET 接口禁止做 `SELECT * FROM notes` 后再 `len(...)`。
 
 验收：
 
-- `GET /api/stats/summary` 与 `GET /api/sync/status` 响应时间明显下降
+- `GET /api/stats/summary` 与 `GET /api/sync/status` 响应时间稳定 <100ms。
+- 真正实现"页面打开/切换不卡"——这是用户感知的根因，调度优化只能缓解、不能根治。
 
-### A2. warmup 非阻塞化（仅最小变更）
+### A4. 运行期 Kill Switch（合并到 Phase 6）
 
-目标：
+目标：出现性能回退时可快速止损。配置项：
 
-- 启动后不做一次性全量扫描入队
+- `AUTO_WARMUP_SYNC_ENABLED`
+- `SYNC_STATUS_HEAVY_QUERY_ENABLED`
+- `BACKGROUND_RETRY_ENABLED`
 
-执行项：
+落地方式：与 Phase 6 `pydantic-settings` 迁移合并实施，作为一组开关写在配置 schema 中。
 
-1. warmup 异步扫描改成分批（每批固定上限）
-2. 每批之间短暂停顿并检查系统负载信号
-3. 高优任务出现时立即中断剩余批次
+---
 
-验收：
+## B. Path B 完整体系
 
-- 切换 profile 或首次访问时前端不出现“明显慢启动”
+### B1. 优先队列调度（Phase 4 ★）
 
-### A3. 今日/未来任务同步让路
-
-目标：
-
-- 今日任务优先，未来任务次之
+目标：同步系统具备优先级与防饿死能力。
 
 执行项：
 
-1. `queue_maimemo_sync` 增加 `priority/source` 参数（可先默认值兼容旧调用）
-2. 今日任务入队标记 `P1`，未来任务标记 `P2`
-3. 单线程 Worker 出队策略更新：优先处理高优项，但需加入**基础防饿死（Starvation）逻辑**（如：连续处理 5 个 P1 后强制放行 1 个 P2），避免低优任务被完全挂起。
+1. `core/sync_manager.py` 的 `sync_queue` 由 `queue.Queue` 升级为 `queue.PriorityQueue`（**threading 模型，不引入 asyncio**）。
+2. 任务条目封装为 `(priority, seq, payload)`：seq 单调递增，保证同优先级 FIFO；同时避免 dict 直接比较引发 TypeError。
+3. 优先级语义：
+   - **P1**：今日任务产出的同步项（`study_workflow.py` / `study_flow.py`）
+   - **P2**：用户主动触发（`web/routers/sync.py` 的 flush/retry）
+   - **P3**：warmup 入队补偿（`user_context._warmup_async`）
+   - **P4**：预留给未来的延迟重试，本期不强制使用
+4. 出队策略：**严格优先级**——P 高的有就先处理。
+5. **防饿死保底**：worker 维护 `consecutive_high_count`，连续处理 5 个 P1 后强制让一个 P2/P3 出队。简化于原 PLAYBOOK 的 60/25/15 加权方案，因为单消费者实际吞吐 ~5 条/秒（受 maimemo HTTP 频控限制），权重精度无意义。
 
-验收：
+### B2. 单消费者维持 + per-profile 暂停（Phase 4 ★）
 
-- 今日任务进行时 future/warmup 同步不会明显拖慢前者
+目标：多 profile 场景下，前台 active profile 永远优先。
 
-### A4. 运行期开关（Kill Switch）
+**架构现实**：当前每个 profile 一个 `UserContext` → 一个 `StudyWorkflow` → 一个 `SyncManager` → 一个独立 worker thread。这意味着 **N 个 profile = N 个 worker 各拉各的队列**，原 PLAYBOOK 提的"全局单消费者优先队列"在当前架构下不成立。
 
-目标：
+修订方案：**per-profile 单消费者 + ActiveProfileRegistry 暂停拉取**
 
-- 出现性能回退时可快速止损
+1. 新增进程级单例 `core/active_profile_registry.py`：
+   - `set_active(profile_name)` / `get_active() -> str | None` / `is_active(profile_name) -> bool`
+   - 内部用 `threading.Lock` 保护读写。
+2. `web/backend/deps.py::_resolve_profile()` 中调用 `set_active(profile)`——每个 API 请求都自然更新"最近活跃 profile"。
+3. SyncManager worker 出队前自检：
+   - 若 `ActiveProfileRegistry.get_active()` 不是本 profile，且当前任务优先级 ≥ P3 → 重新入队，`time.sleep(0.5)` 后 continue。
+   - P1/P2 始终立即处理（即便 profile 不 active，也是用户已经"主动要求"了）。
 
-执行项：
+**单消费者属性**：保持不变。SyncManager 仍只起一个 worker thread，本期禁止改造为 ThreadPoolExecutor。
 
-1. 增加配置开关：`AUTO_WARMUP_SYNC_ENABLED`
-2. 增加配置开关：`SYNC_STATUS_HEAVY_QUERY_ENABLED`
-3. 增加配置开关：`BACKGROUND_RETRY_ENABLED`
+**抢占粒度**：单任务级（每处理完一条 maimemo HTTP 同步，下一轮 worker loop 重新查询活跃 profile / 优先级）。原 PLAYBOOK 的"小批次 20-50 条 / <100ms"概念在 maimemo 网络同步上不成立——一条一次 HTTP，几百 ms 起。
 
-验收：
+### B3. 闲时同步引擎（依赖 Phase 5）
 
-- 不改代码逻辑即可通过配置快速降级
+目标：真正实现"闲时加速，高峰让路"。
 
-## B. 完整改造路径（High Yield / Systematic）
+**前置依赖**：
 
-### B1. 统一调度器（Priority Scheduler）
+- 需要 P95 延迟、锁等待、API 请求频率指标——这些由 Phase 5 的 `LogStatistics` 提供。
+- 在监控基础设施落地前，本节内容**不实施**。
 
-目标：
+预留设计要点（Phase 5 阶段实施时参考）：
 
-- 同步系统具备优先级、抢占、预算控制能力
+1. Idle detector 进入条件需连续满足 5-10 秒（防抖）。
+2. 退出 idle 立即响应，不延迟。
+3. 仅在稳定 idle 状态下处理 P3+ 自动补偿任务。
 
-执行项：
+### B4. 前端协同（独立 web_ui 工作区）
 
-1. 将单一 `queue.Queue` 升级为优先队列或多队列调度器
-2. 同步任务统一数据结构：`priority/source/deadline/retry_count`
-3. 出队策略：`P1 > P2 > P3 > P4`，并支持 aging 防饿死
+**前置依赖**：A1（Phase 4.5）。否则 hover prefetch 会放大重查询代价。
 
-### B2. 资源预算与背压
+设计要点（不在 REFACTOR_PROGRESS 范围内，独立 PR）：
 
-目标：
+1. **Hover 悬停预获取**：导航栏 / 按钮 `onMouseEnter` 触发 React Query 的 `prefetchQuery`，利用 200ms 反应时间差实现"瞬间切页"。
+2. 关键页面骨架屏 + 核心字段优先渲染。
+3. API 降级元数据（`meta._is_degraded: true`），前端非侵入式提示。
+4. 同步状态页"实时统计 / 延迟明细"分层。
 
-- 同步不再无上限争抢 DB/CPU/网络
+### B5. 可观测性与自动策略（Phase 5）
 
-执行项：
+完全等同于 REFACTOR_PROGRESS Phase 5 内容：
 
-1. **确立单消费者模型**：避免多线程并发写 SQLite 导致锁等待。通过带权轮询（Weighted Round Robin）控制出队配额来实现“预算分配”。
-2. 时间片执行 + 细粒度批处理（Batch-level 抢占，避免回滚代价）。
-3. 锁等待超阈值触发自动降速/暂停低优先级。
+1. 指标：API P95、同步吞吐、队列长度、锁等待、重试率。
+2. 阈值告警自动触发降级。
+3. 每日同步健康摘要。
 
-### B3. 闲时同步引擎
+---
 
-目标：
+## 与 REFACTOR_PROGRESS 的映射
 
-- 真正实现“闲时加速，高峰让路”
+| 本文档章节 | REFACTOR_PROGRESS 阶段 |
+|---|---|
+| A1 查询降重 | Phase 4.5 |
+| A4 Kill Switch | Phase 6 配置现代化 |
+| B1 优先队列 + 防饿死 | Phase 4 ★ |
+| B2 per-profile 暂停 | Phase 4 ★ |
+| B3 闲时引擎 | Phase 5 |
+| B4 前端协同 | 独立 web_ui 工作区，依赖 Phase 4.5 |
+| B5 可观测性 | Phase 5 |
 
-执行项：
+---
 
-1. 实现 idle detector（基于请求频率、P95、锁等待），**并引入防抖（Debounce）机制，要求连续 5-10s 满足条件才可触发闲时动作，防止频繁启停**。
-2. 仅在稳定 idle 状态下执行 `P4 warmup/retry`。
-3. 一旦脱离 idle 立即（无延迟）自动暂停 `P4` 并缩减 `P3` 批次。
-
-### B4. 前后端协同与零延迟体验
-
-目标：
-
-- 页面可用性与丝滑切换永远优先
-
-执行项：
-
-1. **引入意图驱动的悬停预获取（Hover Pre-fetching）**：前端在导航栏或按钮触发 `onMouseEnter` 时，静默发送目标页面的 P0 预加载请求（如 `GET /api/stats/summary`）。利用点击前的 200ms 反应时间差实现“瞬间切页”，且完美避开闲时打扰与脏数据问题。
-
-1. 关键页面先渲染骨架+核心字段，重数据异步补齐
-2. 非关键卡片支持 stale cache（短期缓存）
-3. **API 下发降级元数据**（如 `_is_degraded: true`），前端捕获并给用户对应提示，避免产生数据丢失的恐慌。
-4. 同步状态页明确“实时统计/延迟明细”分层
-
-### B5. 可观测性与自动策略
-
-目标：
-
-- 从“人工猜测”转为“指标驱动”
-
-执行项：
-
-1. 指标：API P95、同步吞吐、队列长度、锁等待、重试率
-2. 告警：达到阈值自动触发降级策略
-3. 每日输出同步健康摘要
-
-## C. 架构演进决策（当前选择：直接执行 Path B）
-
-**决策依据**：
-为彻底解决多 Profile 同时运行时的 SQLite 锁冲突问题，并建立长期的系统稳定性，决定**跳过 A 路径的过渡阶段，直接重构落实 B 路径的体系化调度架构**。
-
-**核心收益**：
-
-- **原生支持多 Profile 并发运行**：通过“全局单消费者优先队列”，多个 Profile 的同步任务有序排队。系统动态识别“活跃(Active)”Profile 赋予 P1 最高权，其他后台 Profile 降为 P4 闲时执行，彻底互不干扰。
-- **消灭锁竞争**：从物理机制上杜绝 SQLite 的并发写入报错（`database is locked`）。
-
-## D. 直接落实 B 路径的实施顺序（Action Plan）
-
-直接执行 B 路径需要将 A 路径的基础查询优化作为基石，建议按以下 4 个阶段（Phases）推进：
-
-**Phase 1: 基础降重与安全网（Base Optimization）**
-- 落实 A1：API 查询全面降重（强制改为 `COUNT(*)` 和小 limit 分页，禁止主线程扫描明细）。
-- 落实 A4：建立运行期配置开关（Kill Switch），为底层队列重构留好安全退路。
-
-**Phase 2: 核心调度器与多 Profile 支持（The Scheduler）**
-- 落实 B1/B2：废弃旧队列，确立**全局单消费者 Worker**，引入优先出队策略（带权轮询）。
-- **多账户隔离**：在任务数据结构中强制引入 `profile_id`，调度器根据前端传递的 Active 状态动态压制或提权特定 Profile 的同步动作。
-
-**Phase 3: 闲时引擎与极致前端体验（Zero-Latency UI）**
-- 落实 B3：实现带防抖（Debounce）的空闲探测器（Idle Detector），严格控制 P4 闲时任务启停。
-- 落实 B4：前端引入 **Hover 悬停预获取（Pre-fetching）** 与降级状态的非侵入式 UI 提示。
-
-**Phase 4: 监控与常态化验收（Observability）**
-- 落实 B5：完善 API 耗时与锁等待的 P95 指标告警。
-
+*本文档自 2026-05-08 修订，对齐代码现状与 REFACTOR_PROGRESS。原版本在 git history 中可查。*
