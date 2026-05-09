@@ -6,8 +6,9 @@ import functools
 import time
 
 from database import connection
-from database.utils import _is_sqlite_data_corruption_error, _debug_log, _debug_log_throttled, _backup_broken_database_file, _hash_fingerprint
+from database.utils import _is_sqlite_data_corruption_error, _debug_log, _backup_broken_database_file, _hash_fingerprint
 from database.schema import _create_tables
+import config as _config
 from config import DATA_DIR
 from core.logger import get_logger
 
@@ -152,7 +153,7 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
             if 'session' in kwargs and kwargs['session'] is not None:
                 return func(*args, **kwargs)
                 
-            db_path = kwargs.get('db_path') or connection.DB_PATH
+            db_path = kwargs.get('db_path') or _config.DB_PATH
             _recovery_attempted = kwargs.pop('_recovery_attempted', False)
             c = None
             try:
@@ -173,30 +174,28 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
             except Exception as e:
                 if fallback_on_corruption and _is_sqlite_data_corruption_error(e):
                     if not _recovery_attempted:
-                        _debug_log_throttled(
+                        get_logger().warning_throttled(
                             f"{func.__name__}_corruption_recovery",
                             f"{func.__name__} 检测到数据损坏: {e}，正在尝试自动恢复...",
-                            level="WARNING",
-                            module=func.__module__
+                            module=func.__module__,
                         )
-                        
+
                         # 确保关闭损坏的连接后再恢复
                         try:
                             if c is not None and not connection._is_main_write_singleton_conn(c):
                                 c.close()
                         except Exception:
                             pass
-                            
+
                         if _attempt_auto_recovery(db_path):
                             kwargs.pop('session', None)  # 移除旧的 session
                             kwargs['_recovery_attempted'] = True
                             return wrapper(*args, **kwargs) # 重试
-                    
-                    _debug_log_throttled(
+
+                    get_logger().error_throttled(
                         f"{func.__name__}_corruption_final",
                         f"{func.__name__} 数据损坏且恢复失败: {e}",
-                        level="ERROR",
-                        module=func.__module__
+                        module=func.__module__,
                     )
                     return default_return
                 _debug_log(f"{func.__name__} 异常: {e}", level="WARNING", module=func.__module__)
@@ -221,7 +220,7 @@ def with_write_session(default_return: Any = None, fallback_on_corruption: bool 
             if 'session' in kwargs and kwargs['session'] is not None:
                 return func(*args, **kwargs)
                 
-            db_path = kwargs.get('db_path') or connection.DB_PATH
+            db_path = kwargs.get('db_path') or _config.DB_PATH
             c = None
             try:
                 c = connection._get_conn(db_path)
@@ -237,11 +236,10 @@ def with_write_session(default_return: Any = None, fallback_on_corruption: bool 
                 return res
             except Exception as e:
                 if fallback_on_corruption and _is_sqlite_data_corruption_error(e):
-                    _debug_log_throttled(
+                    get_logger().warning_throttled(
                         f"{func.__name__}_corruption",
                         f"{func.__name__} 写入数据损坏异常: {e}",
-                        level="WARNING",
-                        module=func.__module__
+                        module=func.__module__,
                     )
                     return default_return
                 _debug_log(f"{func.__name__} 写入异常: {e}", level="WARNING", module=func.__module__)

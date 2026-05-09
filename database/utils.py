@@ -50,17 +50,6 @@ _MGMT_TOKEN_VALIDATE_TTL_SECONDS = int(os.getenv("MGMT_TOKEN_VALIDATE_TTL_SECOND
 _cloud_targets_cache: Dict[str, Any] = {"expire_at": 0.0, "targets": []}
 _mgmt_token_validation_cache: Dict[str, Any] = {"expire_at": 0.0, "valid": None, "reason": ""}
 
-_throttled_log_state: Dict[str, float] = {}
-_throttled_log_lock = None
-
-
-try:
-    import threading
-
-    _throttled_log_lock = threading.Lock()
-except Exception:
-    _throttled_log_lock = None
-
 
 def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG", module: str = "database.utils") -> None:
     elapsed = f" | Time: {int((time.time() - start_time) * 1000)}ms" if start_time else ""
@@ -82,30 +71,6 @@ def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG
             log_func(log_msg)
     except Exception:
         pass
-
-
-def _debug_log_throttled(
-    key: str,
-    msg: str,
-    interval_seconds: float = 30.0,
-    start_time: Optional[float] = None,
-    level: str = "DEBUG",
-    module: str = "database.utils",
-) -> None:
-    now = time.time()
-    should_log = False
-
-    if _throttled_log_lock is None:
-        should_log = True
-    else:
-        with _throttled_log_lock:
-            last_ts = float(_throttled_log_state.get(key, 0.0) or 0.0)
-            if now - last_ts >= float(interval_seconds):
-                _throttled_log_state[key] = now
-                should_log = True
-
-    if should_log:
-        _debug_log(msg, start_time=start_time, level=level, module=module)
 
 
 def _normalize_turso_url(hostname: str) -> str:

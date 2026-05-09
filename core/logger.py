@@ -262,10 +262,10 @@ class ContextLogger:
         self.context = {}
         self.async_logger = async_logger
         self.statistics = statistics
-        
+
         # 模块级别映射 {"module_name": level_number}
         self.module_levels = module_levels or {}
-        
+
         # 日志级别映射
         self.level_map = {
             "DEBUG": logging.DEBUG,      # 10
@@ -274,6 +274,10 @@ class ContextLogger:
             "ERROR": logging.ERROR,      # 40
             "CRITICAL": logging.CRITICAL # 50
         }
+
+        # 节流日志状态：{key: last_emit_ts}
+        self._throttle_state: Dict[str, float] = {}
+        self._throttle_lock = threading.Lock()
 
     def set_context(self, **kwargs):
         """设置上下文信息"""
@@ -394,6 +398,36 @@ class ContextLogger:
 
     def critical(self, message, **kwargs):
         self.log(logging.CRITICAL, message, **kwargs)
+
+    def log_throttled(self, level, key: str, message: str, interval_seconds: float = 30.0, **kwargs):
+        """节流日志：相同 key 在 interval_seconds 内只发一条。
+
+        - 跨模块共享同一 ContextLogger 实例（全局单例），所以 key 是进程级唯一
+          的，不同模块用同一 key 会互相节流——这是预期行为，调用方应自带前缀
+          （例如 "{func.__name__}_corruption"）。
+        - 线程安全。
+        """
+        now = time.time()
+        should_emit = False
+        with self._throttle_lock:
+            last_ts = self._throttle_state.get(key, 0.0)
+            if now - last_ts >= float(interval_seconds):
+                self._throttle_state[key] = now
+                should_emit = True
+        if should_emit:
+            self.log(level, message, **kwargs)
+
+    def debug_throttled(self, key: str, message: str, interval_seconds: float = 30.0, **kwargs):
+        self.log_throttled(logging.DEBUG, key, message, interval_seconds, **kwargs)
+
+    def info_throttled(self, key: str, message: str, interval_seconds: float = 30.0, **kwargs):
+        self.log_throttled(logging.INFO, key, message, interval_seconds, **kwargs)
+
+    def warning_throttled(self, key: str, message: str, interval_seconds: float = 30.0, **kwargs):
+        self.log_throttled(logging.WARNING, key, message, interval_seconds, **kwargs)
+
+    def error_throttled(self, key: str, message: str, interval_seconds: float = 30.0, **kwargs):
+        self.log_throttled(logging.ERROR, key, message, interval_seconds, **kwargs)
 
 def log_performance(logger_or_func):
     """性能监控装饰器"""
