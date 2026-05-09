@@ -3,8 +3,11 @@ core/sync_manager.py: 后台同步任务调度与队列管理。
 """
 import queue
 import threading
+import time
 from typing import Callable, Optional
 
+from core.active_profile_registry import is_active
+from core.sync_priority import Priority
 from database.momo_words import (
     get_local_word_note,
     get_word_note,
@@ -31,9 +34,13 @@ class SyncManager:
         self.on_conflict = on_conflict
         self.db_path = db_path
 
-        self.sync_queue = queue.Queue()
+        self.sync_queue = queue.PriorityQueue()
         self.conflict_sync_queue = queue.Queue()
         self._sync_worker_stopped = False
+        self._stop_event = threading.Event()
+        self._seq = 0
+        self._seq_lock = threading.Lock()
+        self._consecutive_p1_count = 0
 
         self._sync_duration_history = {
             "用户数据库": [],
@@ -84,17 +91,67 @@ class SyncManager:
         bounded_timeout_s = max(default_timeout_s, min(45.0, estimated_total_s))
         return round(bounded_timeout_s, 1)
 
-    def queue_maimemo_sync(self, voc_id, spell, interpretation, tags, force_sync: bool = False):
-        self.sync_queue.put(
-            {
-                "voc_id": str(voc_id),
-                "spell": spell,
-                "interpretation": interpretation,
-                "tags": list(tags or []),
-                # 内存信任标志：True 时跳过 DB 读兜底，直接发起网络同步
-                "force_sync": bool(force_sync),
-            }
-        )
+    def _next_seq(self) -> int:
+        with self._seq_lock:
+            self._seq += 1
+            return self._seq
+
+    def queue_maimemo_sync(
+        self,
+        voc_id,
+        spell,
+        interpretation,
+        tags,
+        force_sync: bool = False,
+        priority: Priority = Priority.P1,
+        profile_name: str = "",
+    ):
+        item = {
+            "voc_id": str(voc_id),
+            "spell": spell,
+            "interpretation": interpretation,
+            "tags": list(tags or []),
+            "force_sync": bool(force_sync),
+            "priority": int(priority),
+            "profile_name": str(profile_name or "").strip().lower(),
+        }
+        self.sync_queue.put((int(priority), self._next_seq(), item))
+
+    def _take_next_item(self):
+        try:
+            p0 = self.sync_queue.get_nowait()
+        except queue.Empty:
+            return None
+        return self._apply_starvation_policy(p0)
+
+    def _apply_starvation_policy(self, p0):
+        # 防饿死：连续 5 个 P1 后若存在非 P1，强制让出 1 个。
+        if int(p0[0]) == int(Priority.P1):
+            if self._consecutive_p1_count >= 5:
+                deferred = [p0]
+                chosen = None
+                while True:
+                    try:
+                        candidate = self.sync_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if int(candidate[0]) > int(Priority.P1):
+                        chosen = candidate
+                        break
+                    deferred.append(candidate)
+                for task in deferred:
+                    self.sync_queue.put(task)
+                    self.sync_queue.task_done()
+                if chosen is not None:
+                    self._consecutive_p1_count = 0
+                    return chosen
+                self._consecutive_p1_count += 1
+                return p0
+            self._consecutive_p1_count += 1
+            return p0
+
+        self._consecutive_p1_count = 0
+        return p0
 
     def _defer_maimemo_conflict(self, item, reason: str):
         self.conflict_sync_queue.put(item)
@@ -121,10 +178,26 @@ class SyncManager:
 
     def _maimemo_sync_worker(self):
         while True:
-            item = self.sync_queue.get()
+            if self._stop_event.is_set() and self.sync_queue.empty():
+                break
+
+            wrapped = self._take_next_item()
+            if wrapped is None:
+                try:
+                    wrapped = self.sync_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                wrapped = self._apply_starvation_policy(wrapped)
+
+            priority, _, item = wrapped
+            task_done_manually = False
             try:
-                if item is None:
-                    break
+                if int(priority) >= int(Priority.P3) and not is_active(item.get("profile_name", "")):
+                    self.sync_queue.put((priority, self._next_seq(), item))
+                    self.sync_queue.task_done()
+                    task_done_manually = True
+                    time.sleep(0.5)
+                    continue
 
                 voc_id = item["voc_id"]
                 spell = item["spell"]
@@ -316,7 +389,8 @@ class SyncManager:
                         },
                     )
             finally:
-                self.sync_queue.task_done()
+                if not task_done_manually:
+                    self.sync_queue.task_done()
 
         self._sync_worker_stopped = True
 
@@ -328,7 +402,7 @@ class SyncManager:
     def shutdown(self):
         pending_count = self.sync_queue.qsize()
         self.logger.info(f"退出前关闭后台同步线程，剩余任务 {pending_count} 个...")
-        self.sync_queue.put(None)
+        self._stop_event.set()
         self.sync_worker_thread.join(timeout=5.0)
         if self.sync_worker_thread.is_alive():
             self.logger.warning("后台同步线程未在 10 秒内结束")

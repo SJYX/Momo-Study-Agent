@@ -16,6 +16,7 @@ from database.momo_words import (
     mark_processed_batch,
 )
 from database.utils import clean_for_maimemo
+from core.sync_priority import Priority
 from core.sync_manager import SyncManager
 
 
@@ -288,6 +289,7 @@ class StudyWorkflow:
                     item["brief"],
                     item["tags"],
                     force_sync=True,  # 内存信任：刚生成结果直接同步，跳过写后即读
+                    priority=Priority.P1,
                 )
                 self.logger.info(
                     f"[RowStatus] {item['spell']} 已入同步队列",

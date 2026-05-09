@@ -20,6 +20,7 @@ from core.log_config import get_full_config
 from core.logger import setup_logger
 from core.maimemo_api import MaiMemoAPI
 from core.study_workflow import StudyWorkflow
+from core.sync_priority import Priority
 from core.ui_manager import CLIUIManager
 from database.connection import cleanup_concurrent_system, init_concurrent_system
 from database.momo_words import get_unsynced_notes
@@ -69,6 +70,7 @@ class StudyFlowManager:
                     clean_for_maimemo(note.get("basic_meanings", "")),
                     ["雅思"],
                     force_sync=True,
+                    priority=Priority.P1,
                 )
 
     def run(self):
