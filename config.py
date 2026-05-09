@@ -1,8 +1,30 @@
-import os
-import sys
+"""
+config.py: 全局配置导出 + profile bootstrap 入口。
+
+Phase 6.3a 起：profile 生命周期 / 三阶段 env 加载 / DB 路径解析 已抽到
+``core/profile_loader.py``；本文件保留为：
+
+1. UTF-8 控制台 hack（Windows）。
+2. 路径常量（BASE_DIR / DATA_DIR / PROFILES_DIR / *_PROMPT_FILE）。
+3. 调用 profile_loader.bootstrap_initial_profile 拿到 ACTIVE_USER + DB_PATH。
+4. 静态 settings 导出（API keys / Turso URL / 重试常量等）。
+5. switch_user thin wrapper（含跨模块 patch）——历史 wart，待 6.3b/6.4 后续清理。
+
+字段名与导出列表 100% 与重构前一致，所有 ``from config import X`` 都不破。
+"""
 import io
+import os
 import platform
-from dotenv import load_dotenv
+import sys
+
+from core.profile_loader import (
+    USER_SCOPED_KEYS,
+    bootstrap_initial_profile,
+    normalize_username as _normalize_username,
+    resolve_profile_env_path as _resolve_profile_env_path,
+    resolve_user_db_paths as _resolve_user_db_paths,
+    switch_user as _switch_user_impl,
+)
 
 # Force UTF-8 encoding for console output on Windows
 if platform.system() == "Windows" and "pytest" not in sys.modules:
@@ -24,137 +46,26 @@ REFINE_PROMPT_FILE = os.path.join(BASE_DIR, "docs", "prompts", "refine_prompt.md
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PROFILES_DIR, exist_ok=True)
 
-# 先加载全局 .env 以便交互向导可以读取共享配置（如 ADMIN_PASSWORD_HASH / Hub 配置）
-# 参考模板: .env.example
 global_env_path = os.path.join(BASE_DIR, ".env")
-if os.path.exists(global_env_path):
-    load_dotenv(global_env_path, override=False)  # override=False: 不覆盖已有的
-
-# 用户隔离的敏感配置：必须来自 data/profiles/<user>.env，而不是全局 .env
-USER_SCOPED_KEYS = [
-    "MOMO_TOKEN",
-    "AI_PROVIDER",
-    "MIMO_API_KEY",
-    "GEMINI_API_KEY",
-    "TURSO_DB_URL",
-    "TURSO_AUTH_TOKEN",
-    "TURSO_DB_HOSTNAME",
-    "TURSO_TEST_DB_URL",
-    "TURSO_TEST_AUTH_TOKEN",
-    "TURSO_TEST_DB_HOSTNAME",
-]
-for key in USER_SCOPED_KEYS:
-    os.environ.pop(key, None)
-
-# 全局管理配置必须以 .env 为准，避免当前 shell 残留旧值导致 slug/token 混用
-if os.path.exists(global_env_path):
-    load_dotenv(global_env_path, override=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 多用户 Profile 初始化 (Multi-user Initialization)
+# Profile bootstrap：三阶段 env 加载 + DB 路径解析
 # ──────────────────────────────────────────────────────────────────────────────
-# 只有在直接运行主程序或脚本时触发交互，如果是自动化测试，建议通过环境变量指定用户
-if "pytest" in sys.modules and os.getenv("MOMO_USER") is None:
-    os.environ["MOMO_USER"] = "test_user"
+_bootstrap = bootstrap_initial_profile(
+    global_env_path=global_env_path,
+    profiles_dir=PROFILES_DIR,
+    data_dir=DATA_DIR,
+)
 
-# 帮助模式下避免触发交互式用户选择，确保 `python main.py --help` 可直接输出帮助。
-if any(arg in ("-h", "--help") for arg in sys.argv[1:]) and os.getenv("MOMO_USER") is None:
-    os.environ["MOMO_USER"] = "default"
+ACTIVE_USER = _bootstrap.active_user
+DB_PATH = _bootstrap.db_path
+TEST_DB_PATH = _bootstrap.test_db_path
+_USER_FROM_ENV = _bootstrap.user_from_env
 
-ACTIVE_USER = os.getenv("MOMO_USER") or "default"
-_USER_FROM_ENV = os.getenv("MOMO_USER") is not None
-
-
-def _normalize_username(username: str) -> str:
-    return (username or "").strip().lower()
-
-
-def _resolve_profile_env_path(username: str):
-    """按大小写不敏感方式定位 profile 文件，返回 (规范用户名, 文件路径或 None)。"""
-    normalized = _normalize_username(username)
-    if not normalized:
-        return normalized, None
-
-    direct_path = os.path.join(PROFILES_DIR, f"{normalized}.env")
-    if os.path.exists(direct_path):
-        return normalized, direct_path
-
-    for entry in os.listdir(PROFILES_DIR):
-        if not entry.lower().endswith(".env"):
-            continue
-        stem = entry[:-4]
-        if stem.strip().lower() == normalized:
-            return normalized, os.path.join(PROFILES_DIR, entry)
-    return normalized, None
-
-
-ACTIVE_USER = _normalize_username(ACTIVE_USER)
-
-def _resolve_user_db_paths(user: str):
-    db_filename = f"history-{user.lower()}.db"
-    db_path = os.path.join(DATA_DIR, db_filename)
-    old_db_path = os.path.join(DATA_DIR, f"history_{user}.db")
-    old_db_path_lower = os.path.join(DATA_DIR, f"history_{user.lower()}.db")
-    if not os.path.exists(db_path):
-        if os.path.exists(old_db_path):
-            db_path = old_db_path
-        elif os.path.exists(old_db_path_lower):
-            db_path = old_db_path_lower
-
-    test_db_path = os.path.join(DATA_DIR, f"test-{user.lower()}.db")
-    old_test_path = os.path.join(DATA_DIR, f"test_{user}.db")
-    if not os.path.exists(test_db_path) and os.path.exists(old_test_path):
-        test_db_path = old_test_path
-
-    return db_path, test_db_path
-
-# 内部导入避免循环依赖
+# 内部导入（与 ProfileManager 解耦的轻量初始化）
 from core.profile_manager import ProfileManager
 
 pm = ProfileManager(PROFILES_DIR)
-
-# 如果通过环境变量指定用户，先加载该用户 profile
-ACTIVE_USER, profile_env = _resolve_profile_env_path(ACTIVE_USER)
-if _USER_FROM_ENV and profile_env:
-    load_dotenv(profile_env, override=True)
-
-# 先为当前用户（或 default）准备路径，供其他模块在初始化期间引用
-DB_PATH, TEST_DB_PATH = _resolve_user_db_paths(ACTIVE_USER)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 强制云端模式（全局不可覆盖）
-# ──────────────────────────────────────────────────────────────────────────────
-# 无论用户配置如何，强制云端模式始终从全局 .env 读取
-# 这确保了所有用户都必须使用云端数据库
-if os.path.exists(global_env_path):
-    # 重新加载全局配置中的 FORCE_CLOUD_MODE
-    global_config = {}
-    with open(global_env_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                parts = line.split('=', 1)
-                if len(parts) == 2:
-                    k, v = parts
-                    global_config[k.strip()] = v.strip().strip('"').strip("'")
-
-    if 'FORCE_CLOUD_MODE' in global_config:
-        os.environ['FORCE_CLOUD_MODE'] = global_config['FORCE_CLOUD_MODE']
-
-if not _USER_FROM_ENV:
-    # 彻底杜绝 import 时的交互行为。
-    # 如果没有指定 MOMO_USER，默认降级为 "default"。
-    # 真正的交互式用户选择必须由 main.py 等入口点显式触发 pm.pick_profile()。
-    ACTIVE_USER = "default"
-    os.environ["MOMO_USER"] = ACTIVE_USER
-    
-    # 重新加载选中用户的配置文件（用户配置优先级更高）
-    ACTIVE_USER, profile_env = _resolve_profile_env_path(ACTIVE_USER)
-    if profile_env:
-        load_dotenv(profile_env, override=True)
-        
-    # 根据最终选中的用户重新计算数据库路径
-    DB_PATH, TEST_DB_PATH = _resolve_user_db_paths(ACTIVE_USER)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 导出核心配置 (Exported Config)
@@ -207,12 +118,12 @@ ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
 # 运行控制
 DRY_RUN = False
 
+
 # 强制云端运行模式
-# True: 必须使用云端数据库，本地仅作为备份/缓存
-# False: 允许纯本地运行（不推荐）
 def get_force_cloud_mode():
     """动态获取强制云端模式。允许在程序运行期间通过环境变量临时修改。"""
     return os.getenv('FORCE_CLOUD_MODE', 'False').lower() in ('true', '1', 'yes', 'y')
+
 
 FORCE_CLOUD_MODE = get_force_cloud_mode()
 
@@ -223,30 +134,22 @@ FORCE_CLOUD_MODE = get_force_cloud_mode()
 def switch_user(username: str) -> str:
     """热切换当前用户：重新加载 profile env 并更新模块级变量。
 
-    调用后 config.AI_PROVIDER / DB_PATH / MOMO_TOKEN 等立即生效。
+    调用后 ``config.AI_PROVIDER`` / ``config.DB_PATH`` / ``config.MOMO_TOKEN`` 等
+    立即生效。所有下游 ``database.*`` 模块都直接读 ``config.DB_PATH``——
+    Phase 6.4 起本函数不再反向 patch 任何子模块的全局变量。
+
     返回规范化后的用户名。
     """
     global ACTIVE_USER, MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY
     global AI_PROVIDER, DB_PATH, TEST_DB_PATH, TURSO_DB_URL, TURSO_AUTH_TOKEN
 
-    # 1. 清除旧的用户隔离环境变量
-    for key in USER_SCOPED_KEYS:
-        os.environ.pop(key, None)
+    normalized, db_path, test_db_path = _switch_user_impl(
+        username,
+        global_env_path=global_env_path,
+        profiles_dir=PROFILES_DIR,
+        data_dir=DATA_DIR,
+    )
 
-    # 2. 设置新用户并加载 profile
-    normalized, profile_env = _resolve_profile_env_path(username)
-    if not normalized:
-        normalized = "default"
-
-    os.environ["MOMO_USER"] = normalized
-    if profile_env:
-        load_dotenv(profile_env, override=True)
-
-    # 3. 重新加载全局 .env（保留全局配置）
-    if os.path.exists(global_env_path):
-        load_dotenv(global_env_path, override=False)
-
-    # 4. 更新模块级变量
     ACTIVE_USER = normalized
     MOMO_TOKEN = os.getenv("MOMO_TOKEN")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -254,20 +157,7 @@ def switch_user(username: str) -> str:
     AI_PROVIDER = os.getenv("AI_PROVIDER", "mimo")
     TURSO_DB_URL = os.getenv("TURSO_DB_URL")
     TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
-    DB_PATH, TEST_DB_PATH = _resolve_user_db_paths(normalized)
-
-    # Also update other modules that cache DB_PATH at import time
-    try:
-        import database.connection as _db_conn
-        _db_conn.DB_PATH = DB_PATH
-    except Exception:
-        pass
-    try:
-        import database.momo_words as _db_momo
-        _db_momo.DB_PATH = DB_PATH
-        _db_momo.TEST_DB_PATH = TEST_DB_PATH
-    except Exception:
-        pass
+    DB_PATH = db_path
+    TEST_DB_PATH = test_db_path
 
     return normalized
-
