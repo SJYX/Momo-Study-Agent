@@ -13,10 +13,25 @@ import LightConfirmBar from '../components/today/LightConfirmBar'
 import FailureGroupsPanel from '../components/today/FailureGroupsPanel'
 import BulkGuardModal from '../components/today/BulkGuardModal'
 import TodayHero from '../components/today/TodayHero'
+import { useSearchParams } from 'react-router-dom'
+import { parseDrillDownParams, isDrillDownActive, drillDownLabel } from '../utils/drillDown'
+import { isEnabled } from '../utils/featureFlags'
+import DrillDownNotice from '../components/today/DrillDownNotice'
 
 export default function TodayTasksV2() {
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
   const c = useTodayController(rowRefs)
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const drill = parseDrillDownParams(searchParams)
+  const drillActive = isEnabled('ff_drilldown_v2') && isDrillDownActive(drill)
+
+  const clearDrillDown = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('error_type')
+    next.delete('window')
+    setSearchParams(next, { replace: true })
+  }
 
   // 找当前 running 词 + phase（rowStatusMap 的 key 是 lowercase，从 items 拿原始大小写）
   const runningItem = c.items.find(
@@ -84,6 +99,10 @@ export default function TodayTasksV2() {
         onRetryBatch={() => c.refresh()}
         disabled={c.processing || c.refreshing || c.confirmingProcess}
       />
+
+      {drillActive && (
+        <DrillDownNotice label={drillDownLabel(drill)} onClear={clearDrillDown} />
+      )}
 
       {/* V1-T2: 轻确认条 */}
       {c.confirmingProcess && (
