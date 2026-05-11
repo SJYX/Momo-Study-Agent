@@ -58,4 +58,7 @@ export const queryKeys = {
   userGateway: () => ['user_gateway'] as const,
   opsMonitor: (profile: string, window: string) =>
     ['ops_monitor', profile, window] as const,
+  statsSummary: (profile: string = activeProfile()) =>
+    ['stats_summary', profile] as const,
+  session: () => ['session'] as const,
 } as const
