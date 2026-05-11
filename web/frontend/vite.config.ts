@@ -22,8 +22,8 @@ export default defineConfig({
     emptyOutDir: true,
   },
   test: {
-    // V1 测试集中在 utils/ 纯函数。后续如需测组件再引入 jsdom + @testing-library/react。
-    environment: 'node',
+    // 同时支持纯函数测试（默认 jsdom 也兼容）和组件 / DOM 事件测试
+    environment: 'jsdom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     globals: false,
   },
