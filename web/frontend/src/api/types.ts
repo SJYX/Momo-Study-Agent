@@ -97,27 +97,6 @@ export interface TaskListResponse {
   total?: number
 }
 
-export interface FailureHotspot {
-  error_type: string
-  error_code?: string | null
-  count?: number
-  latest_at?: number
-  sample_items?: Record<string, unknown>[]
-}
-
-export interface OpsStatsResponse {
-  tasks_running?: number
-  tasks_done_1h?: number
-  tasks_error_1h?: number
-  recent_tasks?: TaskListItem[]
-  failure_hotspots?: FailureHotspot[]
-  system_ok?: boolean
-  health_checks?: PreflightCheck[]
-  sync_queue_depth?: number
-  sync_conflict_count?: number
-  avg_latency_ms?: number
-}
-
 export interface RowState {
   item_id: string
   status: 'pending' | 'running' | 'done' | 'error' | 'warning'
@@ -229,6 +208,54 @@ export interface StatsSummary {
   avg_latency_ms?: number
   sync_queue_depth?: number
   weak_words_count?: number
+  degraded?: boolean
+  degraded_reason?: string | null
+}
+
+export interface FailureHotspot {
+  error_type: string
+  error_code?: string | null
+  count?: number
+  latest_at?: number
+  sample_items?: Record<string, unknown>[]
+}
+
+export interface OpsStatsResponse {
+  tasks_running?: number
+  tasks_done_1h?: number
+  tasks_error_1h?: number
+  recent_tasks?: TaskListItem[]
+  failure_hotspots?: FailureHotspot[]
+  system_ok?: boolean
+  health_checks?: PreflightCheck[]
+  sync_queue_depth?: number
+  sync_conflict_count?: number
+  avg_latency_ms?: number
+  degraded?: boolean
+  degraded_reason?: string | null
+}
+
+export interface MetricPercentiles {
+  p50?: number | null
+  p95?: number | null
+  p99?: number | null
+  count?: number
+}
+
+export interface OpsMetricsResponse {
+  profile: string
+  api?: MetricPercentiles
+  db_batch_write?: MetricPercentiles
+  db_idle_sync?: MetricPercentiles
+  sync_queue_depth?: MetricPercentiles
+  sync_task?: MetricPercentiles
+  window_ttl_s?: number
+  is_active_profile?: boolean
+}
+
+export interface OpsMetricsResetResponse {
+  profile?: string | null
+  cleared?: boolean
 }
 
 export interface SyncConflict {
@@ -243,6 +270,8 @@ export interface SyncStatusResponse {
   queue_depth?: number
   conflict_count?: number
   conflicts?: SyncConflict[]
+  degraded?: boolean
+  degraded_reason?: string | null
 }
 
 export interface SyncFlushResponse {

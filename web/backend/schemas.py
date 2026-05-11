@@ -298,6 +298,9 @@ class StatsSummary(BaseModel):
     avg_latency_ms: float = 0.0
     sync_queue_depth: int = 0
     weak_words_count: int = 0
+    # PLAYBOOK B4：与 SyncStatusResponse.degraded 同口径，本期只开通道（默认 False）
+    degraded: bool = False
+    degraded_reason: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +329,38 @@ class OpsStatsResponse(BaseModel):
     sync_queue_depth: int = 0
     sync_conflict_count: int = 0
     avg_latency_ms: float = 0.0
+    # PLAYBOOK B4：降级通道（本期只开 schema，不主动写入）
+    degraded: bool = False
+    degraded_reason: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# /api/ops/metrics — PLAYBOOK B5 指标系统
+# ---------------------------------------------------------------------------
+class MetricPercentiles(BaseModel):
+    """单个 metric 的百分位快照。空窗口时各 p* 为 None。"""
+    p50: Optional[float] = None
+    p95: Optional[float] = None
+    p99: Optional[float] = None
+    count: int = 0
+
+
+class OpsMetricsResponse(BaseModel):
+    """指标层快照——按 profile 维度返回 API / DB / 同步队列 / 同步任务的滚动百分位。"""
+    profile: str
+    api: MetricPercentiles = Field(default_factory=MetricPercentiles)
+    db_batch_write: MetricPercentiles = Field(default_factory=MetricPercentiles)
+    db_idle_sync: MetricPercentiles = Field(default_factory=MetricPercentiles)
+    sync_queue_depth: MetricPercentiles = Field(default_factory=MetricPercentiles)
+    sync_task: MetricPercentiles = Field(default_factory=MetricPercentiles)
+    window_ttl_s: int = 300
+    is_active_profile: bool = False
+
+
+class OpsMetricsResetResponse(BaseModel):
+    """指标 reset endpoint 响应。"""
+    profile: Optional[str] = None
+    cleared: bool = True
 
 
 # ---------------------------------------------------------------------------
