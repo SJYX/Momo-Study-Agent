@@ -158,7 +158,7 @@ describe('featureFlags', () => {
 
   it('V2_FLAGS 注册表：所有 V2 flag 都有 task 标记', () => {
     for (const [key, def] of Object.entries(V2_FLAGS)) {
-      expect(def.task).toMatch(/^V2-T\d/)
+      expect(def.task).toMatch(/^V[23]-T\d/)
       expect(typeof def.default).toBe('boolean')
       expect(typeof def.killable).toBe('boolean')
     }
@@ -199,5 +199,13 @@ describe('featureFlags', () => {
 
   it('BULK_RETRY_THRESHOLD：与 C03 §3 一致', () => {
     expect(BULK_RETRY_THRESHOLD).toBe(100)
+  })
+
+  it('redesign flags：默认 off', () => {
+    const sources: FlagOverrideSources = {}
+    expect(evaluateFlag('ff_redesign_sidebar', sources)).toBe(false)
+    expect(evaluateFlag('ff_redesign_ops', sources)).toBe(false)
+    expect(evaluateFlag('ff_redesign_today', sources)).toBe(false)
+    expect(evaluateFlag('ff_drilldown_v2', sources)).toBe(false)
   })
 })
