@@ -62,14 +62,17 @@ result = _row_to_dict(cur, row) if row else None
 
 ### 新增字段
 
-只在 `database/schema.py` 的 `_create_tables()` 中添加，并在函数末尾追加兼容升级：
+所有表结构变更都通过 PRAGMA user_version 迁移框架处理（Phase 6.2）：
 
 ```python
-try:
-    cur.execute("ALTER TABLE my_table ADD COLUMN new_field TEXT")
-except Exception:
-    pass  # 字段已存在时静默跳过
+# database/migrations/V001_initial.py 中维护 _ADD_COLUMNS
+_ADD_COLUMNS = [
+    "ALTER TABLE ai_word_notes ADD COLUMN content_origin TEXT DEFAULT 'ai_generated'",
+    # ...
+]
 ```
+
+迁移会在启动时自动执行（`database/migrations/runner.py::apply_migrations()`），确保兼容性。
 
 ### 获取连接
 

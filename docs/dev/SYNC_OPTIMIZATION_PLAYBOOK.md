@@ -76,7 +76,7 @@ B5 可观测性           → Phase 5
    - **P1**：今日任务产出的同步项（`study_workflow.py` / `study_flow.py`）
    - **P2**：用户主动触发（`web/routers/sync.py` 的 flush/retry）
    - **P3**：warmup 入队补偿（`user_context._warmup_async`）
-   - **P4**：预留给未来的延迟重试，本期不强制使用
+   - **P4**：预留给未来的延迟重试
 4. 出队策略：**严格优先级**——P 高的有就先处理。
 5. **防饿死保底**：worker 维护 `consecutive_high_count`，连续处理 5 个 P1 后强制让一个 P2/P3 出队。简化于原 PLAYBOOK 的 60/25/15 加权方案，因为单消费者实际吞吐 ~5 条/秒（受 maimemo HTTP 频控限制），权重精度无意义。
 
@@ -96,9 +96,9 @@ B5 可观测性           → Phase 5
    - 若 `ActiveProfileRegistry.get_active()` 不是本 profile，且当前任务优先级 ≥ P3 → 重新入队，`time.sleep(0.5)` 后 continue。
    - P1/P2 始终立即处理（即便 profile 不 active，也是用户已经"主动要求"了）。
 
-**单消费者属性**：保持不变。SyncManager 仍只起一个 worker thread，本期禁止改造为 ThreadPoolExecutor。
+**单消费者架构**：每个 profile 一个 SyncManager worker thread（多 profile = 多 worker 互不干扰）。
 
-**抢占粒度**：单任务级（每处理完一条 maimemo HTTP 同步，下一轮 worker loop 重新查询活跃 profile / 优先级）。原 PLAYBOOK 的"小批次 20-50 条 / <100ms"概念在 maimemo 网络同步上不成立——一条一次 HTTP，几百 ms 起。
+**抢占粒度**：单任务级（每处理完一条 maimemo HTTP 同步，下一轮 worker loop 重新查询活跃 profile / 优先级）。这与 HTTP 请求的几百 ms 粒度相匹配。
 
 ### B3. 闲时同步引擎（依赖 Phase 5）
 

@@ -106,7 +106,7 @@
 | **E** 单元测试 | ✅ 已完成（新增 `tests/unit/sync_manager/` 三个用例） |
 | 辅助 | ✅ `core/sync_priority.py` Priority IntEnum 已建 |
 
-下一步：进入 Phase 4.5（API 查询降重），并补跑一次可复现的全量回归（pytest 临时目录固定到项目内）。
+**Phase 4.5 已完成**：API 查询降重（COUNT 替代全量 fetch）。
 
 - `[x]` **A**：`core/sync_manager.py` 的 `sync_queue` 由 `queue.Queue` 升级为 `queue.PriorityQueue`。任务条目封装为 `(priority_int, seq, payload)`，`seq` 单调递增保证同优先级 FIFO 并避免 dict 比较 TypeError。**shutdown 改用 `_stop_event` + 短 timeout 轮询**（取代原计划的 sentinel 方案），更干净并与 `database/execution_engine.py` 一致。
 - `[x]` **B**：4 处调用点注入优先级——

@@ -96,9 +96,9 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
     - `TURSO_HUB_DB_URL` 仅用于中央管理/鉴权/统计。
     - `TURSO_DB_URL` 仅用于个人学习数据。
     - 禁止凭据落入个人库，禁止学习记录落入 Hub。
-2. 禁用 `row_factory` 依赖。
-    - Turso（libsql）不支持 `sqlite3.Row` 语义。
-    - 查询结果统一走 `_row_to_dict(cursor, row)`。
+2. 禁用 SQLite Row 对象（Turso 兼容性约束）。
+    - Turso 的 `libsql.Connection` 对象不支持 `sqlite3.Row` 对象和 `row_factory` 赋值（详见 DEC-003）。
+    - 查询结果统一走 `_row_to_dict(cursor, row)` 映射为字典。
 3. 严禁业务线程直连写库，必须使用读写分离的高并发架构。
     - 读操作：必须使用线程专属的 `_get_thread_local_read_conn()` （防争抢与连接损坏）。
     - 写操作：必须投递给 `_write_queue`（如 `_queue_write_operation`），由后台守护线程单线程序列化执行。禁止业务代码里直接建立普通连接并随意 `INSERT/UPDATE`。
@@ -115,7 +115,7 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 
 ### 3.2 LLM 与生成
 
-1. Prompt 不得硬编码在 Python 长字符串中。
+1. Prompt 不得硬编码在 Python 长字符串中（详见 DEC-006）。
     - 必须放在 `docs/prompts/*.md` 并由配置路径读取。
 2. 生成结果契约为 JSON 数组。
     - 目标格式：`[...]`。
