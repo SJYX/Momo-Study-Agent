@@ -25,6 +25,7 @@ import { opsDataToCsv } from '../utils/opsCsv'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
 import type { OpsStatsResponse, TaskListItem, FailureHotspot, PreflightCheck } from '../api/types'
+import OpsMonitorV2 from './OpsMonitorV2'
 
 const POLL_INTERVALS = [
   { label: '5s', value: 5000 },
@@ -78,6 +79,9 @@ function TaskTypeTag({ taskType }: { taskType: string }) {
 }
 
 export default function OpsMonitor() {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  if (isEnabled('ff_redesign_ops')) return <OpsMonitorV2 />
+
   const queryClient = useQueryClient()
   const activeProfile = useProfileStore(s => s.activeProfile)
   const navigate = useNavigate()
