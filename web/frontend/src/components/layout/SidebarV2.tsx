@@ -1,24 +1,16 @@
 /**
- * components/layout/Sidebar.tsx — 左侧导航栏。
+ * components/layout/SidebarV2.tsx — 暖色 Notion 风 Sidebar 重写。
+ * 受 ff_redesign_sidebar 控制，由 Sidebar.tsx 分发。
  */
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  Activity,
-  LayoutDashboard,
-  BookOpen,
-  CalendarDays,
-  RefreshCw,
-  Library,
-  RefreshCcw,
-  Shield,
-  Users,
-  LogOut,
+  Activity, LayoutDashboard, BookOpen, CalendarDays, RefreshCw,
+  Library, RefreshCcw, Shield, Users, LogOut,
 } from 'lucide-react'
 import { useProfileStore } from '../../stores/profile'
 import { isEnabled } from '../../utils/featureFlags'
 import { prefetchForRoute } from '../../queries/prefetch'
-import SidebarV2 from './SidebarV2'
 
 const navItems = isEnabled('ff_ops_monitor')
   ? [
@@ -43,10 +35,7 @@ const navItems = isEnabled('ff_ops_monitor')
       { to: '/users', label: '用户设置', icon: Users },
     ]
 
-export default function Sidebar() {
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  if (isEnabled('ff_redesign_sidebar')) return <SidebarV2 />
-
+export default function SidebarV2() {
   const activeProfile = useProfileStore((s) => s.activeProfile)
   const clearProfile = useProfileStore((s) => s.clearProfile)
   const navigate = useNavigate()
@@ -58,11 +47,11 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="w-56 bg-gray-900 text-gray-100 flex flex-col min-h-screen">
+    <aside className="w-56 bg-surface-sidebar text-text-secondary flex flex-col min-h-screen border-r border-border-default">
       {/* Logo */}
-      <div className="px-4 py-5 border-b border-gray-700">
-        <h1 className="text-lg font-bold tracking-tight">MOMO Agent</h1>
-        <p className="text-xs text-gray-400 mt-0.5">智能单词助记系统</p>
+      <div className="px-4 py-5 border-b border-border-default">
+        <h1 className="text-lg font-bold tracking-tight text-text-primary">MOMO Agent</h1>
+        <p className="text-xs text-text-muted mt-0.5">智能单词助记系统</p>
       </div>
 
       {/* Navigation */}
@@ -74,10 +63,10 @@ export default function Sidebar() {
             end={to === '/'}
             onMouseEnter={() => prefetchForRoute(queryClient, to)}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+              `flex items-center gap-3 px-3 py-2 rounded-button text-sm transition-colors ${
                 isActive
-                  ? 'bg-gray-700 text-white font-medium'
-                  : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                  ? 'bg-accent-soft text-accent-hover font-semibold'
+                  : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
               }`
             }
           >
@@ -88,18 +77,18 @@ export default function Sidebar() {
       </nav>
 
       {/* Profile + Footer */}
-      <div className="px-4 py-3 border-t border-gray-700">
+      <div className="px-4 py-3 border-t border-border-default">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-xs text-gray-400 truncate">{activeProfile || '未选择'}</span>
+          <span className="text-xs text-text-muted truncate">{activeProfile || '未选择'}</span>
           <button
             onClick={handleSwitchProfile}
-            className="text-gray-500 hover:text-gray-300 transition-colors"
+            className="text-text-muted hover:text-text-primary transition-colors"
             title="切换 Profile"
           >
             <LogOut size={14} />
           </button>
         </div>
-        <div className="text-xs text-gray-600">v1.0.0</div>
+        <div className="text-xs text-text-muted opacity-60">v1.0.0</div>
       </div>
     </aside>
   )
