@@ -102,37 +102,55 @@ B5 可观测性           → Phase 5
 
 ### B3. 闲时同步引擎（依赖 Phase 5）
 
-目标：真正实现"闲时加速，高峰让路"。
+**状态**：✅ 已完成（2026-05-11，与 B5 指标系统同步落地）。
 
 **前置依赖**：
 
-- 需要 P95 延迟、锁等待、API 请求频率指标——这些由 Phase 5 的 `LogStatistics` 提供。
-- 在监控基础设施落地前，本节内容**不实施**。
+- ~~Phase 5 LogStatistics~~ → 实际由 PLAYBOOK B5 新建的 `core/metrics.py` 替代（Phase 5 决议不激活 LogStatistics）
 
-预留设计要点（Phase 5 阶段实施时参考）：
+落地内容：
 
-1. Idle detector 进入条件需连续满足 5-10 秒（防抖）。
-2. 退出 idle 立即响应，不延迟。
-3. 仅在稳定 idle 状态下处理 P3+ 自动补偿任务。
+1. `core/sync_manager.py::_is_idle(profile)` 消费 `MetricsCollector` 的滚动百分位：
+   - `api.duration_ms` P95 < 200ms
+   - `sync.queue.depth` P95 < 5
+   - `db.batch_write.duration_ms` P95 < 100ms
+2. 进入条件需连续满足 ≥5 秒（`IDLE_DEBOUNCE_S`）防抖，退出时立即响应（任一指标超阈值即重置 `_idle_since`）。
+3. 仅在稳定 idle 状态下处理非 active profile 的 P3/P4 自动补偿任务；非 idle 时回退到 Phase 4 的 active profile 暂停。
+4. Kill Switch：`IDLE_ENGINE_ENABLED=False` 让 `_is_idle` 永远返回 False，行为退化到 Phase 4。
 
 ### B4. 前端协同（独立 web_ui 工作区）
 
+**状态**：✅ 已完成（2026-05-11）。
+
 **前置依赖**：A1（Phase 4.5）。否则 hover prefetch 会放大重查询代价。
 
-设计要点（不在 REFACTOR_PROGRESS 范围内，独立 PR）：
+落地内容（独立 PR / web_ui 工作区）：
 
-1. **Hover 悬停预获取**：导航栏 / 按钮 `onMouseEnter` 触发 React Query 的 `prefetchQuery`，利用 200ms 反应时间差实现"瞬间切页"。
-2. 关键页面骨架屏 + 核心字段优先渲染。
-3. API 降级元数据（`meta._is_degraded: true`），前端非侵入式提示。
-4. 同步状态页"实时统计 / 延迟明细"分层。
+1. **Hover 悬停预获取**：Sidebar `NavLink` `onMouseEnter` 触发 React Query `prefetchQuery`，按路由映射在 `web/frontend/src/queries/prefetch.ts` 集中维护；WordLibrary 行 hover 预拉详情。
+2. **关键页面骨架屏**：`web/frontend/src/components/ui/Skeleton.tsx` 提供 `SkeletonLine` / `SkeletonCard` / `SkeletonRow` 三变体，应用于 Dashboard / TodayTasks / WordLibrary。
+3. **API 降级元数据**：后端 `StatsSummary` / `OpsStatsResponse` / `SyncStatusResponse` 统一加 `degraded` / `degraded_reason` 字段（本期只开通道，后端不主动写入）；前端 `DegradedBanner.tsx` 原子组件挂在 Dashboard / SyncStatus，渲染黄色非侵入式提示。
+4. **Dashboard 迁 React Query**：最后一个 useState/useEffect holdout，迁完才能受益于 prefetch 与 invalidation 统一管理。
+5. **不做（推迟到 B5 之后）**：MATRIX 提到的"同步状态页延迟明细分层"——延迟数据源依赖 B5 指标系统。
 
 ### B5. 可观测性与自动策略（Phase 5）
 
-完全等同于 REFACTOR_PROGRESS Phase 5 内容：
+**状态**：✅ B5 指标系统已完成（2026-05-11）；自动策略（SLO 告警 → Kill Switch）推迟。
 
-1. 指标：API P95、同步吞吐、队列长度、锁等待、重试率。
-2. 阈值告警自动触发降级。
-3. 每日同步健康摘要。
+落地内容：
+
+1. **指标层 `core/metrics.py`**：进程内 `RollingWindow`（300s TTL + 1000 max_size）+ `MetricsCollector`（按 profile/metric 隔离），提供 P50/P95/P99 + count。
+2. **采集点**：
+   - API timing middleware（`web/backend/app.py`）记 `api.duration_ms`
+   - `database/execution_engine.py` 两处记 `db.batch_write.duration_ms` / `db.idle_sync.duration_ms`
+   - `core/sync_manager.py` worker 每轮采样 `sync.queue.depth`，每条同步记 `sync.task.duration_ms`
+3. **Endpoint**：`GET /api/ops/metrics?profile=...` 与 `POST /api/ops/metrics/reset?profile=...`
+4. **消费者**：B3 闲时引擎实时读取，OpsMonitor 前端面板可后续接入
+
+**未做（推迟）**：
+
+- 自动 SLO 告警 → Kill Switch 联动（手动 flag 即可应急）
+- 每日健康摘要 / 离线 dump
+- LogStatistics 旧组件清理
 
 ---
 

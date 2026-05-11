@@ -4,7 +4,7 @@
 
 ## 整体进度 (Overall Progress)
 
-- `[ ]` Phase 1: 数据库层重构与瘦身（Phase 1.5 行为不变瘦身仍未完成）
+- `[x]` Phase 1: 数据库层重构与瘦身（含 Phase 1.5 行为不变瘦身：momo_words.py 拆分为 4 个 repo + dto + sql_constants + _repo_helpers）
 - `[x]` Phase 2: Web 路由解耦与前端状态规范化
 - `[x]` Phase 3: 全局目录规范化与测试体系重组
 - `[x]` Phase 4: Path B 调度地基（sync_queue 优先级 + per-profile 暂停）
@@ -22,14 +22,14 @@
 - `[x]` 封装 `@with_read_session`, `@with_write_session` (或 Context Manager)。
 - `[x]` 下沉兜底：将 `momo_words.py` 业务代码中长达 70 行应对 SQLite 损坏的重试逻辑提取到底层统一拦截器。
 - `[x]` 重写 `database/momo_words.py` (1300+行)，大幅消除冗余模板代码。
-- `[ ]` Phase 1.5（行为不变瘦身）：按职责拆分 `momo_words.py` 为 `notes_repo.py` / `progress_repo.py` / `community_lookup.py` / `sync_service.py`，`momo_words.py` 仅保留兼容导出。
-- `[ ]` 抽取 `build_note_upsert_args(payload, metadata)`，统一单条与批量写入参数组装，消除重复字段拼装。
-- `[ ]` 抽取统一行映射工具（如 `row_to_dict_safe`），替换散落在各函数中的 `row` 转字典模板代码。
-- `[ ]` 抽取统一写入分发层（本地直写 vs 队列写），收敛重复分支模板逻辑。
-- `[ ]` 收紧异常策略：减少宽泛 `except Exception` 吞错，按可预期异常分类处理并保留结构化日志。
-- `[ ]` 引入 repo 层 DTO（`TypedDict` / `dataclass`）与集中化 SQL 常量，降低字典魔法字段与散落 SQL 维护成本。
-- `[ ]` 为 `sync_databases` / `sync_hub_databases` 提取共享模板（连接、状态、回调、异常映射），减少重复同步流程代码。
-- `[ ]` 新增 `tests/unit/database/` 真实单元测试，覆盖参数组装一致性、双写路径一致性、异常恢复分支。
+- `[x]` Phase 1.5（行为不变瘦身）：按职责拆分 `momo_words.py` 为 `notes_repo.py` / `progress_repo.py` / `community_lookup.py` / `sync_service.py`，`momo_words.py` 仅保留兼容导出（亦见 `database/legacy.py`）。
+- `[x]` 抽取 `build_note_upsert_args(payload, metadata)`，统一单条与批量写入参数组装，消除重复字段拼装。
+- `[x]` 抽取统一行映射工具（`row_to_dict` / `rows_to_dicts` / `row_value` 于 `_repo_helpers.py`），替换散落在各函数中的 `row` 转字典模板代码。
+- `[x]` 抽取统一写入分发层（`dispatch_write` / `dispatch_batch_write` 于 `_repo_helpers.py`），收敛本地直写 vs 队列写的重复分支模板。
+- `[x]` 收紧异常策略：`_classify_db_error` 等结构化分类替代裸 `except Exception`，关键路径保留结构化日志。
+- `[x]` 引入 repo 层 DTO（`database/dto.py`：`NotePayload` / `NoteMetadata` / `BatchNoteEntry` / `IterationPayload` / `AIBatchData` 等 `dataclass`）与集中化 SQL 常量（`database/sql_constants.py`），降低字典魔法字段与散落 SQL 维护成本。
+- `[x]` 为 `sync_databases` / `sync_hub_databases` 提取共享模板：拆出 `database/sync_service.py`，统一连接、状态、回调、异常映射。
+- `[x]` 新增 `tests/unit/database/` 真实单元测试：覆盖参数组装一致性（`test_build_note_upsert_args.py`）、双写路径一致性（`test_dispatch_paths.py`）、row helpers / SQL constants / community_lookup / sync_service 跳过路径等。
 
 ### Phase 2: Web 路由解耦与前端状态深度规范化
 
