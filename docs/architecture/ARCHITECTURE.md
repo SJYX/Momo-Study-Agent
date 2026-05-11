@@ -20,23 +20,30 @@ Momo Study Agent 是一个基于墨墨背单词 OpenAPI 的**多用户 AI 助记
 | 层 | 文件 | 职责 |
 | --- | --- | --- |
 | 入口 | `main.py` | 进程锁、配置引导、菜单路由、退出收尾 |
-| 配置 | `config.py` | 路径、用户 profile、全局配置加载 |
+| 配置 | `config.py` | 简化导出层（路径常量、bootstrap 调用、Settings 导出、switch_user 包装） |
+| 配置（新） | `core/profile_loader.py` | 三阶段 env 加载、用户规范化、DB 路径解析（Phase 6.3a） |
+| 配置（新） | `core/settings.py` | pydantic BaseSettings 配置模型、字段校验、缓存管理（Phase 6.3b） |
+| 特性开关（新） | `core/feature_flags.py` | Kill Switch 框架：AUTO_WARMUP_SYNC_ENABLED / SYNC_STATUS_HEAVY_QUERY_ENABLED / BACKGROUND_RETRY_ENABLED（Phase 6.1） |
 | UI | `core/ui_manager.py` | CLI 终端交互与状态呈现（仅 I/O，无业务） |
 | 向导 | `core/config_wizard.py` | 首次配置、凭证校验（`validate_momo/mimo/gemini`） |
 | Profile | `core/profile_manager.py` | 多账号管理、用户选择 |
-| 业务总线 | `core/study_workflow.py` | 任务过滤、AI 并发调度、批量落库投递 |
+| Profile 追踪（新） | `core/active_profile_registry.py` | 进程级活跃 profile 追踪（Web 多用户场景下对 P3+ 同步的暂停控制，Phase 4） |
+| 业务总线 | `core/study_workflow.py` | 任务过滤、AI 并发调度、批量落库投递、Priority.P1 注入 |
 | 迭代引擎 | `core/iteration_manager.py` | 薄弱词选优与强力重炼（`it_level` 分级） |
-| 薄弱词筛选 | `core/weak_word_filter.py` | 多维评分（熟悉度/复习/时间/迭代）+ 动态阈值 |
+| 薄弱词筛选 | `core/weak_word_filter.py` | 多维评分（熟悉度/复习/时间/迭代）+ 动态阈值、动态 `_config.DB_PATH` 读取 |
 | 墨墨 API | `core/maimemo_api.py` | 墨墨 OpenAPI 封装、`threading.Lock` 保护的频控 |
 | AI 客户端 | `core/gemini_client.py` / `core/mimo_client.py` | LLM 调用、结果清洗、`requests.Session` 复用 |
-| 后台同步 | `core/sync_manager.py` | 墨墨释义同步队列、冲突回写 |
-| 持久层 | `database/connection.py` | Embedded Replica 单例连接、写队列、后台写/同步守护线程 |
+| 后台同步 | `core/sync_manager.py` | PriorityQueue（P1/P2/P3/P4）、防饿死保底、活跃 profile 暂停、冲突回写（Phase 4） |
+| 优先级（新） | `core/sync_priority.py` | Priority IntEnum：P1(1) 今日 / P2(2) 主动 / P3(3) warmup / P4(4) 预留（Phase 4） |
+| 持久层 | `database/connection.py` | Embedded Replica 单例连接、写队列、后台写/同步守护线程、动态 `_config.DB_PATH` |
 | 持久层 | `database/momo_words.py` | 主库业务 SQL、`sync_databases()` / `sync_hub_databases()` |
 | 持久层 | `database/hub_users.py` | Hub 用户元数据与加密凭据 |
-| 持久层 | `database/schema.py` | 建表、`ALTER TABLE` 平滑升级、Hub 初始化 |
-| 持久层 | `database/utils.py` | 加密、时区时间戳、错误分类 |
+| 持久层 | `database/schema.py` | 建表、schema 迁移调用、migration 执行 |
+| 持久层（新） | `database/migrations/runner.py` | PRAGMA user_version 迁移编排、顺序应用、事务管理（Phase 6.2） |
+| 持久层（新） | `database/migrations/V001_initial.py` | 历史 ALTER 语句收纳、幂等性检查、数据回填（Phase 6.2） |
+| 持久层 | `database/utils.py` | 加密、时区时间戳、错误分类、动态 `_config.DB_PATH` |
 | 持久层（可选门面）| `database/legacy.py` | `from database.legacy import X` 作为老 `core.db_manager` 调用点的过渡 drop-in（re-export 所有子模块） |
-| 日志 | `core/logger.py` + `core/log_config.py` | 结构化 JSON、异步写入、性能统计 |
+| 日志 | `core/logger.py` + `core/log_config.py` | 结构化 JSON、异步写入、性能统计、ContextLogger 节流方法（Phase 5） |
 | 体检 | `tools/preflight_check.py` | 启动前连通性 + 凭据校验（text/json 双输出） |
 
 ## 3. 主流程数据流
@@ -78,15 +85,17 @@ IterationManager.run_iteration()
   追加薄弱词到云词本 "MomoAgent: 薄弱词攻坚"
 ```
 
-## 4. 并发模型
+## 4. 并发模型与优先级调度
 
 > 从高并发事故里沉淀的读写分离架构。详见 [`../../database/README.md`](../../database/README.md#runtime-iron-rules运行期铁律) 的运行期铁律小节。
+
+### 4.1 基础读写分离
 
 ```
 业务线程（多）
    ├→ 读路径 → ThreadLocal 读连接（本地 SQLite 副本）
-   └→ 写路径 → 写队列 Queue(maxsize=10000)
-                    ↓
+   └→ 写路径 → PriorityQueue(maxsize=10000)  # Phase 4 升级
+                    ↓ (priority, seq, payload)
               [后台写守护线程（单）]
                     ↓
               Embedded Replica 写连接（单例）
@@ -98,10 +107,44 @@ IterationManager.run_iteration()
               云端 Turso 主库
 ```
 
+### 4.2 同步优先级队列（Phase 4）
+
+```
+SyncManager.queue_maimemo_sync(profile_name, priority=Priority.P1, ...)
+    │
+    ├─ Priority.P1 (value=1)  → 今日任务、study_workflow 队列
+    ├─ Priority.P2 (value=2)  → 用户主动点击（sync.py retry_conflicts）
+    ├─ Priority.P3 (value=3)  → warmup 自动补偿（user_context _warmup_async）
+    └─ Priority.P4 (value=4)  → 预留
+
+队列管理逻辑：
+  • 全局单一消费者 worker 线程循环 queue.get(timeout=5)
+  • PriorityQueue 自动按 priority 排序（小值优先）
+  • 防饿死保底：连续 5 个 P1 后强制轮转非 P1 任务
+  • 活跃 profile 检查：P3+ 非活跃时暂停，等到 ActiveProfileRegistry.is_active() = true
+```
+
+### 4.3 活跃 Profile 追踪（Phase 4）
+
+```
+Web 多用户场景：
+  web/backend/deps.py::_resolve_profile()
+  └→ ActiveProfileRegistry.set_active(profile_name)
+  
+SyncManager._maimemo_sync_worker()
+  对每个任务检查：
+    if task.priority >= Priority.P3:  # P3 及以上才做检查
+      if not ActiveProfileRegistry.is_active(task.profile_name):
+        queue.put(task)  # 放回队列等待
+        continue
+  
+效果：Web 场景下只有当前活跃用户的 warmup 同步运行，其他用户的 P3 暂停
+```
+
 **三条铁律：**
 
 1. **进程唯一**：`data/.process.lock` 物理锁拦截多进程。
-2. **连接单例**：同一 replica 文件全局只持有一个 `libsql` 连接对象。
+2. **连接单例**：同一 replica 文件全球只持有一个 `libsql` 连接对象。
 3. **游标必闭**：所有 `SELECT` 必须 `try/finally + cur.close() + c.commit()`，否则锁死 WAL 阻塞 `conn.sync()`。
 
 ## 5. 数据同步模型（libsql Embedded Replicas）
@@ -110,7 +153,7 @@ IterationManager.run_iteration()
 
 **执行路径：**
 
-- `sync_databases()` / `sync_hub_databases()`（`database/momo_words.py`）：唯一合法的同步入口，内部只调 `conn.sync()`。旧手工 `_sync_table()` / `_sync_progress_history()` / `_sync_hub_table()` 已于 Phase 3 删除，详见 [`../history/phases/PHASE_3_SYNC_OPTIMIZATION.md`](../history/phases/PHASE_3_SYNC_OPTIMIZATION.md)。
+- `sync_databases()` / `sync_hub_databases()`（`database/momo_words.py`）：唯一合法的同步入口，内部只调 `conn.sync()`。旧手工 `_sync_table()` / `_sync_progress_history()` / `_sync_hub_table()` 已于 Phase 3 删除。
 - **前台同步**：用户交互触发，通过 `progress_callback` 回调渲染 CLI 进度条。
 - **后台同步**：菜单任务完成、退出收尾、定时 debounce 触发，仅写阶段日志（INFO/WARNING），不干扰交互。
 

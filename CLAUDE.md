@@ -3,14 +3,25 @@
 > 这里是 AI 助手进入项目的**第一页**：拿到地图 / 现状 / 红线摘要 / 调试入口。
 > 完整规则（MUST 清单、反模式、数据流）在 [`docs/dev/AI_CONTEXT.md`](docs/dev/AI_CONTEXT.md)——**那才是规则的唯一事实来源**。
 
-## 当前状态（2026-04-23）
+## 当前状态（2026-05-11）
 
 - 版本 1.0.0，Python 3.12+，Windows 优先。
-- CLI 为主入口（`python main.py`），Web 前端初版在 `feat/web-ui` 分支（方案见 `docs/dev/web_ui/README.md`）。
-- **Web UI Phase 0–5 已完成**：后端 FastAPI + 前端 React SPA，启动方式 `python -m web.backend --user <name>`。
-- 数据层：Embedded Replicas 迁移已完成（Phase 0–4），`conn.sync()` 取代手工增量；持久逻辑拆到 `database/` 包。
-- 并发层：单写守护线程 + 进程锁稳定（feat/high-perf-sync 已合回 main）。
-- 近期完成：2026-04-23 Web UI Phase 4（单词库/同步状态/体检/用户向导）+ Phase 5（打包/错误态/文档）。
+- CLI 为主入口（`python main.py`），Web 前端已完成集成（`feat/web-ui` 分支已合并到 main）。启动方式 `python main.py` 或 `python -m web.backend --user <name>`。
+- **系统成熟度**：
+  - 数据层：Embedded Replicas 迁移完毕（Phase 0–4），`conn.sync()` 取代手工增量；持久逻辑拆到 `database/` 包，所有模块动态读 `_config.DB_PATH`。
+  - 并发层：单写守护线程 + 进程锁稳定；优先队列调度（Phase 4）、防饿死保底、多用户活跃追踪已实现。
+  - 配置层：profile_loader 三阶段加载、pydantic-settings 模型、Kill Switch 特性开关（Phase 6.1/6.3）。
+  - Schema 迁移框架（Phase 6.2）建立，user_version 管理，V001 收纳所有历史 ALTER。
+  - 代码质量：pre-commit + ESLint 启用（Phase 6.4），37 个新单元测试。
+- **近期完成**（2026-05-11）：
+  - Phase 4：优先队列 + 防饿死 + 活跃 profile 追踪（per-profile pause）
+  - Phase 4.5：API 查询降重（COUNT 替代全量 fetch）
+  - Phase 5：日志系统整合（throttle 集中在 ContextLogger，清重复）
+  - Phase 6.1：Kill Switch 框架（3 个 flag）
+  - Phase 6.2：Schema 迁移框架（user_version runner + V001）
+  - Phase 6.3：配置现代化（profile_loader + pydantic-settings）
+  - Phase 6.4：代码质量门禁（pre-commit + ESLint 9）
+  - Bug Fix：修复所有模块的 DB_PATH 缓存反向 patch
 
 > 版本与阶段字段的 SSoT 是 `docs/dev/AI_CONTEXT.md §0.5`；本段与其保持同步。
 
@@ -24,11 +35,14 @@
 | 墨墨 API | `core/maimemo_api.py` | 频控 `threading.Lock` 不能去掉 |
 | AI 生成 | `core/gemini_client.py` / `core/mimo_client.py` | 复用 `requests.Session` |
 | 智能迭代 | `core/iteration_manager.py` + `core/weak_word_filter.py` | 薄弱词必须走多维评分 |
-| 同步后台 | `core/sync_manager.py` | 墨墨释义同步队列 |
+| 同步后台 | `core/sync_manager.py` + `core/sync_priority.py` | PriorityQueue 调度、防饿死保底（Phase 4） |
+| 活跃 profile | `core/active_profile_registry.py` | 多用户 Web 场景下暂停非活跃 profile 的 P3+ 同步 |
+| 配置加载 | `config.py` + `core/profile_loader.py` + `core/settings.py` | 三阶段 env + pydantic 模型（Phase 6.3） |
+| 特性开关 | `core/feature_flags.py` | Kill Switch 框架，性能回退时一键关闭（Phase 6.1） |
 | 数据库读写 | `database/momo_words.py`（业务）、`database/connection.py`（连接+写队列+同步守护）、`database/schema.py`（表） | **直连 `database/`**；老调用点可通过 `database.legacy` 过渡 |
-| 配置加载 | `config.py` | `ACTIVE_USER` 是**模块级全局**，改动影响面大 |
+| Schema 迁移 | `database/migrations/runner.py` + `database/migrations/V001_initial.py` | PRAGMA user_version 管理（Phase 6.2） |
 | 多用户 profile | `core/profile_manager.py` / `core/config_wizard.py` | 凭据永远只写 `data/profiles/<user>.env` |
-| 日志 | `core/logger.py` + `core/log_config.py` | 业务层禁 `print()` |
+| 日志 | `core/logger.py` + `core/log_config.py` | 业务层禁 `print()`；使用 throttle 方法避免日志洪泛（Phase 5） |
 | 体检 | `tools/preflight_check.py` | 支持 text / json 双输出 |
 | Prompts | `docs/prompts/*.md` | 不要硬编码到 Python 字符串 |
 | Web 后端 | `web/backend/` | FastAPI ASGI；与 CLI 共享进程锁（互斥） |

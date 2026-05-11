@@ -25,12 +25,20 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 > 本节每次发版或大 PR 合入后更新；`CLAUDE.md` 的「当前状态」以此为准。
 
 - **版本**：1.0.0；Python 3.12+。
-- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；**`core/db_manager.py` 已于 2026-04-22 移除**——所有持久层操作一律经 `database/` 包 5 个子模块（老调用点可经 `database/legacy.py` 门面过渡）。
-- **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定（feat/high-perf-sync 已合回 main）。
-- **正在进行**：Web 前端界面初版（`feat/web-ui` 分支，方案见 `docs/dev/web_ui/README.md`）。
-- **最近变更**：
-  - 2026-04-22 彻底删除 `core/db_manager.py`（3972 行僵尸副本）；顺带修 `database/legacy.py` + `database/hub_users.py` 的 `__future__` 位置 bug。
-  - 2026-04-21 文档大清理（归档 8 份已完成 PHASE/FIX 文档、architecture 三合一为 `ARCHITECTURE.md`、`CLAUDE.md` 升级为 AI 会话首页）。
+- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；所有持久层操作经 `database/` 包（老调用点可经 `database/legacy.py` 门面过渡）。
+- **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定。优先队列调度（Phase 4）、防饿死保底、ActiveProfileRegistry 多用户追踪已实现。
+- **配置层**：profile_loader 三阶段加载（Phase 6.3a）、pydantic-settings 模型（Phase 6.3b）、Kill Switch 特性开关框架（Phase 6.1）已实现。
+- **Schema 迁移**：PRAGMA user_version 管理框架（Phase 6.2）建立，V001 迁移收纳所有历史 ALTER 语句。
+- **代码质量**：pre-commit + ESLint 9 启用（Phase 6.4），37 个新单元测试。
+- **最近完成**（2026-05-11）：
+  - Phase 4：PriorityQueue (P1/P2/P3/P4) + 防饿死保底（连续 5 个 P1 强制轮转）
+  - Phase 4.5：API 查询降重（COUNT 替代全量 fetch），sync/stats 端点 P95 <100ms
+  - Phase 5：日志系统整合（ContextLogger 中央 throttle + structured logging）
+  - Phase 6.1：Kill Switch（AUTO_WARMUP_SYNC_ENABLED / SYNC_STATUS_HEAVY_QUERY_ENABLED / BACKGROUND_RETRY_ENABLED）
+  - Phase 6.2：Schema 迁移框架（apply_migrations + V001_initial）
+  - Phase 6.3：配置现代化（profile_loader 三阶段 env 加载 + Settings pydantic 模型）
+  - Phase 6.4：质量门禁（pre-commit: ruff + hooks；ESLint 9 flat config）
+  - Bug Fix：core/weak_word_filter + database/community_lookup 改为动态 `_config.DB_PATH` 读取
 - **近期不碰**：`docs/prompts/`（生产 prompt）、`docs/api/`（API 参考）。
 
 ## 1. 核心架构与边界
