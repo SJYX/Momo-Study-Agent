@@ -20,8 +20,13 @@ import LightConfirmBar from '../components/today/LightConfirmBar'
 import SummaryPanel from '../components/today/SummaryPanel'
 import FailureGroupsPanel from '../components/today/FailureGroupsPanel'
 import BulkGuardModal from '../components/today/BulkGuardModal'
+import { isEnabled } from '../utils/featureFlags'
+import TodayTasksV2 from './TodayTasksV2'
 
 export default function TodayTasks() {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  if (isEnabled('ff_redesign_today')) return <TodayTasksV2 />
+
   // DOM ref Map（hook 不持有 DOM；只通过它询问当前 running 行）
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
   const c = useTodayController(rowRefs)
