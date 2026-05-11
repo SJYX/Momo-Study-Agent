@@ -9,6 +9,7 @@ import { apiClient, apiPost } from '../api/client'
 import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
+import DegradedBanner from '../components/ui/DegradedBanner'
 import type { SyncStatusResponse } from '../api/types'
 import { RefreshCcw, Loader2, AlertTriangle, RotateCcw } from 'lucide-react'
 
@@ -85,6 +86,11 @@ export default function SyncStatus() {
       </div>
 
       <ErrorBanner message={errorMsg} />
+      <DegradedBanner
+        active={data?.degraded}
+        message="同步状态查询已降级（性能保护中）"
+        reason={data?.degraded_reason}
+      />
       {retryResult && <div className="bg-green-50 text-green-700 p-3 rounded mb-4 text-sm">✅ {retryResult}</div>}
 
       {data && conflicts.length > 0 && (

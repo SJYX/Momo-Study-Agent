@@ -2,6 +2,7 @@
  * components/layout/Sidebar.tsx — 左侧导航栏。
  */
 import { NavLink, useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   LayoutDashboard,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react'
 import { useProfileStore } from '../../stores/profile'
 import { isEnabled } from '../../utils/featureFlags'
+import { prefetchForRoute } from '../../queries/prefetch'
 
 const navItems = isEnabled('ff_ops_monitor')
   ? [
@@ -44,6 +46,7 @@ export default function Sidebar() {
   const activeProfile = useProfileStore((s) => s.activeProfile)
   const clearProfile = useProfileStore((s) => s.clearProfile)
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const handleSwitchProfile = () => {
     clearProfile()
@@ -65,6 +68,7 @@ export default function Sidebar() {
             key={to}
             to={to}
             end={to === '/'}
+            onMouseEnter={() => prefetchForRoute(queryClient, to)}
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
                 isActive

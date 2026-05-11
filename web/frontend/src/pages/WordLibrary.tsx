@@ -9,6 +9,7 @@ import { apiClient } from '../api/client'
 import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { activeProfile, queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
+import { SkeletonRow } from '../components/ui/Skeleton'
 import type { WordsListResponse, WordNoteDetail, WordIterationsResponse, WordIteration } from '../api/types'
 import { Search, ChevronLeft, ChevronRight, Eye, X, Save, Loader2, History } from 'lucide-react'
 
@@ -202,6 +203,24 @@ export default function WordLibrary() {
 
       <ErrorBanner message={errMsg} />
 
+      {!data && !errMsg && (
+        <div className="bg-white rounded-lg shadow overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50"><tr>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">单词</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">核心释义</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">Level</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">同步</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">创建时间</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">操作</th>
+            </tr></thead>
+            <tbody>
+              {Array.from({ length: 10 }).map((_, i) => <SkeletonRow key={i} cols={6} />)}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {data && (
         <>
           <div className="text-sm text-gray-500 mb-2">共 {total} 条记录</div>
@@ -219,7 +238,19 @@ export default function WordLibrary() {
                 const syncStatus = typeof w.sync_status === 'number' ? w.sync_status : 0
                 const sync = SYNC_LABELS[syncStatus] || SYNC_LABELS[0]
                 return (
-                  <tr key={w.voc_id} className="border-t hover:bg-gray-50">
+                  <tr
+                    key={w.voc_id}
+                    className="border-t hover:bg-gray-50"
+                    onMouseEnter={() => {
+                      void queryClient.prefetchQuery({
+                        queryKey: queryKeys.wordDetail(profile, w.voc_id),
+                        queryFn: async () => {
+                          const r = await apiClient<WordNoteDetail>(`/api/words/${w.voc_id}`)
+                          return r.data
+                        },
+                      })
+                    }}
+                  >
                     <td className="px-4 py-2 font-medium">{w.spelling}</td>
                     <td className="px-4 py-2 text-gray-600 max-w-xs truncate">{w.basic_meanings || '—'}</td>
                     <td className="px-4 py-2">

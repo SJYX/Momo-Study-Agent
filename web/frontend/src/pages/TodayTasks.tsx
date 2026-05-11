@@ -15,6 +15,7 @@ import { PlayCircle, Loader2, Filter, Eye, EyeOff, Info, RotateCw, Square } from
 import { rowStatusLabel, rowPhaseLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'
+import { SkeletonRow } from '../components/ui/Skeleton'
 import LightConfirmBar from '../components/today/LightConfirmBar'
 import SummaryPanel from '../components/today/SummaryPanel'
 import FailureGroupsPanel from '../components/today/FailureGroupsPanel'
@@ -154,6 +155,23 @@ export default function TodayTasks() {
           )}
 
           <ErrorBanner message={c.errorMsg} size="base" />
+
+          {!c.data && !c.errorMsg && (
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">#</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">单词</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">进度</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} cols={3} />)}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {c.data && c.displayItems.length > 0 && (
             <div className="bg-white rounded-lg shadow overflow-hidden">
