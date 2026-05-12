@@ -305,7 +305,7 @@ def _emit_happy_path(logger, spells: List[str]):
             extra={
                 "event": "row_status",
                 "data": {
-                    "rows": [{"item_id": s.lower(), "status": "done", "phase": "sync_queued"}]
+                    "rows": [{"item_id": s.lower(), "status": "pending", "phase": "sync_queued"}]
                 },
             },
         )

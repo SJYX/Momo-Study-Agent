@@ -21,7 +21,7 @@ export interface RowState {
  * 它会保持 pending（直到任务终态时被强制收口）。
  */
 export function buildRowStatusMap(
-  items: Array<{ voc_spelling?: string }>,
+  items: Array<{ voc_spelling?: string; status?: string | null; [key: string]: any }>,
   events: TaskEvent[],
   taskStatus: string,
 ): Record<string, RowState> {
@@ -29,8 +29,35 @@ export function buildRowStatusMap(
   for (const item of items as any[]) {
     const key = (item.voc_spelling || '').trim().toLowerCase()
     if (key) {
-      const initialStatus = (item.status === 'done') ? 'done' : 'pending'
-      map[key] = { status: initialStatus }
+      let st: RowStatus = 'pending'
+      let ph: string | undefined = undefined
+      let reason: string | undefined = undefined
+
+      if (item.status === 'done') {
+        st = 'done'
+      } else if (item.status === 'sync_failed') {
+        st = 'error'
+        ph = 'sync_failed'
+        reason = '同步终态失败'
+      } else if (item.status === 'sync_conflict') {
+        st = 'warning'
+        ph = 'sync_conflict'
+        reason = '远端释义冲突'
+      } else if (item.status === 'sync_pending') {
+        st = 'done'
+        ph = 'sync_pending'
+      } else if (item.status === 'sync_queued') {
+        st = 'done'
+        ph = 'sync_queued'
+      } else if (item.status === 'syncing') {
+        st = 'done'
+        ph = 'syncing'
+      }
+
+      const entry: RowState = { status: st }
+      if (ph) entry.phase = ph
+      if (reason) entry.reason = reason
+      map[key] = entry
     }
   }
 
@@ -86,11 +113,12 @@ export function rowPhaseLabel(phase?: string): string {
   if (phase === 'skipped') return '已跳过'
   if (phase === 'ai_request') return 'AI 请求中'
   if (phase === 'ai_done') return 'AI 已完成'
-  if (phase === 'sync_queued') return '已入同步队列'
+  if (phase === 'sync_queued') return '待同步'
   if (phase === 'sync_done') return '同步完成'
   if (phase === 'sync_pending') return '待同步'
   if (phase === 'sync_conflict') return '同步冲突'
   if (phase === 'sync_failed') return '同步失败'
+  if (phase === 'syncing') return '正在同步'
   if (phase === 'ai_result') return '结果异常'
   return phase
 }
@@ -99,6 +127,10 @@ export function rowDisplayLabel(state?: RowState): string {
   if (!state) return '待处理'
   if (state.phase === 'skipped') return '已跳过'
   if (state.phase === 'sync_pending') return '待同步'
+  if (state.phase === 'sync_queued') return '同步排队中'
+  if (state.phase === 'syncing') return '正在同步'
+  if (state.phase === 'sync_conflict') return '同步冲突'
+  if (state.phase === 'sync_failed') return '同步失败'
   return rowStatusLabel(state.status)
 }
 

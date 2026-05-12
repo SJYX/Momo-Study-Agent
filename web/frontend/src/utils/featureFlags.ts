@@ -60,10 +60,10 @@ export const V2_FLAGS = {
   ff_ops_monitor_polling: { default: true, killable: true, task: 'V2-T5' },
   ff_ops_monitor_alert_bar: { default: true, killable: true, task: 'V2-T6' },
   ff_ops_monitor_csv_export: { default: true, killable: true, task: 'V2-T7' },
-  ff_redesign_sidebar: { default: false, killable: true, task: 'V3-T1' },
-  ff_redesign_ops: { default: false, killable: true, task: 'V3-T2' },
-  ff_redesign_today: { default: false, killable: true, task: 'V3-T3' },
-  ff_drilldown_v2: { default: false, killable: true, task: 'V3-T4' },
+  ff_redesign_sidebar: { default: true, killable: true, task: 'V3-T1' },
+  ff_redesign_ops: { default: true, killable: true, task: 'V3-T2' },
+  ff_redesign_today: { default: true, killable: true, task: 'V3-T3' },
+  ff_drilldown_v2: { default: true, killable: true, task: 'V3-T4' },
 } as const satisfies Record<string, FlagDefinition>
 
 export const ALL_FLAGS = { ...V1_FLAGS, ...V2_FLAGS }

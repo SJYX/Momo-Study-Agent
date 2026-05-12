@@ -201,11 +201,11 @@ describe('featureFlags', () => {
     expect(BULK_RETRY_THRESHOLD).toBe(100)
   })
 
-  it('redesign flags：默认 off', () => {
+  it('redesign flags：默认开启', () => {
     const sources: FlagOverrideSources = {}
-    expect(evaluateFlag('ff_redesign_sidebar', sources)).toBe(false)
-    expect(evaluateFlag('ff_redesign_ops', sources)).toBe(false)
-    expect(evaluateFlag('ff_redesign_today', sources)).toBe(false)
-    expect(evaluateFlag('ff_drilldown_v2', sources)).toBe(false)
+    expect(evaluateFlag('ff_redesign_sidebar', sources)).toBe(true)
+    expect(evaluateFlag('ff_redesign_ops', sources)).toBe(true)
+    expect(evaluateFlag('ff_redesign_today', sources)).toBe(true)
+    expect(evaluateFlag('ff_drilldown_v2', sources)).toBe(true)
   })
 })

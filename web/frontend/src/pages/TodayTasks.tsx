@@ -12,7 +12,7 @@
  */
 import { useRef } from 'react'
 import { PlayCircle, Loader2, Filter, Eye, EyeOff, Info, RotateCw, Square } from 'lucide-react'
-import { rowStatusLabel, rowPhaseLabel } from '../utils/rowProgress'
+import { rowPhaseLabel, rowDisplayLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'
 import { SkeletonRow } from '../components/ui/Skeleton'
@@ -193,12 +193,15 @@ export default function TodayTasks() {
                     const state = c.rowStatusMap[item.voc_spelling.toLowerCase()]
                     const status = state?.status || 'pending'
                     const phase = state?.phase
-                    const colors = {
+                    let colorClass = {
                       pending: 'bg-gray-100 text-gray-500',
                       running: 'bg-blue-50 text-blue-600 border border-blue-100',
                       done: 'bg-green-50 text-green-600',
                       error: 'bg-red-50 text-red-600',
                       warning: 'bg-amber-50 text-amber-600 border border-amber-100',
+                    }[status as 'pending' | 'running' | 'done' | 'error' | 'warning']
+                    if (status === 'done' && phase && phase.startsWith('sync_')) {
+                      colorClass = 'bg-blue-50/50 text-blue-500'
                     }
                     return (
                       <tr
@@ -213,9 +216,9 @@ export default function TodayTasks() {
                         <td className="px-4 py-2 font-medium">{item.voc_spelling}</td>
                         <td className="px-4 py-2">
                           <div className="flex flex-col gap-1">
-                            <div className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded w-fit font-medium ${colors[status as keyof typeof colors]}`}>
+                            <div className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded w-fit font-medium ${colorClass}`}>
                               {status === 'running' && <Loader2 size={10} className="animate-spin" />}
-                              {rowStatusLabel(status as any)}
+                              {rowDisplayLabel(state)}
                             </div>
                             {phase && phase !== status && (
                               <span className={`text-[10px] font-normal ml-0.5 ${status === 'error' ? 'text-red-400' : status === 'warning' ? 'text-amber-500' : status === 'done' ? 'text-green-500/80' : 'text-blue-400'}`}>

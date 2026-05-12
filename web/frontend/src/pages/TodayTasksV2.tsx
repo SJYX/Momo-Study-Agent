@@ -6,7 +6,7 @@
  */
 import { useMemo, useRef } from 'react'
 import { Filter, Eye, EyeOff, Info, RotateCw } from 'lucide-react'
-import { rowStatusLabel, rowPhaseLabel } from '../utils/rowProgress'
+import { rowPhaseLabel, rowDisplayLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'
 import LightConfirmBar from '../components/today/LightConfirmBar'
@@ -190,13 +190,16 @@ export default function TodayTasksV2() {
                     const status = state?.status || 'pending'
                     const phase = state?.phase
                     const isRunning = status === 'running'
-                    const pillClass = {
+                    let pillClass = {
                       pending: 'bg-surface-hover text-text-secondary',
                       running: 'bg-accent-soft text-accent-hover border border-accent',
                       done: 'bg-surface-hover text-text-secondary',
                       error: 'bg-error-soft text-error',
                       warning: 'bg-accent-soft text-accent-hover',
                     }[status as 'pending' | 'running' | 'done' | 'error' | 'warning']
+                    if (status === 'done' && phase && phase.startsWith('sync_')) {
+                      pillClass = 'bg-accent-soft/30 text-accent-hover'
+                    }
                     return (
                       <tr
                         key={item.voc_id}
@@ -213,7 +216,7 @@ export default function TodayTasksV2() {
                           <div className="flex flex-col gap-1">
                             <div className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-pill w-fit font-medium ${pillClass}`}>
                               {isRunning && <RotateCw size={10} className="animate-spin" />}
-                              {rowStatusLabel(status as 'pending' | 'running' | 'done' | 'error' | 'warning')}
+                              {rowDisplayLabel(state)}
                             </div>
                             {phase && phase !== status && (
                               <span className={`text-[10px] font-normal ml-0.5 ${
