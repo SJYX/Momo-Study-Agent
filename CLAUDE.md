@@ -22,6 +22,8 @@
   - Phase 6.3：配置现代化（profile_loader + pydantic-settings）
   - Phase 6.4：代码质量门禁（pre-commit + ESLint 9）
   - Bug Fix：修复所有模块的 DB_PATH 缓存反向 patch
+  - PLAYBOOK B4：前端协同（hover prefetch / 骨架屏 / 降级元数据 / Dashboard 迁 React Query）
+  - PLAYBOOK B5+B3：指标基础设施（core/metrics.py + /api/ops/metrics）+ 闲时引擎（SyncManager._is_idle）
 
 > 版本与阶段字段的 SSoT 是 `docs/dev/AI_CONTEXT.md §0.5`；本段与其保持同步。
 
@@ -35,8 +37,9 @@
 | 墨墨 API | `core/maimemo_api.py` | 频控 `threading.Lock` 不能去掉 |
 | AI 生成 | `core/gemini_client.py` / `core/mimo_client.py` | 复用 `requests.Session` |
 | 智能迭代 | `core/iteration_manager.py` + `core/weak_word_filter.py` | 薄弱词必须走多维评分 |
-| 同步后台 | `core/sync_manager.py` + `core/sync_priority.py` | PriorityQueue 调度、防饿死保底（Phase 4） |
+| 同步后台 | `core/sync_manager.py` + `core/sync_priority.py` | PriorityQueue 调度、防饿死保底（Phase 4）、闲时引擎 `_is_idle`（B3） |
 | 活跃 profile | `core/active_profile_registry.py` | 多用户 Web 场景下暂停非活跃 profile 的 P3+ 同步 |
+| 运行期指标 | `core/metrics.py` | 进程内 RollingWindow + MetricsCollector（PLAYBOOK B5）；给 B3 闲时引擎与 `/api/ops/metrics` 用 |
 | 配置加载 | `config.py` + `core/profile_loader.py` + `core/settings.py` | 三阶段 env + pydantic 模型（Phase 6.3） |
 | 特性开关 | `core/feature_flags.py` | Kill Switch 框架，性能回退时一键关闭（Phase 6.1） |
 | 数据库读写 | `database/momo_words.py`（业务）、`database/connection.py`（连接+写队列+同步守护）、`database/schema.py`（表） | **直连 `database/`**；老调用点可通过 `database.legacy` 过渡 |

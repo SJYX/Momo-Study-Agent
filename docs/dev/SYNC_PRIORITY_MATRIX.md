@@ -142,37 +142,52 @@
 
 ---
 
-## 五、闲时调度与降级（依赖 Phase 5）
+## 五、闲时调度与降级（PLAYBOOK B5 已落地）
 
-> ⚠️ 本节内容依赖 Phase 5 的 `LogStatistics` 监控基础设施。在 Phase 5 落地前，**不实施本节内容**。
+> ✅ 2026-05-11：B5 指标基础设施 + B3 闲时引擎已完成。本节描述实际落地的行为。
 
-### 闲时判定（Phase 5 后实施）
+### 指标基础设施
+
+- 进程内 `core/metrics.py`：`RollingWindow`（300s TTL + 1000 max_size）+ `MetricsCollector`（per profile / per metric 隔离）
+- 采样点：
+  - API middleware → `api.duration_ms`
+  - `database/execution_engine.py` → `db.batch_write.duration_ms` / `db.idle_sync.duration_ms`
+  - `core/sync_manager.py` worker → `sync.queue.depth` / `sync.task.duration_ms`
+- 读端：`GET /api/ops/metrics?profile=<name>`，返回 P50/P95/P99 + count
+
+### 闲时判定（实际阈值）
 
 需满足所有条件 + 防抖：
 
-1. 最近 N 秒无 P0 接口请求高峰
-2. 过去 10 秒内未收到 P1 级别任务且 P1 队列为空
-3. DB 锁等待低于阈值
-4. API P95 未超阈值
+1. `api.duration_ms` P95 < **200ms**（用户没在密集操作）
+2. `sync.queue.depth` P95 < **5**（队列不堆积）
+3. `db.batch_write.duration_ms` P95 < **100ms**（DB 不卡）
 
 状态切换防抖（Debounce）：
 
-- **进入闲时**：连续满足闲时条件 ≥5 秒才启动 P3/P4 加速
-- **退出闲时**：任一条件不满足立即响应
+- **进入闲时**：连续满足条件 ≥ **5 秒**（`IDLE_DEBOUNCE_S`）才视为 stable idle
+- **退出闲时**：任一条件不满足立即响应（`_idle_since` 重置）
+- Kill Switch：`IDLE_ENGINE_ENABLED=False` 让 `_is_idle` 永远返回 False
 
-### SLO 与协同降级（Phase 5 后实施）
+### 闲时行为
 
-监控阈值：
+| 任务 | active profile 是 active？ | 闲时模式？ | 处理 |
+|---|---|---|---|
+| P1 | 任意 | 任意 | 立即处理 |
+| P2 | 任意 | 任意 | 立即处理 |
+| P3 | 是 | 任意 | 立即处理 |
+| P3 | 否 | 否 | 重新入队 sleep 0.5s |
+| P3 | 否 | **是** | **立即处理**（闲时全速消费） |
+| P4 | 同 P3 行为 | | |
 
-- `GET /api/stats/summary` P95 >300ms
-- `GET /api/study/today` P95 >400ms
-- DB 锁等待 P95 >100ms
+### SLO 告警 / 自动 Kill Switch（推迟）
 
-触发后自动动作：
+本期**不实施**。指标已可读，但自动联动 Kill Switch 涉及更多治理（识别假性飙升 / 回滚机制），推迟到后续 PR。手动应急路径仍可用：
 
-1. 暂停 P3/P4 自动补偿
-2. 关键接口下发降级元数据（`meta._is_degraded: true`）
-3. 前端非侵入式提示（"系统繁忙，数据正在排队同步…"）
+- `$env:AUTO_WARMUP_SYNC_ENABLED='false'`
+- `$env:SYNC_STATUS_HEAVY_QUERY_ENABLED='false'`
+- `$env:BACKGROUND_RETRY_ENABLED='false'`
+- `$env:IDLE_ENGINE_ENABLED='false'`
 
 ---
 
