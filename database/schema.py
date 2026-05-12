@@ -179,6 +179,12 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
 
 
 def _init_hub_schema(conn: Any) -> None:
+    # 缓存短路：如果 Hub schema 已在最近初始化过，直接返回
+    hub_fp = _hub_db_fingerprint()
+    if _hub_init_state_is_fresh(hub_fp):
+        _debug_log("Hub schema 已在缓存窗口内初始化，短路跳过重复校验", module="database.schema")
+        return
+    
     cur = conn.cursor()
 
     cur.execute(
@@ -324,6 +330,25 @@ def init_users_hub_tables() -> bool:
 
         hub_conn = connection._get_hub_conn()
         cur = hub_conn.cursor()
+        
+        # 检查所有关键表是否都已存在，若都存在则短路返回
+        required_tables = ["users", "user_api_keys", "user_sync_history", "user_stats", "user_sessions", "admin_logs", "user_credentials"]
+        all_tables_exist = all(_check_table_exists(cur, table, "hub", cache_scope=hub_fp) for table in required_tables)
+        
+        if all_tables_exist:
+            _debug_log("Hub 所有关键表已存在，跳过重复 CREATE TABLE 操作", module="database.schema")
+            _mark_db_initialized("hub", hub_fp)
+            _save_hub_init_state(
+                {
+                    "hub_fp": hub_fp,
+                    "schema_version": _HUB_SCHEMA_VERSION,
+                    "last_success_at": time.time(),
+                    "last_checked_at": time.time(),
+                }
+            )
+            if not connection._is_hub_write_singleton_conn(hub_conn):
+                hub_conn.close()
+            return True
 
         table_exists = _check_table_exists(cur, "users", "hub", cache_scope=hub_fp)
         if table_exists:

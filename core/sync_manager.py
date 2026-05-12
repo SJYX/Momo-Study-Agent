@@ -12,7 +12,6 @@ from core.metrics import get_metrics_collector
 from core.sync_priority import Priority
 from database.momo_words import (
     get_local_word_note,
-    get_word_note,
     mark_processed,
     mark_note_synced,
     set_note_sync_status,
@@ -282,7 +281,7 @@ class SyncManager:
                 current_note = None
                 current_status = 0
 
-                # 仅在非内存信任路径下执行 DB 查询兜底
+                # 仅在非内存信任路径下执行 DB 查询
                 if not force_sync:
                     try:
                         if self.db_path:
@@ -291,15 +290,6 @@ class SyncManager:
                             current_note = get_local_word_note(voc_id)
                     except Exception as local_read_error:
                         self.logger.warning(f"⚠️ {spell} 本地数据库读取失败: {local_read_error}")
-
-                    if not current_note:
-                        try:
-                            if self.db_path:
-                                current_note = get_word_note(voc_id, db_path=self.db_path)
-                            else:
-                                current_note = get_word_note(voc_id)
-                        except Exception as fallback_read_error:
-                            self.logger.warning(f"⚠️ {spell} 主连接读取失败: {fallback_read_error}")
 
                     current_status = int(current_note.get("sync_status", 0) or 0) if current_note else 0
 

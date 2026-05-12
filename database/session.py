@@ -65,7 +65,6 @@ class DBSession:
                 res = cur.fetchall()
             finally:
                 cur.close()
-            self.conn.commit()
             return res
         finally:
             if acquired:
@@ -80,7 +79,6 @@ class DBSession:
                 res = cur.fetchone()
             finally:
                 cur.close()
-            self.conn.commit()
             return res
         finally:
             if acquired:

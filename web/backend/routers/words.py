@@ -70,25 +70,20 @@ async def list_words(
             LIMIT ? OFFSET ?
         """
 
+        acquired = False
         if conn_lock is not None:
-            with conn_lock:
-                try:
-                    cur.execute(count_sql, params)
-                    total = cur.fetchone()[0]
-                    cur.execute(data_sql, params + [page_size, offset])
-                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                finally:
-                    cur.close()
-                conn.commit()
-        else:
+            acquired = conn_lock.acquire(timeout=2.0)
+        try:
+            cur.execute(count_sql, params)
+            total = cur.fetchone()[0]
+            cur.execute(data_sql, params + [page_size, offset])
+            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+        finally:
             try:
-                cur.execute(count_sql, params)
-                total = cur.fetchone()[0]
-                cur.execute(data_sql, params + [page_size, offset])
-                rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-            finally:
                 cur.close()
-            conn.commit()
+            finally:
+                if acquired:
+                    conn_lock.release()
     finally:
         if not _is_main_write_singleton_conn(conn):
             conn.close()
@@ -155,21 +150,18 @@ async def get_word_iterations(voc_id: str, ctx = Depends(get_user_context)):
             WHERE voc_id = ?
             ORDER BY created_at DESC
         """
+        acquired = False
         if conn_lock is not None:
-            with conn_lock:
-                try:
-                    cur.execute(sql, (voc_id,))
-                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                finally:
-                    cur.close()
-                conn.commit()
-        else:
+            acquired = conn_lock.acquire(timeout=2.0)
+        try:
+            cur.execute(sql, (voc_id,))
+            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+        finally:
             try:
-                cur.execute(sql, (voc_id,))
-                rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-            finally:
                 cur.close()
-            conn.commit()
+            finally:
+                if acquired:
+                    conn_lock.release()
     finally:
         if not _is_main_write_singleton_conn(conn):
             conn.close()

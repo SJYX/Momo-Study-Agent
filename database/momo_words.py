@@ -39,6 +39,7 @@ from .notes_repo import (  # noqa: F401
     get_unsynced_notes,
     get_word_note,
     get_local_word_note,
+    get_word_notes_in_batch,
     get_sync_status_in_batch,
     set_note_sync_status,
     mark_note_synced,
@@ -46,6 +47,7 @@ from .notes_repo import (  # noqa: F401
     save_ai_batch,
     save_ai_word_iteration,
     update_ai_word_note_iteration_state,
+    atomic_save_iteration_and_update_note,
 )
 from .progress_repo import (  # noqa: F401
     get_processed_ids_in_batch,
@@ -213,9 +215,11 @@ __all__ = [
     "get_unsynced_notes",
     "get_word_note",
     "get_local_word_note",
+    "get_word_notes_in_batch",
     "set_note_sync_status",
     "mark_note_synced",
     "mark_note_sync_conflict",
+    "atomic_save_iteration_and_update_note",
     "find_words_in_community_batch",
     "find_word_in_community",
     "get_latest_progress",

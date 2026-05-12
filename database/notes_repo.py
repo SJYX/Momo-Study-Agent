@@ -13,6 +13,7 @@ import sqlite3
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
+import config as _config
 from database.session import with_read_session, DBSession
 from ._repo_helpers import (
     dispatch_batch_write,
@@ -105,10 +106,12 @@ def build_note_upsert_args(
     metadata: Optional[NoteMetadata] = None,
     *,
     sync_status: Optional[int] = None,
+    timestamp: Optional[str] = None,
 ) -> Tuple[Any, ...]:
     """Assemble args tuple for NOTE_UPSERT_SQL.
 
     sync_status=None → derive from content_origin (0 for ai_generated, 1 otherwise).
+    timestamp=None → generate current timestamp; 批量操作可传入统一 timestamp 以减少微秒级差异。
     Note: 新增状态 3/4/5 由后台同步调度写入；此处保留原有默认以保证向后兼容。
     """
     md: Dict[str, Any] = dict(metadata or {})
@@ -122,6 +125,9 @@ def build_note_upsert_args(
 
     if sync_status is None:
         sync_status = 0 if content_origin == "ai_generated" else 1
+
+    if timestamp is None:
+        timestamp = get_timestamp_with_tz()
 
     return (
         str(voc_id),
@@ -146,7 +152,7 @@ def build_note_upsert_args(
         content_source_db,
         content_source_scope,
         int(sync_status),
-        get_timestamp_with_tz(),
+        timestamp,
     )
 
 
@@ -177,11 +183,14 @@ def save_ai_word_notes_batch(
         return True
 
     try:
+        # 在批量操作的最外层生成一次 timestamp，确保所有记录时间戳一致
+        batch_timestamp = get_timestamp_with_tz()
         batch_args = [
             build_note_upsert_args(
                 data.get("voc_id"),
                 data.get("payload", {}) or {},
                 data.get("metadata", {}) or {},
+                timestamp=batch_timestamp,
             )
             for data in notes_data
         ]
@@ -226,6 +235,29 @@ def get_word_note(voc_id: str, db_path: Optional[str] = None, session: DBSession
 def get_local_word_note(voc_id: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Read word note from local/read path; fallback behavior handled by read layer."""
     return get_word_note(voc_id, db_path=db_path)
+
+
+def get_word_notes_in_batch(voc_ids: list[str], db_path: Optional[str] = None, session: DBSession = None) -> Dict[str, Dict[str, Any]]:
+    """批量查询多个 voc_id 的笔记，返回 {voc_id: note_dict} 映射。避免 N+1 查询。"""
+    if not voc_ids:
+        return {}
+    
+    if session is None:
+        from database.session import with_read_session
+        
+        @with_read_session(default_return={})
+        def _fetch(session: DBSession = None):
+            placeholders = ','.join(['?' for _ in voc_ids])
+            sql = f"SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})"
+            rows = session.fetchall(sql, tuple(str(vid) for vid in voc_ids))
+            return {str(row_to_dict(row).get("voc_id") or ""): row_to_dict(row) for row in rows if row}
+        
+        return _fetch()
+    else:
+        placeholders = ','.join(['?' for _ in voc_ids])
+        sql = f"SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})"
+        rows = session.fetchall(sql, tuple(str(vid) for vid in voc_ids))
+        return {str(row_to_dict(row).get("voc_id") or ""): row_to_dict(row) for row in rows if row}
 
 
 def set_note_sync_status(voc_id: str, sync_status: int, db_path: Optional[str] = None) -> bool:
@@ -337,6 +369,114 @@ def update_ai_word_note_iteration_state(
         return False
 
 
+def atomic_save_iteration_and_update_note(
+    voc_id: str,
+    level: int,
+    history_json: str,
+    iteration_payload: IterationPayload,
+    memory_aid: Optional[str] = None,
+    metadata: Optional[NoteMetadata] = None,
+    db_path: Optional[str] = None,
+) -> bool:
+    """原子化保存迭代记录并更新笔记状态。
+    
+    在单个事务中执行：
+    1. INSERT ai_word_iterations（迭代记录）
+    2. UPDATE ai_word_notes（迭代状态与历史）
+    
+    使用 BEGIN IMMEDIATE 以及 op_lock 确保不会被其他迭代中断。
+    """
+    try:
+        from database.connection import _get_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+        from database.utils import _debug_log
+        import json
+        
+        db_path = db_path or _config.DB_PATH
+        write_conn = _get_conn(db_path)
+        conn_lock = _get_singleton_conn_op_lock(write_conn)
+        
+        if conn_lock is None:
+            _debug_log(
+                f"atomic_save_iteration_and_update_note: 无可用 op_lock（仅本地模式？），降级到非原子操作",
+                level="WARNING",
+                module="database.momo_words",
+            )
+            # 降级：分别执行两个操作（风险：不原子）
+            save_ai_word_iteration(voc_id, iteration_payload, db_path=db_path, metadata=metadata)
+            return update_ai_word_note_iteration_state(voc_id, level, history_json, memory_aid=memory_aid, db_path=db_path)
+        
+        with conn_lock:
+            cur = write_conn.cursor()
+            try:
+                cur.execute("BEGIN IMMEDIATE")
+                
+                # 构建迭代数据
+                data: Dict[str, Any] = dict(iteration_payload or {})
+                meta: Dict[str, Any] = dict(metadata or {})
+                batch_id = meta.get("batch_id")
+                m_ctx = json.dumps(meta.get("maimemo_context", {}), ensure_ascii=False) if meta.get("maimemo_context") else None
+                tags = data.get("tags")
+                tags_json = json.dumps(tags, ensure_ascii=False) if tags is not None else None
+                raw_response = data.get("raw_response") or data.get("raw_full_text") or json.dumps(data, ensure_ascii=False)
+                
+                # 1. INSERT 迭代记录
+                iteration_args = (
+                    str(voc_id),
+                    data.get("spelling"),
+                    data.get("stage"),
+                    data.get("it_level"),
+                    data.get("score"),
+                    data.get("justification"),
+                    tags_json,
+                    data.get("refined_content"),
+                    data.get("candidate_notes"),
+                    raw_response,
+                    m_ctx,
+                    batch_id,
+                )
+                cur.execute(AI_WORD_ITERATION_INSERT_SQL, iteration_args)
+                
+                # 2. UPDATE 笔记状态
+                if memory_aid is not None:
+                    note_sql = "UPDATE ai_word_notes SET it_level = ?, it_history = ?, memory_aid = ?, updated_at = ? WHERE voc_id = ?"
+                    note_args = (int(level), history_json, memory_aid, get_timestamp_with_tz(), str(voc_id))
+                else:
+                    note_sql = "UPDATE ai_word_notes SET it_level = ?, it_history = ?, updated_at = ? WHERE voc_id = ?"
+                    note_args = (int(level), history_json, get_timestamp_with_tz(), str(voc_id))
+                
+                cur.execute(note_sql, note_args)
+                
+                # 提交事务
+                write_conn.commit()
+                
+                _debug_log(
+                    f"atomic_save_iteration_and_update_note: {voc_id} 原子更新成功（迭代level={level}）",
+                    level="DEBUG",
+                    module="database.momo_words",
+                )
+                
+                return True
+            except Exception as e:
+                try:
+                    write_conn.rollback()
+                except Exception:
+                    pass
+                _log_repo_failure("atomic_save_iteration_and_update_note", e)
+                return False
+            finally:
+                try:
+                    cur.close()
+                finally:
+                    if not _is_main_write_singleton_conn(write_conn):
+                        try:
+                            write_conn.close()
+                        except Exception:
+                            pass
+    except Exception as e:
+        _log_repo_failure("atomic_save_iteration_and_update_note[outer]", e)
+        return False
+
+
 __all__ = [
     "NOTE_UPSERT_SQL",
     "build_note_upsert_args",
@@ -352,4 +492,5 @@ __all__ = [
     "save_ai_batch",
     "save_ai_word_iteration",
     "update_ai_word_note_iteration_state",
+    "atomic_save_iteration_and_update_note",
 ]

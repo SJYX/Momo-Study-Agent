@@ -11,6 +11,7 @@ from database.momo_words import (
     get_processed_ids_in_batch,
     get_progress_tracked_ids_in_batch,
     get_local_word_note,
+    get_word_notes_in_batch,
     save_ai_word_notes_batch,
     save_ai_batch,
     mark_processed_batch,
@@ -92,16 +93,29 @@ class StudyWorkflow:
         if not pending_words:
             return set()
 
+        # 提取全部 voc_id
+        voc_ids = []
+        for w in pending_words:
+            vid = str(w.get("voc_id") or "")
+            if vid:
+                voc_ids.append(vid)
+        
+        if not voc_ids:
+            return set()
+        
+        # 批量查询所有笔记（一条 SQL）
+        notes_map = get_word_notes_in_batch(voc_ids)
+        if not notes_map:
+            return set()
+        
+        # 在 Python 层遍历结果
         recovered = []
         for w in pending_words:
             vid = str(w.get("voc_id") or "")
-            if not vid:
+            if not vid or vid not in notes_map:
                 continue
-
-            note = get_local_word_note(vid)
-            if not note:
-                continue
-
+            
+            note = notes_map[vid]
             has_note_content = bool(
                 str(note.get("basic_meanings") or "").strip()
                 or str(note.get("raw_full_text") or "").strip()
@@ -109,13 +123,13 @@ class StudyWorkflow:
             )
             if not has_note_content:
                 continue
-
+            
             spelling = str(note.get("spelling") or w.get("voc_spelling") or "")
             recovered.append((vid, spelling, str(w.get("voc_spelling") or spelling or vid)))
-
+        
         if not recovered:
             return set()
-
+        
         mark_processed_batch([(vid, spelling) for vid, spelling, _ in recovered])
 
         now = time.time()

@@ -6,7 +6,12 @@ import time
 from typing import List, Dict
 import config as _config
 from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
-from database.momo_words import get_latest_progress, save_ai_word_iteration, update_ai_word_note_iteration_state
+from database.momo_words import (
+    get_latest_progress,
+    save_ai_word_iteration,
+    update_ai_word_note_iteration_state,
+    atomic_save_iteration_and_update_note,
+)
 from database.utils import get_timestamp_with_tz
 from core.constants import MAIMEMO_BRIEF_MEANING_MAX_LENGTH
 from config import SCORE_PROMPT_FILE, REFINE_PROMPT_FILE
@@ -156,49 +161,21 @@ class IterationManager:
         策略：
         1. 优先处理已有 AI 笔记但熟悉度低的单词（迭代优化）
         2. 处理没有 AI 笔记但熟悉度低的单词（首次助记生成）
+        
+        使用单条 JOIN 查询替代两次分别查询，避免 N+1。
         """
         conn = _get_read_conn(_config.DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         weak_words = []
         cur = conn.cursor()
         try:
-            # 1. 获取已有 AI 笔记的薄弱词（迭代优化）
-            query1 = f"""
-                SELECT n.*, h.familiarity_short
-                FROM ai_word_notes n
-                JOIN (
-                    SELECT voc_id, familiarity_short
-                    FROM word_progress_history
-                    GROUP BY voc_id
-                    HAVING MAX(created_at)
-                ) h ON n.voc_id = h.voc_id
-                WHERE h.familiarity_short < ?
-            """
-            if conn_lock is not None:
-                with conn_lock:
-                    try:
-                        cur.execute(query1, (threshold,))
-                        rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                    finally:
-                        cur.close()
-                    conn.commit()
-            else:
-                try:
-                    cur.execute(query1, (threshold,))
-                    rows1 = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                finally:
-                    cur.close()
-                conn.commit()
-            weak_words.extend(rows1)
-
-            # 2. 获取没有 AI 笔记但熟悉度低的单词（首次助记生成）
-            # 排除已有 AI 笔记的单词
-            cur = conn.cursor()
-            query2 = f"""
-                SELECT
+            # 合并查询：左外连接 ai_word_notes，按条件分流
+            query = f"""
+                SELECT 
                     h.voc_id,
                     h.familiarity_short,
-                    p.spelling
+                    p.spelling,
+                    n.* 
                 FROM word_progress_history h
                 JOIN (
                     SELECT voc_id, MAX(created_at) as max_created_at
@@ -207,45 +184,53 @@ class IterationManager:
                 ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
                 LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
                 JOIN processed_words p ON h.voc_id = p.voc_id
-                WHERE h.familiarity_short < ? AND n.voc_id IS NULL
-                GROUP BY h.voc_id
+                WHERE h.familiarity_short < ?
             """
+            
             if conn_lock is not None:
                 with conn_lock:
                     try:
-                        cur.execute(query2, (threshold,))
-                        rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                        cur.execute(query, (threshold,))
+                        rows = cur.fetchall()
                     finally:
                         cur.close()
-                    conn.commit()
             else:
                 try:
-                    cur.execute(query2, (threshold,))
-                    rows2 = [_row_to_dict(cur, r) for r in cur.fetchall()]
+                    cur.execute(query, (threshold,))
+                    rows = cur.fetchall()
                 finally:
                     cur.close()
-                conn.commit()
-
-            # 补全缺失的字段
-            for row in rows2:
-                row['it_level'] = 0
-                row['it_history'] = '[]'
-                row['memory_aid'] = ''
-                row['raw_full_text'] = ''
-                row['meanings'] = ''  # 没有释义信息
-                weak_words.append(row)
+            
+            # Python 层分流处理
+            seen_voc_ids = set()
+            for row in rows:
+                row_dict = _row_to_dict(cur, row)
+                voc_id = row_dict.get('voc_id')
+                
+                # 去重
+                if voc_id in seen_voc_ids:
+                    continue
+                seen_voc_ids.add(voc_id)
+                
+                # 判断是否有 AI 笔记
+                has_ai_note = row_dict.get('it_level') is not None
+                
+                if has_ai_note:
+                    # 已有 AI 笔记，直接使用数据库返回的完整记录
+                    weak_words.append(row_dict)
+                else:
+                    # 没有 AI 笔记，补全缺失的字段
+                    row_dict['it_level'] = 0
+                    row_dict['it_history'] = '[]'
+                    row_dict['memory_aid'] = ''
+                    row_dict['raw_full_text'] = ''
+                    row_dict['meanings'] = ''
+                    weak_words.append(row_dict)
         finally:
             if not _is_main_write_singleton_conn(conn):
                 conn.close()
 
-        # 去重（基于 voc_id）
-        unique_words = {}
-        for word in weak_words:
-            voc_id = word['voc_id']
-            if voc_id not in unique_words:
-                unique_words[voc_id] = word
-
-        return list(unique_words.values())
+        return weak_words
 
     def _get_last_recorded_fam(self, voc_id: str) -> float:
         """获取该单词在最后一次 it_level 变更时的熟悉度基准。"""
@@ -409,8 +394,8 @@ class IterationManager:
             self.logger.error(f"  [Level 2 Error] {spell}: {str(e)[:120]} | Raw: {text[:100]}", module="iteration_manager", function="_handle_level_2_refinement")
 
     def _update_it_state(self, voc_id, level, reason, new_note=None, raw_text=None, iteration_data=None):
-        """原子化更新迭代状态。"""
-        # 读取当前快照用于构建新 history；写入统一走 db_manager 异步队列。
+        """原子化更新迭代状态。使用 op_lock + BEGIN IMMEDIATE 保证读改写的原子性。"""
+        # 读取当前快照用于构建新 history
         current_progress = get_latest_progress(voc_id, db_path=_config.DB_PATH)
         current_fam = current_progress.get("familiarity_short", 0.0) if current_progress else 0.0
         if current_fam is None:
@@ -434,14 +419,12 @@ class IterationManager:
                         row = cur.fetchone()
                     finally:
                         cur.close()
-                    conn.commit()
             else:
                 try:
                     cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
                     row = cur.fetchone()
                 finally:
                     cur.close()
-                conn.commit()
         finally:
             if not _is_main_write_singleton_conn(conn):
                 conn.close()
@@ -451,17 +434,26 @@ class IterationManager:
         old_history.append(history_item)
         history_json = json.dumps(old_history, ensure_ascii=False)
 
-        if iteration_data:
-            ok = save_ai_word_iteration(voc_id, iteration_data)
-            if not ok:
-                self.logger.warning(f"迭代历史入队失败: {voc_id}", module="iteration_manager", function="_update_it_state")
-
         if new_note:
             # 模式：将重炼结果置顶保存，保留历史
             combined_note = f"{new_note}\n\n--- 历史记录 ---\n{old_memory_aid}" if old_memory_aid else new_note
-            ok = update_ai_word_note_iteration_state(voc_id, level, history_json, memory_aid=combined_note)
         else:
-            ok = update_ai_word_note_iteration_state(voc_id, level, history_json)
+            combined_note = None
 
-        if not ok:
-            self.logger.warning(f"迭代状态入队失败: {voc_id}", module="iteration_manager", function="_update_it_state")
+        # 原子化操作：同时保存迭代记录和更新笔记状态
+        if iteration_data:
+            ok = atomic_save_iteration_and_update_note(
+                voc_id,
+                level,
+                history_json,
+                iteration_data,
+                memory_aid=combined_note,
+                db_path=_config.DB_PATH,
+            )
+            if not ok:
+                self.logger.warning(f"迭代原子更新失败: {voc_id}", module="iteration_manager", function="_update_it_state")
+        else:
+            # 如果没有 iteration_data，只更新笔记状态（非原子，因为没有迭代数据可保存）
+            ok = update_ai_word_note_iteration_state(voc_id, level, history_json, memory_aid=combined_note)
+            if not ok:
+                self.logger.warning(f"迭代状态更新失败: {voc_id}", module="iteration_manager", function="_update_it_state")

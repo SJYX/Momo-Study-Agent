@@ -169,10 +169,29 @@ async def get_today(
 
     # 3. 若无任何可用缓存或要求强制刷新，调用云端接口拉取
     if items_raw is None:
-        res = await run_in_threadpool(momo.get_today_items, limit=500)
-        items_raw = (res or {}).get("data", {}).get("today_items", [])
-        # 同步保存一份基础 raw 列表到本地磁盘，供冷启动快速重载
-        _save_today_items_raw(user, items_raw)
+        fetch_timeout_s = float(os.getenv("WEB_TODAY_ITEMS_TIMEOUT_S", "8"))
+        try:
+            res = await asyncio.wait_for(
+                run_in_threadpool(momo.get_today_items, limit=500),
+                timeout=fetch_timeout_s,
+            )
+            items_raw = (res or {}).get("data", {}).get("today_items", [])
+            # 同步保存一份基础 raw 列表到本地磁盘，供冷启动快速重载
+            _save_today_items_raw(user, items_raw)
+        except asyncio.TimeoutError:
+            # 云端抖动时优先保证接口可用：回退到磁盘缓存（可接受过期）
+            stale_items = _load_today_items_raw(user)
+            if stale_items is not None:
+                items_raw = stale_items
+            else:
+                items_raw = []
+            try:
+                ctx.logger.warning(
+                    f"[Web] get_today_items 超时({fetch_timeout_s}s)，已回退本地缓存",
+                    module="study_router",
+                )
+            except Exception:
+                pass
 
     # 4. 实时回填最新状态：切 DB context 并查询
     from web.backend.user_context import UserContextManager

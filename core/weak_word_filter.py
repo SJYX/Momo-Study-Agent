@@ -23,6 +23,10 @@ class WeakWordFilter:
         else:
             from core.logger import get_logger
             self.logger = get_logger()
+        
+        # 缓存用户统计信息，TTL 为 60 秒
+        self._user_stats_cache: Dict = None
+        self._user_stats_cache_ttl: float = 0.0  # 缓存过期时间戳
 
     @staticmethod
     def _as_number(value, default=0.0):
@@ -119,7 +123,14 @@ class WeakWordFilter:
                 return base_threshold
 
     def _get_user_stats(self) -> Dict:
-        """获取用户统计信息"""
+        """获取用户统计信息，60秒内使用缓存避免重复查询"""
+        current_time = time.time()
+        
+        # 检查缓存是否有效（未过期）
+        if self._user_stats_cache is not None and current_time < self._user_stats_cache_ttl:
+            return self._user_stats_cache
+        
+        # 缓存已过期或不存在，执行查询
         conn = _get_read_conn(_config.DB_PATH)
         conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
@@ -148,7 +159,6 @@ class WeakWordFilter:
                         total_words = cur.fetchone()[0] or 0
                     finally:
                         cur.close()
-                    conn.commit()
             else:
                 try:
                     # 获取平均熟悉度
@@ -172,7 +182,6 @@ class WeakWordFilter:
                     total_words = cur.fetchone()[0] or 0
                 finally:
                     cur.close()
-                conn.commit()
         finally:
             if not _is_main_write_singleton_conn(conn):
                 conn.close()
@@ -184,12 +193,18 @@ class WeakWordFilter:
         elif avg_reviews < 5:
             study_frequency = "low"
 
-        return {
+        result = {
             'avg_familiarity': avg_fam,
             'total_words': total_words,
             'study_frequency': study_frequency,
             'avg_review_count': avg_reviews
         }
+        
+        # 缓存结果，设置 60 秒的 TTL
+        self._user_stats_cache = result
+        self._user_stats_cache_ttl = current_time + 60.0
+        
+        return result
 
     def get_weak_words_by_score(self, min_score: float = 50.0, limit: int = 100) -> List[Dict]:
         """根据薄弱分数获取单词列表
