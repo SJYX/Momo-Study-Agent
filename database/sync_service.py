@@ -90,8 +90,37 @@ def _run_libsql_sync_pipeline(
         _emit_sync_progress(progress_callback, "sync", 1, 2, messages["sync_doing"])
 
         if not dry_run:
+            import threading as _threading
+            _sync_timeout = float(os.getenv("MOMO_SYNC_TIMEOUT_S", "3"))
+            sync_done_evt = _threading.Event()
+            sync_result_box = [None]
+            sync_err_box = [None]
+
+            def _do_sync():
+                try:
+                    sync_result_box[0] = conn.sync()
+                except Exception as e:
+                    sync_err_box[0] = e
+                finally:
+                    sync_done_evt.set()
+
             with conn_op_lock:
-                sync_result = conn.sync()
+                t = _threading.Thread(target=_do_sync, daemon=True, name="SvcSyncOp")
+                t.start()
+                sync_done_evt.wait(timeout=_sync_timeout)
+
+            if not sync_done_evt.is_set():
+                _debug_log(
+                    f"sync_service conn.sync() 超时 ({_sync_timeout}s)，已释放锁",
+                    level="WARNING",
+                    module="database.sync_service",
+                )
+                t.join(timeout=30.0)
+
+            if sync_err_box[0] is not None:
+                raise sync_err_box[0]
+
+            sync_result = sync_result_box[0]
             stats["frames_synced"] = getattr(sync_result, "frames_synced", 0) if sync_result else 0
 
         _emit_sync_progress(progress_callback, "done", 2, 2, messages["done"], upload=0, download=0)

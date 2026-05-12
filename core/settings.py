@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     SYNC_STATUS_HEAVY_QUERY_ENABLED: bool = True
     BACKGROUND_RETRY_ENABLED: bool = True
 
+    # ─────────────── PLAYBOOK B3 闲时引擎开关 ───────────────
+    IDLE_ENGINE_ENABLED: bool = True
+
 
 _settings: Optional[Settings] = None
 

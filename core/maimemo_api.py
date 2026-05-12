@@ -66,8 +66,14 @@ class MaiMemoAPI:
         except Exception:
             pass
 
-    def _apply_rate_limit(self):
-        """根据墨墨频控窗口进行自适应节流，分配执行时间票据，避免线程饥饿。"""
+    def _apply_rate_limit(self, priority: str = "normal"):
+        """根据墨墨频控窗口进行自适应节流，分配执行时间票据，避免线程饥饿。
+
+        Phase E 优先级分流：
+        - "normal"（默认）：受最小间隔 + 窗口限制约束，适用于后台同步
+        - "high"：跳过最小间隔约束，仅受窗口硬限制（10s/20次、60s/40次）约束，
+                   适用于前端查询类 API（get_today_items 等），避免被后台 sleep 阻塞
+        """
         with self._rate_limit_lock:
             now = time.time()
 
@@ -79,18 +85,19 @@ class MaiMemoAPI:
 
             wait_candidates = [0.0]
 
-            # 1. 最小间隔平滑处理
-            interval_wait = (self._last_request_ts + self._min_interval_sec) - now
-            if interval_wait > 0:
-                wait_candidates.append(interval_wait)
+            # 1. 最小间隔平滑处理（high 优先级跳过此约束）
+            if priority != "high":
+                interval_wait = (self._last_request_ts + self._min_interval_sec) - now
+                if interval_wait > 0:
+                    wait_candidates.append(interval_wait)
 
-            # 2. 10秒20次限制
+            # 2. 10秒20次限制（硬限制，所有优先级都受约束）
             if len(self._req_ts_10s) >= 20:
                 wait_10 = (self._req_ts_10s[-20] + 10.0) - now
                 if wait_10 > 0:
                     wait_candidates.append(wait_10)
 
-            # 3. 60秒40次限制
+            # 3. 60秒40次限制（硬限制，所有优先级都受约束）
             if len(self._req_ts_60s) >= 40:
                 wait_60 = (self._req_ts_60s[-40] + 60.0) - now
                 if wait_60 > 0:
@@ -144,6 +151,8 @@ class MaiMemoAPI:
         """统一请求处理及限流"""
         url = f"{self.base_url}{endpoint}"
         expected_error_codes = set(kwargs.pop("expected_error_codes", []) or [])
+        # Phase E：从 kwargs 取出优先级参数（不传给 requests）
+        priority = kwargs.pop("_priority", "normal")
         kwargs.setdefault("timeout", (self._connect_timeout_s, self._read_timeout_s))
 
         # 单测通常会 patch `requests.request`；生产环境仍优先走 session 复用连接。
@@ -152,7 +161,7 @@ class MaiMemoAPI:
         # 添加重试逻辑（处理 429 错误）
         for attempt in range(3):  # MAX_RETRIES = 3
             try:
-                self._apply_rate_limit()
+                self._apply_rate_limit(priority=priority)
                 response = request_impl(method, url, headers=self.headers, **kwargs)
 
                 if 200 <= response.status_code < 300:
@@ -610,12 +619,13 @@ class MaiMemoAPI:
     # ==========================
     def get_study_progress(self) -> Optional[Dict]:
         """获取今日学习进度"""
-        return self._request("POST", "/study/get_study_progress")
+        return self._request("POST", "/study/get_study_progress", _priority="high")
         
     def get_today_items(self, limit: int = 500) -> Optional[Dict]:
         """获取今日待学习/待复习的单词列表（公测新接口）"""
         # 官方默认每次只返回50个，我们通过传入更大的 limit 一次性拉满
-        return self._request("POST", "/study/get_today_items", json={"limit": limit})
+        # Phase E：前端查询类 API 使用 high 优先级，跳过最小间隔约束
+        return self._request("POST", "/study/get_today_items", json={"limit": limit}, _priority="high")
 
         
     def add_words_to_study(self, voc_ids: List[str], advance: bool = False) -> Optional[Dict]:

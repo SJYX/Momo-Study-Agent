@@ -71,7 +71,16 @@ def _log_repo_failure(func_name: str, e: BaseException, *, level: str = "WARNING
 
 @with_read_session(default_return={})
 def get_sync_status_in_batch(voc_ids: List[str], db_path: Optional[str] = None, session: DBSession = None) -> Dict[str, int]:
-    """批量获取单词的同步状态 (0: 未同步, 1: 已同步)"""
+    """批量获取单词的同步状态。
+
+    兼容映射说明（保留旧值语义）：
+    - 0 = unsynced（本地已生成，未同步）
+    - 1 = synced（远端已确认）
+    - 2 = conflict（远端释义不一致）
+    - 3 = queued（已入同步队列，等待远端同步）
+    - 4 = syncing（正在远端同步）
+    - 5 = failed（不可重试的失败，例如 invalid_res_id）
+    """
     if not voc_ids:
         return {}
 
@@ -100,6 +109,7 @@ def build_note_upsert_args(
     """Assemble args tuple for NOTE_UPSERT_SQL.
 
     sync_status=None → derive from content_origin (0 for ai_generated, 1 otherwise).
+    Note: 新增状态 3/4/5 由后台同步调度写入；此处保留原有默认以保证向后兼容。
     """
     md: Dict[str, Any] = dict(metadata or {})
     raw_candidate = {k: v for k, v in payload.items() if k != "raw_full_text"}

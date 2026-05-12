@@ -20,23 +20,45 @@ except Exception:
 T = TypeVar('T')
 
 class DBSession:
-    """包装了连接与防死锁机制的会话对象"""
-    def __init__(self, conn: Any, lock: Any = None):
+    """包装了连接与防死锁机制的会话对象。
+
+    读操作（fetchall / fetchone）支持锁超时降级：
+    如果在 lock_timeout 秒内未能获取 _main_write_conn_op_lock，
+    回退到不持锁直接执行 SQL。SQLite WAL 模式下读操作即使不持应用层锁也是安全的，
+    最多读到旧数据，不会损坏或阻塞。
+
+    写操作（execute / executemany）始终强制持锁，不降级。
+    """
+
+    # 默认读锁超时（秒）；写操作不使用此值
+    DEFAULT_READ_LOCK_TIMEOUT = 2.0
+
+    def __init__(self, conn: Any, lock: Any = None, lock_timeout: float = DEFAULT_READ_LOCK_TIMEOUT):
         self.conn = conn
         self.lock = lock
+        self.lock_timeout = lock_timeout
+
+    def _acquire_read_lock(self) -> bool:
+        """尝试在 timeout 内获取读锁。
+
+        Returns:
+            True  — 成功获取锁（调用方需负责 release）
+            False — 超时，已记录 WARNING，调用方应走无锁路径
+        """
+        if self.lock is None:
+            return False
+        acquired = self.lock.acquire(timeout=self.lock_timeout)
+        if not acquired:
+            _debug_log(
+                f"DBSession 读锁获取超时 ({self.lock_timeout}s)，降级为无锁读取",
+                level="WARNING",
+                module="database.session",
+            )
+        return acquired
 
     def fetchall(self, sql: str, params: tuple = ()) -> List[Any]:
-        if self.lock is not None:
-            with self.lock:
-                cur = self.conn.cursor()
-                try:
-                    cur.execute(sql, params)
-                    res = cur.fetchall()
-                finally:
-                    cur.close()
-                self.conn.commit()
-                return res
-        else:
+        acquired = self._acquire_read_lock()
+        try:
             cur = self.conn.cursor()
             try:
                 cur.execute(sql, params)
@@ -45,19 +67,13 @@ class DBSession:
                 cur.close()
             self.conn.commit()
             return res
+        finally:
+            if acquired:
+                self.lock.release()
 
     def fetchone(self, sql: str, params: tuple = ()) -> Optional[Any]:
-        if self.lock is not None:
-            with self.lock:
-                cur = self.conn.cursor()
-                try:
-                    cur.execute(sql, params)
-                    res = cur.fetchone()
-                finally:
-                    cur.close()
-                self.conn.commit()
-                return res
-        else:
+        acquired = self._acquire_read_lock()
+        try:
             cur = self.conn.cursor()
             try:
                 cur.execute(sql, params)
@@ -66,6 +82,9 @@ class DBSession:
                 cur.close()
             self.conn.commit()
             return res
+        finally:
+            if acquired:
+                self.lock.release()
             
     def execute(self, sql: str, params: tuple = ()) -> None:
         if self.lock is not None:

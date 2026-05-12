@@ -7,6 +7,8 @@ import time
 from typing import Callable, Optional
 
 from core.active_profile_registry import is_active
+from core.feature_flags import is_enabled
+from core.metrics import get_metrics_collector
 from core.sync_priority import Priority
 from database.momo_words import (
     get_local_word_note,
@@ -15,6 +17,13 @@ from database.momo_words import (
     mark_note_synced,
     set_note_sync_status,
 )
+
+
+# PLAYBOOK B3 闲时引擎阈值。"_is_idle" 全部满足 + 连续稳定 IDLE_DEBOUNCE_S 秒才进入 idle。
+IDLE_API_P95_MS = 200.0
+IDLE_QUEUE_THRESHOLD = 5.0
+IDLE_DB_P95_MS = 100.0
+IDLE_DEBOUNCE_S = 5.0
 
 
 class SyncManager:
@@ -41,6 +50,8 @@ class SyncManager:
         self._seq = 0
         self._seq_lock = threading.Lock()
         self._consecutive_p1_count = 0
+        # PLAYBOOK B3：闲时引擎防抖时间戳。None 表示尚未连续满足闲时条件。
+        self._idle_since: Optional[float] = None
 
         self._sync_duration_history = {
             "用户数据库": [],
@@ -116,6 +127,17 @@ class SyncManager:
             "profile_name": str(profile_name or "").strip().lower(),
         }
         self.sync_queue.put((int(priority), self._next_seq(), item))
+        # 标记为已入队（兼容新状态 3 = queued）以便外部观察
+        try:
+            if self.db_path:
+                set_note_sync_status(voc_id, 3, db_path=self.db_path)
+            else:
+                set_note_sync_status(voc_id, 3)
+        except Exception:
+            try:
+                self.logger.debug(f"无法写入 sync_status=3 for {voc_id}")
+            except Exception:
+                pass
 
     def _take_next_item(self):
         try:
@@ -153,6 +175,45 @@ class SyncManager:
         self._consecutive_p1_count = 0
         return p0
 
+    def _is_idle(self, profile: str) -> bool:
+        """PLAYBOOK B3：闲时引擎判定。
+
+        全部条件满足且**连续稳定 IDLE_DEBOUNCE_S 秒**才视为 idle：
+        1. api.duration_ms P95 < IDLE_API_P95_MS
+        2. sync.queue.depth P95 < IDLE_QUEUE_THRESHOLD
+        3. db.batch_write.duration_ms P95 < IDLE_DB_P95_MS
+
+        feature flag IDLE_ENGINE_ENABLED=False 时永远返回 False（回退到 Phase 4 行为）。
+        当任一指标无数据（None）时不视为超阈值——保留乐观假设。
+        """
+        if not is_enabled("IDLE_ENGINE_ENABLED", default=True):
+            self._idle_since = None
+            return False
+
+        prof = profile or "_global"
+        coll = get_metrics_collector()
+
+        api_p95 = coll.percentile(prof, "api.duration_ms", 95)
+        if api_p95 is not None and api_p95 >= IDLE_API_P95_MS:
+            self._idle_since = None
+            return False
+
+        qd_p95 = coll.percentile(prof, "sync.queue.depth", 95)
+        if qd_p95 is not None and qd_p95 >= IDLE_QUEUE_THRESHOLD:
+            self._idle_since = None
+            return False
+
+        db_p95 = coll.percentile(prof, "db.batch_write.duration_ms", 95)
+        if db_p95 is not None and db_p95 >= IDLE_DB_P95_MS:
+            self._idle_since = None
+            return False
+
+        # 防抖：首次满足条件时记下时间戳；连续稳定 IDLE_DEBOUNCE_S 秒后才返回 True
+        if self._idle_since is None:
+            self._idle_since = time.time()
+            return False
+        return (time.time() - self._idle_since) >= IDLE_DEBOUNCE_S
+
     def _defer_maimemo_conflict(self, item, reason: str):
         self.conflict_sync_queue.put(item)
         self.logger.info(
@@ -181,6 +242,17 @@ class SyncManager:
             if self._stop_event.is_set() and self.sync_queue.empty():
                 break
 
+            # PLAYBOOK B5：采样队列深度（每轮一次，B3 闲时判定输入之一）。
+            # profile 维度用 ActiveProfileRegistry 取最近活跃 profile；为空则归 "_global"。
+            try:
+                from core.active_profile_registry import get_active as _get_active
+                metrics_prof = _get_active() or "_global"
+                get_metrics_collector().record(
+                    metrics_prof, "sync.queue.depth", float(self.sync_queue.qsize())
+                )
+            except Exception:
+                pass
+
             wrapped = self._take_next_item()
             if wrapped is None:
                 try:
@@ -193,11 +265,13 @@ class SyncManager:
             task_done_manually = False
             try:
                 if int(priority) >= int(Priority.P3) and not is_active(item.get("profile_name", "")):
-                    self.sync_queue.put((priority, self._next_seq(), item))
-                    self.sync_queue.task_done()
-                    task_done_manually = True
-                    time.sleep(0.5)
-                    continue
+                    # B3 闲时引擎：系统稳定 idle 时全速消费 P3/P4，不再因非 active profile 暂停
+                    if not self._is_idle(item.get("profile_name", "")):
+                        self.sync_queue.put((priority, self._next_seq(), item))
+                        self.sync_queue.task_done()
+                        task_done_manually = True
+                        time.sleep(0.5)
+                        continue
 
                 voc_id = item["voc_id"]
                 spell = item["spell"]
@@ -232,11 +306,39 @@ class SyncManager:
                 if current_status == 2:
                     self._defer_maimemo_conflict(item, "当前状态已是冲突态")
                     continue
-                if current_status != 0:
+                # 兼容新状态：允许处理 0(unsynced) 与 3(queued) 的任务；其余状态均跳过
+                if current_status not in (0, 3):
                     self.logger.info(f"ℹ️ {spell} 当前sync_status={current_status}，跳过重复同步")
                     continue
 
                 try:
+                    # 开始远端同步：标记为 4=syncing
+                    try:
+                        if self.db_path:
+                            set_note_sync_status(voc_id, 4, db_path=self.db_path)
+                        else:
+                            set_note_sync_status(voc_id, 4)
+                    except Exception:
+                        pass
+                    # 发出行级状态：正在同步
+                    self.logger.info(
+                        f"[RowStatus] {spell} 开始同步",
+                        extra={
+                            "event": "row_status",
+                            "data": {
+                                "rows": [
+                                    {
+                                        "item_id": str(spell).lower(),
+                                        "status": "running",
+                                        "phase": "syncing",
+                                    }
+                                ]
+                            },
+                        },
+                    )
+
+                
+                    _task_started_at = time.time()
                     sync_result = self.momo.sync_interpretation(
                         voc_id,
                         interpretation,
@@ -246,6 +348,16 @@ class SyncManager:
                         local_reference=interpretation,
                         return_details=True,
                     )
+                    # PLAYBOOK B5：记录单条同步耗时（不区分成功/失败状态，都进窗口）
+                    try:
+                        _task_duration_ms = int((time.time() - _task_started_at) * 1000)
+                        get_metrics_collector().record(
+                            item.get("profile_name", "") or "_global",
+                            "sync.task.duration_ms",
+                            float(_task_duration_ms),
+                        )
+                    except Exception:
+                        pass
                     sync_status = 1
                     if isinstance(sync_result, dict):
                         sync_status = int(sync_result.get("sync_status", 0) or 0)
@@ -326,15 +438,15 @@ class SyncManager:
                         if isinstance(sync_result, dict):
                             reason = str(sync_result.get("reason", "") or "").lower()
 
-                        # 非法资源 ID 属于不可重试失败：写回冲突态避免反复重试刷屏。
+                        # 非法资源 ID 属于不可重试失败：写回 5=failed，避免反复重试刷屏。
                         if reason in {"invalid_res_id", "common_invalid_res_id"}:
                             if self.db_path:
-                                ok = set_note_sync_status(voc_id, 2, db_path=self.db_path)
+                                ok = set_note_sync_status(voc_id, 5, db_path=self.db_path)
                             else:
-                                ok = set_note_sync_status(voc_id, 2)
+                                ok = set_note_sync_status(voc_id, 5)
                             if not ok:
                                 self.logger.warning(f"⚠️ {spell} 非法 voc_id 状态写回未命中")
-                            self.logger.warning(f"⚠️ {spell} voc_id={voc_id} 在墨墨侧非法，已标记为冲突并停止重试")
+                            self.logger.warning(f"⚠️ {spell} voc_id={voc_id} 在墨墨侧非法，已标记为 failed 并停止重试")
                             self.logger.info(
                                 f"[RowStatus] {spell} 同步失败",
                                 extra={
@@ -353,7 +465,14 @@ class SyncManager:
                             )
                             continue
 
-                        self.logger.warning(f"⚠️ {spell} 墨墨同步未完成")
+                        # 其他非成功结果统一视为不可重试失败（5）以避免无限重试；写回并通知前端
+                        if self.db_path:
+                            ok = set_note_sync_status(voc_id, 5, db_path=self.db_path)
+                        else:
+                            ok = set_note_sync_status(voc_id, 5)
+                        if not ok:
+                            self.logger.warning(f"⚠️ {spell} sync_status=5 写回未命中")
+                        self.logger.warning(f"⚠️ {spell} 墨墨同步未完成，已标记 failed")
                         self.logger.info(
                             f"[RowStatus] {spell} 同步未完成",
                             extra={

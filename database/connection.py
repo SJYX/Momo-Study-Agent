@@ -262,6 +262,29 @@ def _get_singleton_conn_op_lock(conn: Any):
     return None
 
 
+def _get_local_read_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
+    """打开一个轻量级只读 sqlite3 连接。
+
+    用于 Embedded Replica 模式下的读操作隔离，避免读请求被 _main_write_conn_op_lock
+    阻塞。WAL 模式天然支持 '一写多读' 并行，此连接仅做 SELECT，不会与写单例冲突。
+
+    与 _get_local_conn 的区别：
+    - 设置 PRAGMA query_only=ON 防止意外写入
+    - 不做损坏恢复（读失败时由 with_read_session 装饰器兜底降级）
+    - 更短的 busy_timeout（读操作不应等太久）
+    """
+    path = db_path or _config.DB_PATH
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    conn = sqlite3.connect(path, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = lambda b: b.decode("utf-8", "replace")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=2000;")
+    conn.execute("PRAGMA query_only=ON;")
+    return conn
+
+
 def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     path = db_path or _config.DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -493,9 +516,12 @@ def _get_read_conn_impl(
 ) -> Any:
     """Resolve read connection.
 
-    CRITICAL WalConflict fix:
-    - Embedded Replica mode must return main write singleton directly.
-    - Never open extra local libsql read connections.
+    Phase B 读写隔离：
+    - Embedded Replica 模式下，读操作优先走独立的 sqlite3 只读连接，
+      避免被 _main_write_conn_op_lock 阻塞。
+    - 仅当独立连接失败时才回退到写单例。
+    - 永远不开额外的 libsql 读连接（WalConflict 约束仍然成立）。
+    - 可通过 ISOLATED_READ_CONN_ENABLED=False 回退到旧行为。
     """
     ctx = _resolve_conn_context(db_path)
     db_path = ctx["db_path"]
@@ -505,6 +531,25 @@ def _get_read_conn_impl(
         return _wrap_and_track_connection(db_path, conn, True)
 
     if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and HAS_LIBSQL:
+        # Phase B：优先走独立 sqlite3 只读连接（无锁竞争）
+        try:
+            from core.feature_flags import is_enabled
+            use_isolated = is_enabled("ISOLATED_READ_CONN_ENABLED", default=True)
+        except Exception:
+            use_isolated = True
+
+        if use_isolated:
+            try:
+                conn = _get_local_read_conn(db_path)
+                return _wrap_and_track_connection(db_path, conn, True)
+            except Exception as iso_err:
+                _debug_log(
+                    f"独立只读连接失败，回退到写单例: {iso_err}",
+                    level="WARNING",
+                )
+                # 回退到写单例
+
+        # 回退路径：复用写单例（旧行为）
         last_error = None
         for attempt in range(max_retries):
             try:

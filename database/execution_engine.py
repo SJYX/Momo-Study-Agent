@@ -2,6 +2,7 @@
 database/execution_engine.py: 专职处理并发队列、写操作防冲突以及定时同步。
 从 connection.py 解耦出来的执行引擎层。
 """
+import os
 import queue
 import threading
 import time
@@ -120,6 +121,17 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
                     logger.info(msg, **kwargs)
             except Exception:
                 pass
+            # PLAYBOOK B5：写入指标层，给 B3 闲时引擎与 /api/ops/metrics 用
+            try:
+                from core.metrics import get_metrics_collector
+                from core.active_profile_registry import get_active
+                get_metrics_collector().record(
+                    get_active() or "_global",
+                    "db.batch_write.duration_ms",
+                    float(duration_ms),
+                )
+            except Exception:
+                pass
             return
         except Exception as e:
             # Catch ALL exceptions here to check for libsql WalConflicts
@@ -234,6 +246,8 @@ def _writer_daemon() -> None:
     finally:
         _debug_log("后台写线程停止", level="INFO")
 
+_SYNC_TIMEOUT_S = float(os.getenv("MOMO_SYNC_TIMEOUT_S", "3"))
+
 def _sync_daemon() -> None:
     global _needs_sync, _last_write_time
 
@@ -251,17 +265,51 @@ def _sync_daemon() -> None:
                 continue
             conn_lock = _get_singleton_conn_op_lock(conn)
             sync_started_at = time.time()
+
+            # Phase D：在持锁窗口内限时执行 conn.sync()
+            # 使用独立线程 + Event 实现软超时，避免 sync() 长时间阻塞锁
+            sync_done = threading.Event()
+            sync_error = [None]  # 用列表包装以支持闭包写入
+
+            def _do_sync():
+                try:
+                    conn.sync()
+                except Exception as e:
+                    sync_error[0] = e
+                finally:
+                    sync_done.set()
+
             if conn_lock is not None:
                 with conn_lock:
-                    conn.sync()
+                    sync_thread = threading.Thread(target=_do_sync, daemon=True, name="MomoSyncOp")
+                    sync_thread.start()
+                    # 限时等待：超时后释放锁（with 块结束），sync 线程仍在后台完成
+                    sync_done.wait(timeout=_SYNC_TIMEOUT_S)
             else:
-                conn.sync()
+                sync_thread = threading.Thread(target=_do_sync, daemon=True, name="MomoSyncOp")
+                sync_thread.start()
+                sync_done.wait(timeout=_SYNC_TIMEOUT_S)
+
+            timed_out = not sync_done.is_set()
+            if timed_out:
+                _debug_log(
+                    f"conn.sync() 超时 ({_SYNC_TIMEOUT_S}s)，已释放锁，sync 线程仍在后台完成",
+                    level="WARNING",
+                )
+                # 等待 sync 线程自然结束（不设上限，但此时锁已释放不阻塞其他线程）
+                sync_thread.join(timeout=30.0)
+
+            if sync_error[0] is not None:
+                raise sync_error[0]
+
             _needs_sync = False
             sync_duration_ms = int((time.time() - sync_started_at) * 1000)
             is_slow = sync_duration_ms >= _SLOW_SYNC_MS
             try:
                 logger = get_logger()
                 msg = f"idle_sync done | duration_ms={sync_duration_ms}"
+                if timed_out:
+                    msg += " | lock_released_early=true"
                 kwargs = dict(
                     module="database.execution_engine",
                     duration_ms=sync_duration_ms,
@@ -271,6 +319,17 @@ def _sync_daemon() -> None:
                     logger.warning(msg + " | slow=true", **kwargs)
                 else:
                     logger.info(msg, **kwargs)
+            except Exception:
+                pass
+            # PLAYBOOK B5：写入指标层
+            try:
+                from core.metrics import get_metrics_collector
+                from core.active_profile_registry import get_active
+                get_metrics_collector().record(
+                    get_active() or "_global",
+                    "db.idle_sync.duration_ms",
+                    float(sync_duration_ms),
+                )
             except Exception:
                 pass
         except BaseException as e:
