@@ -20,19 +20,19 @@ def test_voc_id_is_stringified():
 def test_default_sync_status_for_ai_generated_is_zero():
     """content_origin=ai_generated → sync_status=0（未同步）。"""
     args = build_note_upsert_args("v", {"spelling": "x"}, {"content_origin": "ai_generated"})
-    # sync_status 是倒数第 2 个字段（updated_at 是最后一个）
-    assert args[-2] == 0
+    # sync_status 是倒数第 4 个字段（match_confidence, match_reason, updated_at 在后面）
+    assert args[-4] == 0
 
 
 def test_default_sync_status_for_non_ai_origin_is_one():
     """content_origin != ai_generated → sync_status=1（视为已同步）。"""
     args = build_note_upsert_args("v", {"spelling": "x"}, {"content_origin": "imported"})
-    assert args[-2] == 1
+    assert args[-4] == 1
 
 
 def test_explicit_sync_status_overrides_default():
     args = build_note_upsert_args("v", {"spelling": "x"}, {"content_origin": "imported"}, sync_status=0)
-    assert args[-2] == 0
+    assert args[-4] == 0
 
 
 def test_metadata_takes_priority_over_payload_for_overlapping_fields():
@@ -94,5 +94,5 @@ def test_single_and_batch_path_produce_identical_args_for_same_input():
     single = build_note_upsert_args("v1", payload, metadata, sync_status=0)
     # 批量内部默认 sync_status=None（推导）—— content_origin=ai_generated → 0
     batch_each = build_note_upsert_args("v1", payload, metadata)
-    # 除 updated_at（位置 22）外其他字段必须一致
-    assert single[:22] == batch_each[:22]
+    # 除 updated_at（位置 24）外其他字段必须一致
+    assert single[:24] == batch_each[:24]

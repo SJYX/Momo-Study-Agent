@@ -15,7 +15,7 @@ from database.sql_constants import (
 
 
 def test_note_upsert_sql_field_count():
-    assert NOTE_UPSERT_SQL.count("?") == 23
+    assert NOTE_UPSERT_SQL.count("?") == 25
 
 
 def test_processed_upsert_sql_field_count():

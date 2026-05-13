@@ -106,11 +106,14 @@ def build_note_upsert_args(
     metadata: Optional[NoteMetadata] = None,
     *,
     sync_status: Optional[int] = None,
+    match_confidence: Optional[float] = None,
+    match_reason: Optional[str] = None,
     timestamp: Optional[str] = None,
 ) -> Tuple[Any, ...]:
     """Assemble args tuple for NOTE_UPSERT_SQL.
 
     sync_status=None → derive from content_origin (0 for ai_generated, 1 otherwise).
+    match_confidence=None → NULL (仅同步完成后由 sync_manager 写入).
     timestamp=None → generate current timestamp; 批量操作可传入统一 timestamp 以减少微秒级差异。
     Note: 新增状态 3/4/5 由后台同步调度写入；此处保留原有默认以保证向后兼容。
     """
@@ -152,6 +155,8 @@ def build_note_upsert_args(
         content_source_db,
         content_source_scope,
         int(sync_status),
+        match_confidence,
+        match_reason,
         timestamp,
     )
 
@@ -271,8 +276,24 @@ def get_word_notes_in_batch(voc_ids: list[str], db_path: Optional[str] = None, s
         return _rows_to_map(rows)
 
 
-def set_note_sync_status(voc_id: str, sync_status: int, db_path: Optional[str] = None) -> bool:
+def set_note_sync_status(voc_id: str, sync_status: int, db_path: Optional[str] = None, *, match_confidence: Optional[float] = None, match_reason: Optional[str] = None) -> bool:
+    """更新 sync_status，同时可选写入 match_confidence 和 match_reason。"""
     try:
+        if match_confidence is not None or match_reason is not None:
+            mc = match_confidence if match_confidence is not None else "NULL"
+            mr = match_reason if match_reason is not None else None
+            if mr is not None:
+                return dispatch_write(
+                    "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?",
+                    (int(sync_status), mc, mr, get_timestamp_with_tz(), str(voc_id)),
+                    db_path=db_path,
+                )
+            else:
+                return dispatch_write(
+                    "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, updated_at = ? WHERE voc_id = ?",
+                    (int(sync_status), mc, get_timestamp_with_tz(), str(voc_id)),
+                    db_path=db_path,
+                )
         return dispatch_write(
             "UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?",
             (int(sync_status), get_timestamp_with_tz(), str(voc_id)),
@@ -294,8 +315,36 @@ def mark_note_sync_conflict(voc_id: str, db_path: Optional[str] = None) -> bool:
     return set_note_sync_status(voc_id, 2, db_path=db_path)
 
 
-def update_sync_status_batch(items: List[Tuple[int, str]], db_path: Optional[str] = None) -> bool:
-    """批量合并更新 sync_status。items 格式: [(sync_status, voc_id), ...]"""
+def update_sync_status_batch(items: List[Tuple[int, str]], db_path: Optional[str] = None, *, match_items: Optional[List[Tuple[int, Optional[float], Optional[str], str]]] = None) -> bool:
+    """批量合并更新 sync_status。
+
+    items 格式: [(sync_status, voc_id), ...]
+    match_items 格式: [(sync_status, match_confidence, match_reason, voc_id), ...]
+    优先使用 match_items（含置信度），否则用 items。
+    """
+    if match_items:
+        ts = get_timestamp_with_tz()
+        batch_args = []
+        for s, mc, mr, vid in match_items:
+            if mr is not None:
+                batch_args.append((int(s), mc, mr, ts, str(vid)))
+            else:
+                batch_args.append((int(s), mc, ts, str(vid)))
+        try:
+            if any(mr is not None for _, mc, mr, _ in match_items):
+                sql = "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?"
+            else:
+                sql = "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, updated_at = ? WHERE voc_id = ?"
+            return dispatch_batch_write(
+                sql,
+                batch_args,
+                db_path=db_path,
+                queue_full_log=lambda m: _debug_log(f"批量更新 sync_status+confidence {m}", level="WARNING", module=_LOG_MOD),
+            )
+        except Exception as e:
+            _log_repo_failure("update_sync_status_batch", e)
+            return False
+
     if not items:
         return True
     ts = get_timestamp_with_tz()

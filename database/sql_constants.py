@@ -13,14 +13,14 @@ database/sql_constants.py: 集中维护跨 repo 复用的 SQL 字符串与字段
 # ai_word_notes
 # ---------------------------------------------------------------------------
 
-#: 23 个字段的 upsert，由 build_note_upsert_args() 组装参数。
+#: 25 个字段的 upsert，由 build_note_upsert_args() 组装参数。
 NOTE_UPSERT_SQL = (
     "INSERT OR REPLACE INTO ai_word_notes ("
     "voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, "
     "example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, "
     "total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, "
-    "content_source_scope, sync_status, updated_at"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "content_source_scope, sync_status, match_confidence, match_reason, updated_at"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 #: 18 个字段，未同步笔记列表查询。与 UNSYNCED_NOTE_COLUMNS 一一对应。

@@ -11,6 +11,7 @@ import requests
 import time
 import threading
 import os
+import difflib
 from collections import deque
 from typing import List, Dict, Optional, Union, Any
 from requests.adapters import HTTPAdapter
@@ -284,13 +285,21 @@ class MaiMemoAPI:
                     return str(value)
         return str(item or "")
 
-    def _classify_interpretation_list(self, res: Optional[Dict], expected_text: str = "") -> Dict[str, Any]:
+    @staticmethod
+    def _similarity(a: str, b: str) -> float:
+        """返回两个字符串的相似度比率（0.0 ~ 1.0）。"""
+        if not a or not b:
+            return 0.0
+        return difflib.SequenceMatcher(None, a, b).ratio()
+
+    def _classify_interpretation_list(self, res: Optional[Dict], expected_text: str = "", similarity_threshold: float = 0.95) -> Dict[str, Any]:
         info = {
             "sync_status": 0,
             "has_remote_interpretation": False,
             "matched_text": "",
             "first_text": "",
             "reason": "empty",
+            "match_confidence": None,
         }
 
         if not res or not res.get("success"):
@@ -312,18 +321,34 @@ class MaiMemoAPI:
 
         if expected_text:
             normalized_expected = self._normalize_interpretation_text(expected_text)
+            best_match = {"text": "", "ratio": 0.0}
             for text in texts:
-                if self._normalize_interpretation_text(text) == normalized_expected:
+                normalized_text = self._normalize_interpretation_text(text)
+                if normalized_text == normalized_expected:
                     info.update({
                         "sync_status": 1,
                         "matched_text": text,
                         "reason": "matched",
+                        "match_confidence": 1.0,
                     })
                     return info
+                ratio = self._similarity(normalized_text, normalized_expected)
+                if ratio > best_match["ratio"]:
+                    best_match = {"text": text, "ratio": ratio}
+
+            if best_match["ratio"] >= similarity_threshold:
+                info.update({
+                    "sync_status": 1,
+                    "matched_text": best_match["text"],
+                    "reason": "similar",
+                    "match_confidence": round(best_match["ratio"], 4),
+                })
+                return info
 
             info.update({
                 "sync_status": 2,
                 "reason": "mismatch",
+                "match_confidence": round(best_match["ratio"], 4),
             })
             return info
 
@@ -331,6 +356,7 @@ class MaiMemoAPI:
             "sync_status": 1,
             "matched_text": texts[0],
             "reason": "found",
+            "match_confidence": None,
         })
         return info
 
@@ -388,7 +414,7 @@ class MaiMemoAPI:
         word标识 = spell if spell else f"voc_id:{voc_id}"
         expected_text = self._normalize_interpretation_text(local_reference or interpretation)
 
-        def _finish(sync_status: int, reason: str, cloud_text: str = ""):
+        def _finish(sync_status: int, reason: str, cloud_text: str = "", match_confidence: Optional[float] = None, match_reason: Optional[str] = None):
             result = {
                 "success": sync_status == 1,
                 "sync_status": sync_status,
@@ -396,6 +422,8 @@ class MaiMemoAPI:
                 "expected_interpretation": interpretation,
                 "local_reference": local_reference or "",
                 "cloud_interpretation": cloud_text or "",
+                "match_confidence": match_confidence,
+                "match_reason": match_reason,
             }
             if return_details:
                 return result
@@ -428,6 +456,8 @@ class MaiMemoAPI:
                 status_info["sync_status"],
                 status_info["reason"],
                 status_info.get("matched_text") or status_info.get("first_text", ""),
+                match_confidence=status_info.get("match_confidence"),
+                match_reason=status_info.get("reason"),
             )
 
         # 如果已达到创建限制，先尝试核验远端现状
@@ -442,16 +472,24 @@ class MaiMemoAPI:
             return _finish(0, "lookup_failed")
 
         status_info = self._classify_interpretation_list(res, expected_text)
-        
+
         # 云端与本地一致：直接确认同步状态，避免不必要的创建尝试
         if status_info["sync_status"] == 1:
             get_logger().debug(f"[*] {word标识} - 墨墨已创建释义与本地一致，已确认同步", module="maimemo_api")
-            return _finish(1, status_info["reason"], status_info.get("matched_text", ""))
-        
+            return _finish(
+                1, status_info["reason"], status_info.get("matched_text", ""),
+                match_confidence=status_info.get("match_confidence"),
+                match_reason=status_info.get("reason"),
+            )
+
         # 云端与本地冲突：标记冲突状态
         if status_info["sync_status"] == 2:
             get_logger().warning(f"[*] {word标识} - 墨墨已创建释义与本地不一致，标记冲突", module="maimemo_api")
-            return _finish(2, status_info["reason"], status_info.get("first_text", ""))
+            return _finish(
+                2, status_info["reason"], status_info.get("first_text", ""),
+                match_confidence=status_info.get("match_confidence"),
+                match_reason=status_info.get("reason"),
+            )
         
         # 云端无一致释义
         if not force_create:

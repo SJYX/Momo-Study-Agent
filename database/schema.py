@@ -145,6 +145,7 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
         "word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, "
         "batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, content_origin TEXT, content_source_db TEXT, "
         "content_source_scope TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, sync_status INTEGER DEFAULT 0, "
+        "match_confidence REAL, match_reason TEXT, "
         "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
     cur.execute(

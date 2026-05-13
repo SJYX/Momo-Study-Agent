@@ -62,7 +62,7 @@ class SyncManager:
 
         # 写合并缓冲：积攒终态写入，定量/定时批量刷盘
         self._pending_synced: list = []  # [(voc_id, spell), ...] 成功同步待刷盘
-        self._pending_status: list = []  # [(sync_status, voc_id), ...] 终态状态待刷盘
+        self._pending_status: list = []  # [(sync_status, match_confidence, match_reason, voc_id), ...] 终态状态待刷盘
         self._flush_lock = threading.Lock()
         self._last_flush_ts = time.time()
         self._flush_batch_size = 20   # 积攒满 N 条即刷
@@ -355,8 +355,12 @@ class SyncManager:
                     except Exception:
                         pass
                     sync_status = 1
+                    match_confidence = None
+                    match_reason = None
                     if isinstance(sync_result, dict):
                         sync_status = int(sync_result.get("sync_status", 0) or 0)
+                        match_confidence = sync_result.get("match_confidence")
+                        match_reason = sync_result.get("match_reason")
                     elif not sync_result:
                         sync_status = 0
 
@@ -369,7 +373,7 @@ class SyncManager:
                         # 积攒到写合并缓冲，由 _flush_pending_writes 统一批量刷盘
                         with self._flush_lock:
                             self._pending_synced.append((voc_id, spell))
-                            self._pending_status.append((1, voc_id))
+                            self._pending_status.append((1, match_confidence, match_reason, voc_id))
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
                         self.logger.info(
                             f"[RowStatus] {spell} 同步完成",
@@ -399,9 +403,9 @@ class SyncManager:
                         except Exception as cache_error:
                             self.logger.warning(f"⚠️ {spell} 冲突态缓存更新失败: {cache_error}")
                         if self.db_path:
-                            ok = set_note_sync_status(voc_id, 2, db_path=self.db_path)
+                            ok = set_note_sync_status(voc_id, 2, db_path=self.db_path, match_confidence=match_confidence, match_reason=match_reason)
                         else:
-                            ok = set_note_sync_status(voc_id, 2)
+                            ok = set_note_sync_status(voc_id, 2, match_confidence=match_confidence, match_reason=match_reason)
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=2 写回未命中")
                         self.logger.warning(f"[Pipeline] ⚠️ {spell} - 4. 墨墨同步提示: 发现已存在的不一致释义，已标记冲突")
@@ -429,9 +433,9 @@ class SyncManager:
                         # 非法资源 ID 属于不可重试失败：写回 5=failed，避免反复重试刷屏。
                         if reason in {"invalid_res_id", "common_invalid_res_id"}:
                             if self.db_path:
-                                ok = set_note_sync_status(voc_id, 5, db_path=self.db_path)
+                                ok = set_note_sync_status(voc_id, 5, db_path=self.db_path, match_confidence=match_confidence, match_reason=reason)
                             else:
-                                ok = set_note_sync_status(voc_id, 5)
+                                ok = set_note_sync_status(voc_id, 5, match_confidence=match_confidence, match_reason=reason)
                             if not ok:
                                 self.logger.warning(f"⚠️ {spell} 非法 voc_id 状态写回未命中")
                             self.logger.warning(f"⚠️ {spell} voc_id={voc_id} 在墨墨侧非法，已标记为 failed 并停止重试")
@@ -455,9 +459,9 @@ class SyncManager:
 
                         # 其他非成功结果统一视为不可重试失败（5）以避免无限重试；写回并通知前端
                         if self.db_path:
-                            ok = set_note_sync_status(voc_id, 5, db_path=self.db_path)
+                            ok = set_note_sync_status(voc_id, 5, db_path=self.db_path, match_confidence=match_confidence, match_reason=reason or "sync_incomplete")
                         else:
-                            ok = set_note_sync_status(voc_id, 5)
+                            ok = set_note_sync_status(voc_id, 5, match_confidence=match_confidence, match_reason=reason or "sync_incomplete")
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=5 写回未命中")
                         self.logger.warning(f"⚠️ {spell} 墨墨同步未完成，已标记 failed")
@@ -541,7 +545,7 @@ class SyncManager:
         if status_batch:
             try:
                 db_kw = {"db_path": self.db_path} if self.db_path else {}
-                if not update_sync_status_batch(status_batch, **db_kw):
+                if not update_sync_status_batch([], match_items=status_batch, **db_kw):
                     self.logger.warning(f"⚠️ 批量 sync_status 写入返回 False（{len(status_batch)} 条）")
             except Exception as e:
                 self.logger.warning(f"⚠️ 批量 sync_status 写入失败: {e}")
