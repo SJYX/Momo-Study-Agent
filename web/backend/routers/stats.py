@@ -30,6 +30,8 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 async def stats_summary(ctx = Depends(get_user_context)):
     """返回系统聚合统计信息。"""
     from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+    from database.word_repo import count_by_state
+    from database.word_state import WordState
 
     user = ctx.profile_name
     conn = _get_read_conn(ctx.db_path)
@@ -93,22 +95,7 @@ async def stats_summary(ctx = Depends(get_user_context)):
 
     # 同步队列深度：仅计数，不拉取全量记录
     try:
-        conn2 = _get_read_conn(ctx.db_path)
-        lock2 = _get_singleton_conn_op_lock(conn2)
-        cur2 = conn2.cursor()
-        try:
-            if lock2 is not None:
-                with lock2:
-                    cur2.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                    row2 = cur2.fetchone()
-            else:
-                cur2.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                row2 = cur2.fetchone()
-            sync_queue_depth = int((row2 or [0])[0] or 0)
-        finally:
-            cur2.close()
-        if not _is_main_write_singleton_conn(conn2):
-            conn2.close()
+        sync_queue_depth = count_by_state(WordState.LOCAL_READY, db_path=ctx.db_path)
     except Exception:
         sync_queue_depth = 0
 
@@ -253,24 +240,7 @@ async def stats_ops(
 
     # sync conflicts
     try:
-        from database.connection import _get_read_conn as _rc2, _get_singleton_conn_op_lock as _gl2, _is_main_write_singleton_conn as _im2
-        conn2 = _rc2(ctx.db_path)
-        lock2 = _gl2(conn2)
-        cur2 = conn2.cursor()
-        try:
-            if lock2 is not None:
-                with lock2:
-                    cur2.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 2")
-                    row = cur2.fetchone()
-                    sync_conflict_count = row[0] if row else 0
-            else:
-                cur2.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 2")
-                row = cur2.fetchone()
-                sync_conflict_count = row[0] if row else 0
-        finally:
-            cur2.close()
-        if not _im2(conn2):
-            conn2.close()
+        sync_conflict_count = count_by_state(WordState.CONFLICT, db_path=ctx.db_path)
     except Exception:
         sync_conflict_count = 0
 

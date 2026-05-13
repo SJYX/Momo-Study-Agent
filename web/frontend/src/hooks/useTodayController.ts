@@ -36,7 +36,7 @@ export function useTodayController(rowRefs: RowRefMap) {
   // -------------------------------------------------------------------------
   // 数据：今日列表（React Query）
   // -------------------------------------------------------------------------
-  const { data, error, refetch, isFetching } = useQuery({
+  const { data, error, isFetching } = useQuery({
     queryKey: todayQueryKey(),
     queryFn: async () => {
       const r = await apiClient<TodayItemsResponse>('/api/study/today')
@@ -198,9 +198,16 @@ export function useTodayController(rowRefs: RowRefMap) {
   }, [flags.bulkGuard, flags.lightConfirm, executableItems.length, handleProcess])
 
   const refresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['today'] })
-    refetch()
-  }, [queryClient, refetch])
+    // 手动刷新必须带 refresh=true 让后端绕过磁盘/内存缓存，否则前端
+    // 即使 invalidate 重新请求，后端也会直接返回缓存中的旧（甚至空）数据。
+    queryClient.fetchQuery({
+      queryKey: todayQueryKey(),
+      queryFn: async () => {
+        const r = await apiClient<TodayItemsResponse>('/api/study/today?refresh=true')
+        return r.data
+      },
+    })
+  }, [queryClient])
 
   const errorMsg = useMemo(() => {
     if (actionError) return actionError

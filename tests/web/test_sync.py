@@ -25,18 +25,17 @@ class TestSyncStatus:
         assert body["data"]["conflict_count"] == 0
 
     def test_sync_status_with_conflicts(self, app, test_db, monkeypatch, override_ctx):
-        conn = sqlite3.connect(test_db)
-        conn.execute("INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, updated_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)", ("v1","abandon","v. abandon",2))
-        conn.execute("INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, updated_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)", ("v2","bizarre","adj. bizarre",2))
-        conn.execute(
-            "INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, content_origin, updated_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
-            ("v3", "queue_item", "n. q", 0, "ai_generated"),
-        )
-        conn.commit()
-        conn.close()
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
+        monkeypatch.setattr("database.word_repo.count_by_state", lambda *a, **kw: 1)
+        monkeypatch.setattr(
+            "database.word_repo.list_by_state",
+            lambda *a, **kw: [
+                {"voc_id": "v1", "spelling": "abandon", "basic_meanings": "v. abandon", "sync_status": 2, "created_at": "now"},
+                {"voc_id": "v2", "spelling": "bizarre", "basic_meanings": "adj. bizarre", "sync_status": 2, "created_at": "now"},
+            ],
+        )
         app.include_router(sync_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -47,18 +46,17 @@ class TestSyncStatus:
         assert body["data"]["conflict_count"] == 2
 
     def test_sync_status_conflicts_paged_default_20(self, app, test_db, monkeypatch, override_ctx):
-        conn = sqlite3.connect(test_db)
-        for i in range(25):
-            conn.execute(
-                "INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, updated_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)",
-                (f"v{i}", f"w{i}", "x", 2),
-            )
-        conn.commit()
-        conn.close()
-
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
+        monkeypatch.setattr("database.word_repo.count_by_state", lambda *a, **kw: 25)
+        monkeypatch.setattr(
+            "database.word_repo.list_by_state",
+            lambda *a, **kw: [
+                {"voc_id": f"v{i}", "spelling": f"w{i}", "basic_meanings": "x", "sync_status": 2, "created_at": "now"}
+                for i in range(20)
+            ],
+        )
         app.include_router(sync_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -99,14 +97,14 @@ class TestSyncRetry:
         assert body["data"]["retried"] == 0
 
     def test_retry_with_conflicts(self, app, test_db, monkeypatch, mock_workflow, override_ctx):
-        conn = sqlite3.connect(test_db)
-        conn.execute("INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings, sync_status, updated_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)", ("v1","abandon","v. abandon",2))
-        conn.commit()
-        conn.close()
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         monkeypatch.setattr("database.utils.clean_for_maimemo", lambda x: x)
+        monkeypatch.setattr(
+            "database.word_repo.list_by_state",
+            lambda *a, **kw: [{"voc_id": "v1", "spelling": "abandon", "basic_meanings": "v. abandon"}],
+        )
         app.include_router(sync_router)
         ctx = override_ctx(test_db)
         ctx.workflow = mock_workflow

@@ -6,6 +6,7 @@ import time
 from typing import List, Dict
 import config as _config
 from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+from database.word_repo import query_weak_words
 from database.momo_words import (
     get_latest_progress,
     save_ai_word_iteration,
@@ -60,7 +61,7 @@ class IterationManager:
         # 备选 2：如果还是没抓到，使用底层的直接数据库查询（忽略 review_count 门槛）
         if not weak_words:
             self.logger.info("  [Fallback] 分类筛选结果为空，尝试基础数据库扫描...", module="iteration_manager", function="run_iteration")
-            weak_words = self._get_weak_words_from_db(dynamic_threshold)
+            weak_words = query_weak_words(min_score=dynamic_threshold * 10, limit=1000, db_path=_config.DB_PATH)
 
         if not weak_words:
             self.logger.info("🎉 经过多级筛选，未发现符合条件的薄弱单词。", module="iteration_manager", function="run_iteration")
@@ -154,83 +155,6 @@ class IterationManager:
                 self.logger.info(f"✨ 新建云词本并导入 {len(new_words)} 个薄弱词: {notepad_title}", module="iteration_manager", function="_sync_weak_words_notepad")
         except Exception as e:
             self.logger.error(f"同步云词本发生异常: {e}", error=str(e), module="iteration_manager")
-
-    def _get_weak_words_from_db(self, threshold: float) -> List[Dict]:
-        """从数据库中筛选薄弱词，包括已有 AI 笔记和需要创建释义的单词。
-
-        策略：
-        1. 优先处理已有 AI 笔记但熟悉度低的单词（迭代优化）
-        2. 处理没有 AI 笔记但熟悉度低的单词（首次助记生成）
-        
-        使用单条 JOIN 查询替代两次分别查询，避免 N+1。
-        """
-        conn = _get_read_conn(_config.DB_PATH)
-        conn_lock = _get_singleton_conn_op_lock(conn)
-        weak_words = []
-        cur = conn.cursor()
-        try:
-            # 合并查询：左外连接 ai_word_notes，按条件分流
-            query = f"""
-                SELECT 
-                    h.voc_id,
-                    h.familiarity_short,
-                    p.spelling,
-                    n.* 
-                FROM word_progress_history h
-                JOIN (
-                    SELECT voc_id, MAX(created_at) as max_created_at
-                    FROM word_progress_history
-                    GROUP BY voc_id
-                ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
-                LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
-                JOIN processed_words p ON h.voc_id = p.voc_id
-                WHERE h.familiarity_short < ?
-            """
-            
-            if conn_lock is not None:
-                with conn_lock:
-                    try:
-                        cur.execute(query, (threshold,))
-                        rows = cur.fetchall()
-                    finally:
-                        cur.close()
-            else:
-                try:
-                    cur.execute(query, (threshold,))
-                    rows = cur.fetchall()
-                finally:
-                    cur.close()
-            
-            # Python 层分流处理
-            seen_voc_ids = set()
-            for row in rows:
-                row_dict = _row_to_dict(cur, row)
-                voc_id = row_dict.get('voc_id')
-                
-                # 去重
-                if voc_id in seen_voc_ids:
-                    continue
-                seen_voc_ids.add(voc_id)
-                
-                # 判断是否有 AI 笔记
-                has_ai_note = row_dict.get('it_level') is not None
-                
-                if has_ai_note:
-                    # 已有 AI 笔记，直接使用数据库返回的完整记录
-                    weak_words.append(row_dict)
-                else:
-                    # 没有 AI 笔记，补全缺失的字段
-                    row_dict['it_level'] = 0
-                    row_dict['it_history'] = '[]'
-                    row_dict['memory_aid'] = ''
-                    row_dict['raw_full_text'] = ''
-                    row_dict['meanings'] = ''
-                    weak_words.append(row_dict)
-        finally:
-            if not _is_main_write_singleton_conn(conn):
-                conn.close()
-
-        return weak_words
 
     def _get_last_recorded_fam(self, voc_id: str) -> float:
         """获取该单词在最后一次 it_level 变更时的熟悉度基准。"""

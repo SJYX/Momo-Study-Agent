@@ -36,57 +36,23 @@ async def list_words(
     ctx = Depends(get_user_context),
 ):
     """分页列出 ai_word_notes，支持搜索和筛选。"""
-    from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+    from database.word_repo import count_word_notes, list_word_notes_paginated
 
     user = ctx.profile_name
-    conn = _get_read_conn(ctx.db_path)
-    conn_lock = _get_singleton_conn_op_lock(conn)
-    cur = conn.cursor()
-
-    try:
-        conditions = []
-        params = []
-
-        if search:
-            conditions.append("n.spelling LIKE ?")
-            params.append(f"%{search}%")
-        if sync_status is not None:
-            conditions.append("n.sync_status = ?")
-            params.append(sync_status)
-        if it_level is not None:
-            conditions.append("n.it_level = ?")
-            params.append(it_level)
-
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        offset = (page - 1) * page_size
-
-        count_sql = f"SELECT COUNT(*) FROM ai_word_notes n {where}"
-        data_sql = f"""
-            SELECT n.voc_id, n.spelling, n.basic_meanings, n.memory_aid,
-                   n.it_level, n.sync_status, n.updated_at
-            FROM ai_word_notes n
-            {where}
-            ORDER BY n.updated_at DESC
-            LIMIT ? OFFSET ?
-        """
-
-        acquired = False
-        if conn_lock is not None:
-            acquired = conn_lock.acquire(timeout=2.0)
-        try:
-            cur.execute(count_sql, params)
-            total = cur.fetchone()[0]
-            cur.execute(data_sql, params + [page_size, offset])
-            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-        finally:
-            try:
-                cur.close()
-            finally:
-                if acquired:
-                    conn_lock.release()
-    finally:
-        if not _is_main_write_singleton_conn(conn):
-            conn.close()
+    total = count_word_notes(
+        search=search,
+        sync_status=sync_status,
+        it_level=it_level,
+        db_path=ctx.db_path,
+    )
+    rows = list_word_notes_paginated(
+        search=search,
+        sync_status=sync_status,
+        it_level=it_level,
+        page=page,
+        page_size=page_size,
+        db_path=ctx.db_path,
+    )
 
     return ok_response({
         "total": total,
@@ -99,7 +65,7 @@ async def list_words(
 @router.get("/{voc_id}", response_model=ApiResponse[WordNoteDetail])
 async def get_word_detail(voc_id: str, ctx = Depends(get_user_context)):
     """获取单个单词的完整笔记详情。"""
-    from database.momo_words import get_local_word_note
+    from database.notes_repo import get_local_word_note
 
     user = ctx.profile_name
     note = get_local_word_note(voc_id, db_path=ctx.db_path)
@@ -121,49 +87,33 @@ async def update_word_note(
     if not memory_aid:
         return error_response("INVALID_INPUT", "memory_aid 不能为空", user_id=user)
 
-    from database.connection import _execute_write_sql_sync
-    from database.utils import get_timestamp_with_tz
+    from database.word_repo import update_memory_aid
 
-    sql = "UPDATE ai_word_notes SET memory_aid = ?, updated_at = ? WHERE voc_id = ?"
-    args = (memory_aid, get_timestamp_with_tz(), str(voc_id))
-
-    # Web 环境下多用户并发，必须使用同步写入指定 db_path，不能使用全局的 _queue_write_operation
-    _execute_write_sql_sync(sql, args, db_path=ctx.db_path)
+    ok = update_memory_aid(voc_id, memory_aid, db_path=ctx.db_path)
+    if not ok:
+        return error_response("UPDATE_ERROR", "更新 memory_aid 失败", user_id=user)
     return ok_response({"updated": True, "voc_id": voc_id}, user_id=user)
 
 
 @router.get("/{voc_id}/iterations", response_model=ApiResponse[WordIterationsResponse])
 async def get_word_iterations(voc_id: str, ctx = Depends(get_user_context)):
     """获取单词的迭代历史。"""
-    from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+    from database.word_repo import get_word_iterations as get_word_iterations_repo
 
     user = ctx.profile_name
-    conn = _get_read_conn(ctx.db_path)
-    conn_lock = _get_singleton_conn_op_lock(conn)
-    cur = conn.cursor()
+    rows = get_word_iterations_repo(voc_id, db_path=ctx.db_path)
+    iterations = [
+        {
+            "voc_id": str(row.get("voc_id", voc_id)),
+            "iteration_type": str(row.get("stage", row.get("iteration_type", ""))),
+            "score": float(row.get("score", 0.0) or 0.0),
+            "justification": str(row.get("justification", "") or ""),
+            "tags": str(row.get("tags", "") or ""),
+            "refined_content": str(row.get("refined_content", "") or ""),
+            "raw_response": str(row.get("raw_response", "") or ""),
+            "created_at": str(row.get("created_at", "") or ""),
+        }
+        for row in rows
+    ]
 
-    try:
-        sql = """
-            SELECT voc_id, stage AS iteration_type, score, justification, tags,
-                   refined_content, raw_response, created_at
-            FROM ai_word_iterations
-            WHERE voc_id = ?
-            ORDER BY created_at DESC
-        """
-        acquired = False
-        if conn_lock is not None:
-            acquired = conn_lock.acquire(timeout=2.0)
-        try:
-            cur.execute(sql, (voc_id,))
-            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-        finally:
-            try:
-                cur.close()
-            finally:
-                if acquired:
-                    conn_lock.release()
-    finally:
-        if not _is_main_write_singleton_conn(conn):
-            conn.close()
-
-    return ok_response({"voc_id": voc_id, "iterations": rows}, user_id=user)
+    return ok_response({"voc_id": voc_id, "iterations": iterations}, user_id=user)

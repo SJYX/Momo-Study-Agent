@@ -75,19 +75,28 @@ def _clean_expired_today_caches() -> None:
         pass
 
 def _load_today_items_raw(profile: str) -> Optional[list]:
-    """从磁盘加载当天的 raw 列表（不带状态）"""
+    """从磁盘加载当天的 raw 列表（不带状态）。
+
+    返回 None 表示无缓存/已过期/损坏/或缓存为空（视为 miss，避免毒化）。
+    """
     path = _get_today_cache_path(profile)
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text("utf-8"))
         if time.time() - data.get("ts", 0) < TODAY_CACHE_TTL:
-            return data.get("items_raw")
+            items_raw = data.get("items_raw")
+            # 空列表视为 cache miss，避免被一次失败/抖动毒化 8h
+            if items_raw:
+                return items_raw
     except Exception:
         pass
     return None
 
 def _save_today_items_raw(profile: str, items_raw: list) -> None:
+    # 拒绝缓存空列表：API 抖动 / 超时降级时不应毒化磁盘缓存
+    if not items_raw:
+        return
     try:
         _TODAY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _get_today_cache_path(profile)
@@ -154,13 +163,14 @@ async def get_today(
 
     momo = ctx.momo_api
 
-    # 1. 检查内存缓存（如果未强制刷新）
+    # 1. 检查内存缓存（如果未强制刷新；空结果视为 miss，避免毒化）
     if not refresh:
         cache_entry = ctx.cache.get("today")
         if cache_entry:
             ts = cache_entry.get("ts", 0)
-            if time.time() - ts < TODAY_CACHE_TTL:
-                return ok_response(cache_entry["data"], user_id=user)
+            cached_data = cache_entry.get("data") or {}
+            if time.time() - ts < TODAY_CACHE_TTL and cached_data.get("count", 0) > 0:
+                return ok_response(cached_data, user_id=user)
 
     # 2. 检查磁盘持久化缓存（如果未强制刷新）
     items_raw = None
@@ -197,33 +207,30 @@ async def get_today(
     from web.backend.user_context import UserContextManager
     UserContextManager.prepare_for_task(ctx)
 
-    voc_ids = [str(it.get("voc_id")) for it in items_raw if it.get("voc_id")]
-    sync_statuses = {}
-    if voc_ids:
-        from database.momo_words import get_sync_status_in_batch
-        sync_statuses = await run_in_threadpool(get_sync_status_in_batch, voc_ids)
+    from core.word_service import WordService
+    from database.word_state import WordState
 
-    _SYNC_MAP = {
-        0: "sync_pending",   # 本地已生成，等待同步
-        1: "done",           # 远端已同步确认
-        2: "sync_conflict",  # 远端释义不一致冲突
-        3: "sync_queued",    # 已入后台队列排队中
-        4: "syncing",        # 正在远端执行同步
-        5: "sync_failed",    # 不可重试的终态失败
+    word_service = WordService(logger=ctx.logger)
+    normalized_items = word_service.normalize_cloud_items(items_raw)
+    enriched_items = await run_in_threadpool(word_service.enrich_with_states, normalized_items)
+
+    state_to_status = {
+        WordState.NOT_STARTED: None,
+        WordState.LOCAL_READY: "sync_pending",
+        WordState.SYNCED: "done",
+        WordState.CONFLICT: "sync_conflict",
+        WordState.FAILED: "sync_failed",
     }
 
     items = []
-    for it in items_raw:
-        vid = str(it.get("voc_id"))
-        s_val = sync_statuses.get(vid)
-        status = _SYNC_MAP.get(s_val) if s_val is not None else None
+    for item, state in enriched_items:
         items.append({
-            "voc_id": vid,
-            "voc_spelling": it.get("voc_spelling") or it.get("spelling"),
-            "voc_meanings": it.get("voc_meanings") or it.get("meanings") or "",
-            "review_count": it.get("review_count") or 0,
-            "familiarity_short": it.get("familiarity_short") or 0.0,
-            "status": status
+            "voc_id": item.voc_id,
+            "voc_spelling": item.spelling,
+            "voc_meanings": item.meanings or "",
+            "review_count": item.review_count or 0,
+            "familiarity_short": item.short_term_familiarity or 0.0,
+            "status": state_to_status.get(state),
         })
 
     data = {
@@ -232,11 +239,12 @@ async def get_today(
         "ts": time.time()
     }
 
-    # 5. 回写到进程内存缓存
-    ctx.cache["today"] = {
-        "data": data,
-        "ts": time.time()
-    }
+    # 5. 回写到进程内存缓存（拒绝缓存空结果，避免毒化）
+    if items:
+        ctx.cache["today"] = {
+            "data": data,
+            "ts": time.time()
+        }
 
     return ok_response(data, user_id=user)
 
@@ -384,8 +392,8 @@ async def iterate_candidates(
 ):
     """返回智能迭代候选词列表（薄弱词）。"""
     def _get_data():
-        filter_obj = WeakWordFilter(logger)
-        return filter_obj.get_weak_words_by_score(min_score=50.0, limit=limit)
+        from database.word_repo import query_weak_words
+        return query_weak_words(min_score=50.0, limit=limit)
 
     rows = await run_in_threadpool(_get_data)
     items = []

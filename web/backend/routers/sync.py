@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Query
 
 import config
 from core.sync_priority import Priority
+from database.word_state import WordState
 from web.backend.deps import get_user_context, get_workflow
 from web.backend.router_helpers import catch_api_errors
 from web.backend.schemas import (
@@ -33,7 +34,7 @@ async def sync_status(
 ):
     """返回同步队列深度和最近的冲突记录（sync_status=2）。"""
     from core.feature_flags import is_enabled
-    from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+    from database.word_repo import count_by_state, list_by_state
 
     user = ctx.profile_name
 
@@ -47,47 +48,8 @@ async def sync_status(
             "degraded_reason": "SYNC_STATUS_HEAVY_QUERY_ENABLED=False",
         }, user_id=user)
 
-    # 队列深度：仅计数，不拉取全量记录
-    queue_depth = 0
-
-    # 冲突列表 (sync_status = 2)
-    conn = _get_read_conn(ctx.db_path)
-    conn_lock = _get_singleton_conn_op_lock(conn)
-    cur = conn.cursor()
-    conflicts = []
-
-    try:
-        sql = """
-            SELECT voc_id, spelling, basic_meanings, sync_status, updated_at AS created_at
-            FROM ai_word_notes
-            WHERE sync_status = 2
-            ORDER BY updated_at DESC
-            LIMIT ?
-        """
-        if conn_lock is not None:
-            with conn_lock:
-                try:
-                    cur.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                    row_q = cur.fetchone()
-                    queue_depth = int((row_q or [0])[0] or 0)
-                    cur.execute(sql, (limit,))
-                    conflicts = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                finally:
-                    cur.close()
-                conn.commit()
-        else:
-            try:
-                cur.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                row_q = cur.fetchone()
-                queue_depth = int((row_q or [0])[0] or 0)
-                cur.execute(sql, (limit,))
-                conflicts = [_row_to_dict(cur, r) for r in cur.fetchall()]
-            finally:
-                cur.close()
-            conn.commit()
-    finally:
-        if not _is_main_write_singleton_conn(conn):
-            conn.close()
+    queue_depth = count_by_state(WordState.LOCAL_READY, db_path=ctx.db_path)
+    conflicts = list_by_state(WordState.CONFLICT, limit=limit, offset=0, db_path=ctx.db_path)
 
     return ok_response({
         "queue_depth": queue_depth,
@@ -115,8 +77,9 @@ async def retry_conflicts(
 ):
     """重试所有冲突的同步项（sync_status=2），将其重新入队。"""
     from core.feature_flags import is_enabled
-    from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
     from database.utils import clean_for_maimemo
+    from database.word_repo import list_by_state
+    from database.word_state import WordState
 
     user = ctx.profile_name
 
@@ -128,35 +91,7 @@ async def retry_conflicts(
             user_id=user,
         )
 
-    conn = _get_read_conn(ctx.db_path)
-    conn_lock = _get_singleton_conn_op_lock(conn)
-    cur = conn.cursor()
-    conflicts = []
-
-    try:
-        sql = """
-            SELECT voc_id, spelling, basic_meanings
-            FROM ai_word_notes
-            WHERE sync_status = 2
-        """
-        if conn_lock is not None:
-            with conn_lock:
-                try:
-                    cur.execute(sql)
-                    conflicts = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                finally:
-                    cur.close()
-                conn.commit()
-        else:
-            try:
-                cur.execute(sql)
-                conflicts = [_row_to_dict(cur, r) for r in cur.fetchall()]
-            finally:
-                cur.close()
-            conn.commit()
-    finally:
-        if not _is_main_write_singleton_conn(conn):
-            conn.close()
+    conflicts = list_by_state(WordState.CONFLICT, limit=5000, offset=0, db_path=ctx.db_path)
 
     if not conflicts:
         return ok_response({"retried": 0, "message": "无冲突项需重试"}, user_id=user)

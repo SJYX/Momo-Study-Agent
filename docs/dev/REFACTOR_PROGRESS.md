@@ -11,6 +11,7 @@
 - `[x]` Phase 4.5: API 查询降重（PLAYBOOK A1，解决"页面打开卡"的根因）
 - `[x]` Phase 5: 日志系统整合与可观测性优化（路线 C+A：清重复 + 轻量诊断；不激活 LogStatistics，留待 Phase 6 SLO）
 - `[x]` Phase 6: 工程底座与防腐机制（Kill Switch / Schema user_version / config 重构 / lint hook）
+- `[ ]` Phase 7: 单词查询/查重/读写标准化（5 态状态机 + WordItem / WordService / word_repo 三层）
 
 ---
 
@@ -225,6 +226,120 @@
 - `pytest tests/`（不含 aiohttp/genai 受损的 gemini 与 pipeline）：**312 passed**, 3 skipped, 1 xpassed, 1 既有失败 (`test_iteration_lifecycle`)，**0 新回归**
 - 新增 37 个单元测试：feature_flags 16 + migrations 6 + profile_loader 8 + settings 7
 - 触及模块 `python -m py_compile`：通过
+
+---
+
+## Phase 7: 单词查询/查重/读写标准化
+
+> 分支：`refactor/word-query-standardization`
+> 完整设计文档：[`C:\Users\112560\.claude\plans\sunny-yawning-origami.md`](../../../.claude/plans/sunny-yawning-origami.md)
+> 状态：进行中（2026-05-13 起）
+
+### 背景
+
+单词这个核心实体的处理散落在 8+ 文件，存在 4 类问题：
+1. 判重逻辑 3 套兜底（session 缓存 + processed_words + ai_word_notes 自愈 + word_progress_history 自愈）语义不一
+2. 状态展示用 `sync_status`、判重用 `processed_words`，同一 voc_id 两边答案可能不一致
+3. 薄弱词 JOIN 查询写了 3 次（weak_word_filter × 2 + iteration_manager × 1）
+4. Web 路由直接拼 SQL，`COUNT WHERE sync_status=0` 重复 4 处，`voc_spelling | spelling` 字段歧义至少 5 处兼容
+
+### 关键设计
+
+**5 态状态机**（WordState）：
+- `NOT_STARTED` — processed_words 无记录（判重 = 此态）
+- `LOCAL_READY` — processed + sync_status ∈ {0,3,4,NULL}（队列深度 = 此态计数）
+- `SYNCED` — processed + sync_status=1
+- `CONFLICT` — sync_status=2
+- `FAILED` — sync_status=5
+
+优先级：CONFLICT > FAILED > SYNCED > LOCAL_READY > NOT_STARTED
+
+**新模块**：
+- `database/word_state.py` — WordState 枚举 + derive_state
+- `database/word_repo.py` — 数据访问层（批量状态查询、薄弱词查询、Web 端 SQL 收口）
+- `core/word_models.py` — WordItem dataclass（消除字段歧义）
+- `core/word_service.py` — 业务编排（cloud raw → WordItem → repo → 状态）
+
+**附带优化**（O1+O5/O2/O3）：
+- O1+O5：3 套兜底 IN 查询 → 1 条 LEFT JOIN + 自动按 500 分批
+- O2：删除 `_processed_cache` TTL 缓存层
+- O3：自愈回填改为"读时检测 + 异步批量回写"
+
+**业务变化**（已与用户确认）：释放"无 AI 笔记但有学习历史"的词 —— 这部分词重构后会跑 AI 笔记（之前会跳过）。
+
+### 任务清单
+
+#### 7.1 底层定义（无依赖）
+- `[x]` `database/word_state.py`：WordState 枚举 + `derive_state(processed, sync_status)` + `state_to_where_clause`
+- `[x]` `core/word_models.py`：WordItem dataclass + `from_cloud_raw` / `from_db_row` / `to_processed_tuple` / `to_payload`（补充 `from_cloud_raw_batch` 便捷批量入口）
+- `[x]` 单测覆盖：`derive_state` 14 种 (processed, sync_status) 组合（14 = 7 sync_status 值 × 2 processed 状态）；`from_cloud_raw` 12 种字段歧义场景 + 边界。`tests/unit/database/test_word_state.py` + `tests/core/test_word_models.py` 共 **45 用例全绿**
+
+#### 7.2 数据访问层（依赖 7.1）
+- `[x]` `database/word_repo.py`：
+  - `[x]` `get_word_states_in_batch(voc_ids, *, auto_backfill=True)` —— 单条 LEFT JOIN，自动 500 分批
+  - `[x]` `filter_unprocessed(voc_ids)` —— 便捷判重入口
+  - `[x]` `count_by_state(state)` / `list_by_state(state, limit)`
+  - `[x]` `query_weak_words(*, min_score, threshold, category, ...)`
+  - `[x]` `list_word_notes_paginated(*, search, sync_status, it_level, page, page_size)`
+  - `[x]` `get_word_iterations(voc_id)` / `update_memory_aid(voc_id, memory_aid)`
+  - `[x]` `_enqueue_backfill_processed(...)` —— O3 异步 backfill
+  - `[x]` 单元测试 `tests/unit/database/test_word_repo.py`（29 用例全绿）
+
+#### 7.3 业务编排层（依赖 7.1+7.2）
+- `[x]` `core/word_service.py`：
+  - `[x]` `normalize_cloud_items(raw_items)` —— 脏数据过滤、WordItem 构造
+  - `[x]` `enrich_with_states(items, *, auto_backfill=True)` —— 5 态状态查询 + 历史漏标自愈
+  - `[x]` `partition_by_processability(items)` —— 3 套兜底判重、分组（待处理 vs 已处理）
+  - `[x]` `mark_completed(items, batch_id)` —— 批量标记完成处理
+  - `[x]` `update_word_memory_aid(voc_id, memory_aid)` —— 单词笔记编辑
+  - `[x]` 单元测试 `tests/core/test_word_service.py`（21 用例全绿）
+
+#### 7.4 CLI / 业务侧替换
+- `[x]` `core/study_workflow.py`：
+  - `[x]` 导入 WordService，`__init__` 初始化实例
+  - `[x]` `process_word_list` 改走 WordService pipeline（normalize → enrich → partition）
+  - `[x]` 移除/简化 9 个判重/自愈成员：`_get_processed_ids_cached` / `_recover_processed_from_local_notes` / `_recover_processed_from_progress_history` / `_mark_processed_with_cache` → `_mark_processed_for_sync` / `_prune_processed_cache` 标记废弃
+  - `[x]` `_process_results` 改支持 WordItem 对象
+  - `[x]` 单元测试 `tests/core/test_study_workflow.py`（7/7 通过）
+- `[x]` `core/study_flow.py`：删除 choice "2" 中冗余的手工字段歧义归一（`voc_spelling | spelling` / `voc_meanings | meanings`），直接把 raw items 透传给 `process_word_list`——内部 `WordService.normalize_cloud_items` 已统一处理
+- `[x]` `core/weak_word_filter.py`：JOIN 删，delegate 到 `word_repo.query_weak_words`
+- `[x]` `core/iteration_manager.py`：删 `_get_weak_words_from_db` 的直查 SQL，fallback 改走 `word_repo.query_weak_words`
+
+#### 7.5 Web 路由替换
+- `[x]` `web/backend/routers/study.py`：`iterate-candidates` 已切到 `word_repo.query_weak_words`，`/today` 状态回填改用 `WordService.enrich_with_states`
+- `[x]` `web/backend/routers/words.py`：分页、详情、更新、迭代历史均已切到 repo 层
+- `[x]` `web/backend/routers/sync.py`：queue_depth / conflicts / retry 统一切到 `word_repo`
+- `[x]` `web/backend/routers/stats.py`：`sync_queue_depth` / `sync_conflict_count` 切到 `word_repo.count_by_state`
+
+#### 7.6 测试清理
+- `[x]` `tests/core/test_weak_word_filter.py`：兼容 `word_repo.query_weak_words` 的共享内存测试夹具
+- `[x]` `tests/core/test_iteration_manager.py`：弱词回退路径保留用例，状态更新仍通过
+- `[x]` `tests/web/test_words.py` / `test_sync.py` / `test_stats.py` / `test_study.py::TestStudyProcess`：已通过
+
+#### 7.7 末次清理 + 全量验证
+- `[x]` grep 确认下列名字已无引用：`_session_processed_ids` / `_processed_cache` / `_recover_processed_from_local_notes` / `_recover_processed_from_progress_history` / `_get_weak_words_from_db`（仅剩 `_get_last_recorded_fam` 一处合法残留）
+- `[x]` `python -m py_compile` 全部改动文件（database/word_state.py、database/word_repo.py、core/word_models.py、core/word_service.py、core/study_workflow.py、core/study_flow.py、core/weak_word_filter.py、core/iteration_manager.py、web/backend/routers/{study,words,sync,stats}.py）
+- `[x]` `python -m pytest tests/ -v --tb=short -m "not slow"`：**451 passed**, 3 skipped, 1 xpassed, 3 既有失败（test_sync_manager_success_flow / test_known_flags_match_feature_flags_module / test_today_api_error 均在 Phase 7 改动前已存在，stash 验证）
+- `[ ]` CLI 主路径手测（今日 / 未来 / 迭代）— 待用户验证
+- `[ ]` Web 主路径手测（/today / /sync/status / 编辑 memory_aid）— 待用户验证
+- `[ ]` 回归对比：preflight_check processed 数量改前改后一致 — 待用户验证
+
+### 进度日志
+
+- **2026-05-13**：
+  - 分支 `refactor/word-query-standardization` 创建
+  - REFACTOR_PROGRESS.md 追加 Phase 7
+  - **7.1 完成**：`database/word_state.py`（5 态枚举 + 推导 + SQL 片段）、`core/word_models.py`（WordItem 吸收云端 + DB 字段歧义）、对应单测 45 用例全绿
+  - **7.2 完成**：`database/word_repo.py`（7 个公开 API + 3 个内部辅助）、单元测试 29 用例全绿
+    - 实现 LEFT JOIN 分批查询（自动 500 分批）、判重快速通道、5 态分类计数、薄弱词评分、分页搜索、迭代历史、memory_aid 编辑、异步 backfill 占位
+    - 与 Phase 7.1 WordState 无缝对接
+    - 回归测试：439 passed（含新增 29 个）、3 skipped、1 xpassed、4 既有失败（无新回归）
+  - **质量收尾**（7.1–7.6 实施评审后）：
+    - 清理 `database/word_repo.py` 内部辅助函数中的脚手架废弃 SQL（`_get_word_states_batch_internal` 1 段 / `_filter_unprocessed_batch_internal` 3 段），移除未用的 `time` / `Tuple` import
+    - 删除 `core/study_flow.py` choice "2" 中冗余的手工字段歧义归一（已被 `process_word_list` 内的 `WordService.normalize_cloud_items` 覆盖）
+    - `core/iteration_manager._get_weak_words_from_db` 包装方法删除，fallback 调用点直接内联到 `query_weak_words`
+    - 清理仓库根目录无效空 `file` 文件
+  - **7.7 完成**：grep 残留检查、py_compile、回归 `pytest tests/ -m "not slow"`（**451 passed**, 3 既有失败 stash 验证）；CLI / Web 手测与 preflight 对比待用户验证
 
 ---
 

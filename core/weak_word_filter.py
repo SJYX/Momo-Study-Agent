@@ -13,7 +13,8 @@ import time
 from datetime import datetime
 from typing import List, Dict, Tuple
 import config as _config
-from database.connection import _get_read_conn, _row_to_dict, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+from database.word_repo import query_weak_words
 
 
 class WeakWordFilter:
@@ -213,56 +214,16 @@ class WeakWordFilter:
             min_score: 最低薄弱分数
             limit: 最大返回数量
         """
-        conn = _get_read_conn(_config.DB_PATH)
-        conn_lock = _get_singleton_conn_op_lock(conn)
-        cur = conn.cursor()
-        try:
-            # 获取所有单词的最新进度
-            query = """
-                SELECT
-                    h.voc_id,
-                    h.familiarity_short,
-                    h.review_count,
-                    h.created_at,
-                    n.it_level,
-                    n.memory_aid,
-                    p.spelling
-                FROM word_progress_history h
-                JOIN (
-                    SELECT voc_id, MAX(created_at) as max_created_at
-                    FROM word_progress_history
-                    GROUP BY voc_id
-                ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
-                LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
-                LEFT JOIN processed_words p ON h.voc_id = p.voc_id
-            """
-            if conn_lock is not None:
-                with conn_lock:
-                    try:
-                        cur.execute(query)
-                        rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                    finally:
-                        cur.close()
-                    conn.commit()
-            else:
-                try:
-                    cur.execute(query)
-                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                finally:
-                    cur.close()
-                conn.commit()
-        finally:
-            if not _is_main_write_singleton_conn(conn):
-                conn.close()
-
-        # 计算每个单词的薄弱分数
         user_stats = self._get_user_stats()
         avg_reviews = user_stats.get('avg_review_count', 0)
-        # 动态门槛：如果库比较新（平均复习少），则门槛降为 1，否则维持在 3
         min_review_threshold = 1 if avg_reviews < 5 else 3
 
         scored_words = []
+        rows = query_weak_words(min_score=0.0, limit=5000, db_path=_config.DB_PATH)
         for word in rows:
+            if 'created_at' not in word and word.get('updated_at'):
+                word = dict(word)
+                word['created_at'] = word.get('updated_at')
             if int(self._as_number(word.get('review_count'), 0)) < min_review_threshold:
                 continue
             score = self.calculate_weak_score(word)
@@ -284,47 +245,7 @@ class WeakWordFilter:
                 'potential': List[Dict]  # 潜在薄弱词
             }
         """
-        conn = _get_read_conn(_config.DB_PATH)
-        conn_lock = _get_singleton_conn_op_lock(conn)
-        cur = conn.cursor()
-        try:
-            # 获取所有单词的最新进度
-            query = """
-                SELECT
-                    h.voc_id,
-                    h.familiarity_short,
-                    h.review_count,
-                    h.created_at,
-                    n.it_level,
-                    n.memory_aid,
-                    p.spelling
-                FROM word_progress_history h
-                JOIN (
-                    SELECT voc_id, MAX(created_at) as max_created_at
-                    FROM word_progress_history
-                    GROUP BY voc_id
-                ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.max_created_at
-                LEFT JOIN ai_word_notes n ON h.voc_id = n.voc_id
-                LEFT JOIN processed_words p ON h.voc_id = p.voc_id
-            """
-            if conn_lock is not None:
-                with conn_lock:
-                    try:
-                        cur.execute(query)
-                        rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                    finally:
-                        cur.close()
-                    conn.commit()
-            else:
-                try:
-                    cur.execute(query)
-                    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
-                finally:
-                    cur.close()
-                conn.commit()
-        finally:
-            if not _is_main_write_singleton_conn(conn):
-                conn.close()
+        rows = query_weak_words(min_score=0.0, limit=5000, db_path=_config.DB_PATH)
 
         urgent_words = []
         normal_words = []
@@ -335,6 +256,9 @@ class WeakWordFilter:
         min_review_threshold = 1 if avg_reviews < 5 else 3
 
         for word in rows:
+            if 'created_at' not in word and word.get('updated_at'):
+                word = dict(word)
+                word['created_at'] = word.get('updated_at')
             familiarity = self._as_number(word.get('familiarity_short'), 0.0)
             review_count = int(self._as_number(word.get('review_count'), 0))
 

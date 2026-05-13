@@ -112,18 +112,9 @@ class StudyFlowManager:
                         end_dt.strftime("%Y-%m-%dT23:59:59.000Z"),
                     )
                     items = (res or {}).get("data", {}).get("records", [])
-                    records = []
-                    for it in items:
-                        spell = it.get("voc_spelling") or it.get("spelling")
-                        vid = it.get("voc_id") or it.get("id")
-                        if spell and vid:
-                            records.append({
-                                "voc_id": vid,
-                                "voc_spelling": spell,
-                                "voc_meanings": it.get("voc_meanings") or it.get("meanings") or ""
-                            })
-                    if records and self.ui.ask_confirmation(f"发现 {len(records)} 个单词，是否处理？"):
-                        self.workflow.process_word_list(records, f"未来 {days} 天计划")
+                    # 字段歧义由 process_word_list -> WordService.normalize_cloud_items 统一处理。
+                    if items and self.ui.ask_confirmation(f"发现 {len(items)} 个单词，是否处理？"):
+                        self.workflow.process_word_list(items, f"未来 {days} 天计划")
             elif choice == "3":
                 manager = IterationManager(ai_client=self.ai_client, momo_api=self.momo, logger=self.logger)
                 manager.run_iteration()

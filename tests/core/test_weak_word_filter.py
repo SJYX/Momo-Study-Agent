@@ -75,8 +75,13 @@ def mock_db_manager(monkeypatch):
     init_conn.commit()
     init_conn.close()
 
+    monkeypatch.setattr("config.DB_PATH", "file:testdb?mode=memory&cache=shared")
     import core.weak_word_filter
     monkeypatch.setattr(core.weak_word_filter, "_get_read_conn", mock_get_read_conn)
+    import database.connection as db_connection
+    monkeypatch.setattr(db_connection, "_get_read_conn", mock_get_read_conn)
+    monkeypatch.setattr(db_connection, "_get_singleton_conn_op_lock", lambda conn: None)
+    monkeypatch.setattr(db_connection, "_is_main_write_singleton_conn", lambda conn: False)
     
     yield shared_db_conn
     shared_db_conn.close()

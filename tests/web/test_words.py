@@ -58,12 +58,12 @@ class TestWordsList:
         assert body["data"]["total"] == 2
 
     def test_list_words_pagination(self, app, test_db, monkeypatch, override_ctx):
-        conn = sqlite3.connect(test_db)
-        for i in range(10):
-            _insert_word(conn, f"v{i}", f"word{i}")
-        conn.commit()
-        conn.close()
         _patch_db(app, test_db, monkeypatch, override_ctx)
+        monkeypatch.setattr("database.word_repo.count_word_notes", lambda **kw: 10)
+        monkeypatch.setattr(
+            "database.word_repo.list_word_notes_paginated",
+            lambda **kw: [{"voc_id": f"v{i}", "spelling": f"word{i}"} for i in range(3)],
+        )
         from fastapi.testclient import TestClient
         with TestClient(app, raise_server_exceptions=True) as c:
             resp = c.get("/api/words?page=1&page_size=3")
@@ -101,7 +101,7 @@ class TestWordsList:
 
 class TestWordDetail:
     def test_get_word_not_found(self, app, test_db, monkeypatch, override_ctx):
-        monkeypatch.setattr("database.momo_words.get_local_word_note", lambda voc_id, **kw: None)
+        monkeypatch.setattr("database.notes_repo.get_local_word_note", lambda voc_id, **kw: None)
         app.include_router(words_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -114,7 +114,7 @@ class TestWordDetail:
 
     def test_get_word_detail_found(self, app, test_db, monkeypatch, override_ctx):
         fake_note = {"voc_id":"v1","spelling":"abandon","basic_meanings":"v. abandon","memory_aid":"a band on","ielts_focus":"high","collocations":"abandon hope","traps":"","synonyms":"desert","discrimination":"","example_sentences":"He abandoned ship.","word_ratings":"4","raw_full_text":"","it_history":"","tags":""}
-        monkeypatch.setattr("database.momo_words.get_local_word_note", lambda voc_id, **kw: fake_note)
+        monkeypatch.setattr("database.notes_repo.get_local_word_note", lambda voc_id, **kw: fake_note)
         app.include_router(words_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -127,9 +127,7 @@ class TestWordDetail:
 
 class TestWordUpdate:
     def test_update_word_success(self, app, test_db, monkeypatch, override_ctx):
-        # 当前实现使用 _execute_write_sql_sync(sql, args, db_path=...)
-        monkeypatch.setattr("database.connection._execute_write_sql_sync", lambda *a, **kw: None)
-        monkeypatch.setattr("database.utils.get_timestamp_with_tz", lambda: "2026-01-01T00:00:00")
+        monkeypatch.setattr("database.word_repo.update_memory_aid", lambda *a, **kw: True)
         app.include_router(words_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -160,23 +158,14 @@ class TestWordIterations:
         assert body["data"]["iterations"] == []
 
     def test_iterations_with_data(self, app, test_db, monkeypatch, override_ctx):
-        conn = sqlite3.connect(test_db)
-        _insert_word(conn, "v1", "abandon")
-        conn.execute(
-            "INSERT INTO ai_word_iterations "
-            "(voc_id, spelling, stage, score, justification, refined_content, raw_response, tags, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
-            ("v1", "abandon", "draft", 0.8, "good draft", "{}", "{}", ""),
-        )
-        conn.execute(
-            "INSERT INTO ai_word_iterations "
-            "(voc_id, spelling, stage, score, justification, refined_content, raw_response, tags, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
-            ("v1", "abandon", "refine", 0.95, "excellent", "{}", "{}", ""),
-        )
-        conn.commit()
-        conn.close()
         _patch_db(app, test_db, monkeypatch, override_ctx)
+        monkeypatch.setattr(
+            "database.word_repo.get_word_iterations",
+            lambda voc_id, **kw: [
+                {"voc_id": voc_id, "stage": "draft", "score": 0.8},
+                {"voc_id": voc_id, "stage": "refine", "score": 0.95},
+            ],
+        )
         from fastapi.testclient import TestClient
         with TestClient(app, raise_server_exceptions=True) as c:
             resp = c.get("/api/words/v1/iterations")
