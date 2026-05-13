@@ -150,7 +150,7 @@ class SyncManager:
         # 防饿死：连续 5 个 P1 后若存在非 P1，强制让出 1 个。
         if int(p0[0]) == int(Priority.P1):
             if self._consecutive_p1_count >= 5:
-                deferred = [p0]
+                deferred = []
                 chosen = None
                 while True:
                     try:
@@ -161,14 +161,26 @@ class SyncManager:
                         chosen = candidate
                         break
                     deferred.append(candidate)
-                for task in deferred:
-                    self.sync_queue.put(task)
-                    self.sync_queue.task_done()
+                
                 if chosen is not None:
+                    # 找到了更高优先级的任务 chosen。
+                    # 此时 p0 及取出的 candidate (在 deferred 中) 都要放回队列等待后续调度。
+                    # 必须配合 task_done() 平衡重复 put 带来的未完成计数增量。
+                    self.sync_queue.put(p0)
+                    self.sync_queue.task_done()
+                    for task in deferred:
+                        self.sync_queue.put(task)
+                        self.sync_queue.task_done()
                     self._consecutive_p1_count = 0
                     return chosen
-                self._consecutive_p1_count += 1
-                return p0
+                else:
+                    # 未找到更高优先级的任务，当前 p0 继续由外层执行。
+                    # p0 绝对不能放回队列，仅将无辜取出的 candidate 还原。
+                    for task in deferred:
+                        self.sync_queue.put(task)
+                        self.sync_queue.task_done()
+                    self._consecutive_p1_count += 1
+                    return p0
             self._consecutive_p1_count += 1
             return p0
 
