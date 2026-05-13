@@ -241,23 +241,34 @@ def get_word_notes_in_batch(voc_ids: list[str], db_path: Optional[str] = None, s
     """批量查询多个 voc_id 的笔记，返回 {voc_id: note_dict} 映射。避免 N+1 查询。"""
     if not voc_ids:
         return {}
-    
+
+    def _rows_to_map(rows):
+        result = {}
+        for row in rows:
+            if not row:
+                continue
+            d = row_to_dict(row)
+            vid = str(d.get("voc_id") or "")
+            if vid:
+                result[vid] = d
+        return result
+
     if session is None:
         from database.session import with_read_session
-        
+
         @with_read_session(default_return={})
         def _fetch(session: DBSession = None):
             placeholders = ','.join(['?' for _ in voc_ids])
             sql = f"SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})"
             rows = session.fetchall(sql, tuple(str(vid) for vid in voc_ids))
-            return {str(row_to_dict(row).get("voc_id") or ""): row_to_dict(row) for row in rows if row}
-        
+            return _rows_to_map(rows)
+
         return _fetch()
     else:
         placeholders = ','.join(['?' for _ in voc_ids])
         sql = f"SELECT * FROM ai_word_notes WHERE voc_id IN ({placeholders})"
         rows = session.fetchall(sql, tuple(str(vid) for vid in voc_ids))
-        return {str(row_to_dict(row).get("voc_id") or ""): row_to_dict(row) for row in rows if row}
+        return _rows_to_map(rows)
 
 
 def set_note_sync_status(voc_id: str, sync_status: int, db_path: Optional[str] = None) -> bool:
@@ -281,6 +292,24 @@ def mark_note_synced(voc_id: str, db_path: Optional[str] = None) -> bool:
 
 def mark_note_sync_conflict(voc_id: str, db_path: Optional[str] = None) -> bool:
     return set_note_sync_status(voc_id, 2, db_path=db_path)
+
+
+def update_sync_status_batch(items: List[Tuple[int, str]], db_path: Optional[str] = None) -> bool:
+    """批量合并更新 sync_status。items 格式: [(sync_status, voc_id), ...]"""
+    if not items:
+        return True
+    ts = get_timestamp_with_tz()
+    batch_args = [(int(s), ts, str(vid)) for s, vid in items]
+    try:
+        return dispatch_batch_write(
+            "UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?",
+            batch_args,
+            db_path=db_path,
+            queue_full_log=lambda m: _debug_log(f"批量更新 sync_status {m}", level="WARNING", module=_LOG_MOD),
+        )
+    except Exception as e:
+        _log_repo_failure("update_sync_status_batch", e)
+        return False
 
 
 def save_ai_batch(batch_data: AIBatchData, db_path: Optional[str] = None) -> bool:
@@ -485,10 +514,12 @@ __all__ = [
     "get_unsynced_notes",
     "get_word_note",
     "get_local_word_note",
+    "get_word_notes_in_batch",
     "get_sync_status_in_batch",
     "set_note_sync_status",
     "mark_note_synced",
     "mark_note_sync_conflict",
+    "update_sync_status_batch",
     "save_ai_batch",
     "save_ai_word_iteration",
     "update_ai_word_note_iteration_state",

@@ -13,8 +13,10 @@ from core.sync_priority import Priority
 from database.momo_words import (
     get_local_word_note,
     mark_processed,
+    mark_processed_batch,
     mark_note_synced,
     set_note_sync_status,
+    update_sync_status_batch,
 )
 
 
@@ -57,6 +59,14 @@ class SyncManager:
             "中央 Hub 数据库": [],
         }
         self._sync_duration_history_limit = 12
+
+        # 写合并缓冲：积攒终态写入，定量/定时批量刷盘
+        self._pending_synced: list = []  # [(voc_id, spell), ...] 成功同步待刷盘
+        self._pending_status: list = []  # [(sync_status, voc_id), ...] 终态状态待刷盘
+        self._flush_lock = threading.Lock()
+        self._last_flush_ts = time.time()
+        self._flush_batch_size = 20   # 积攒满 N 条即刷
+        self._flush_interval_s = 2.0  # 或间隔 N 秒即刷
 
         self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
         self.sync_worker_thread.start()
@@ -126,17 +136,8 @@ class SyncManager:
             "profile_name": str(profile_name or "").strip().lower(),
         }
         self.sync_queue.put((int(priority), self._next_seq(), item))
-        # 标记为已入队（兼容新状态 3 = queued）以便外部观察
-        try:
-            if self.db_path:
-                set_note_sync_status(voc_id, 3, db_path=self.db_path)
-            else:
-                set_note_sync_status(voc_id, 3)
-        except Exception:
-            try:
-                self.logger.debug(f"无法写入 sync_status=3 for {voc_id}")
-            except Exception:
-                pass
+        # 相态 3（queued）虚化为内存态广播，不再硬写数据库以减轻写锁争用。
+        # 若进程崩溃，未同步成功的记录仍保留 status=0，重启后自愈/重试会重新捕获。
 
     def _take_next_item(self):
         try:
@@ -302,14 +303,7 @@ class SyncManager:
                     continue
 
                 try:
-                    # 开始远端同步：标记为 4=syncing
-                    try:
-                        if self.db_path:
-                            set_note_sync_status(voc_id, 4, db_path=self.db_path)
-                        else:
-                            set_note_sync_status(voc_id, 4)
-                    except Exception:
-                        pass
+                    # 相态 4（syncing）虚化为内存态广播，不再硬写数据库。
                     # 发出行级状态：正在同步
                     self.logger.info(
                         f"[RowStatus] {spell} 开始同步",
@@ -355,23 +349,15 @@ class SyncManager:
                         sync_status = 0
 
                     if sync_status == 1:
-                        try:
-                            if self.db_path:
-                                mark_processed(voc_id, spell, db_path=self.db_path)
-                            else:
-                                mark_processed(voc_id, spell)
-                        except Exception as persist_error:
-                            self.logger.warning(f"⚠️ {spell} 已同步，但 processed 标记持久化失败: {persist_error}")
+                        # 内存缓存立即更新（保证后续批次可跳过）
                         try:
                             self.on_mark_processed(voc_id, spell)
                         except Exception as cache_error:
                             self.logger.warning(f"⚠️ {spell} 已同步，但缓存更新失败: {cache_error}")
-                        if self.db_path:
-                            ok = mark_note_synced(voc_id, db_path=self.db_path)
-                        else:
-                            ok = mark_note_synced(voc_id)
-                        if not ok:
-                            self.logger.warning(f"⚠️ {spell} sync_status=1 写回未命中")
+                        # 积攒到写合并缓冲，由 _flush_pending_writes 统一批量刷盘
+                        with self._flush_lock:
+                            self._pending_synced.append((voc_id, spell))
+                            self._pending_status.append((1, voc_id))
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
                         self.logger.info(
                             f"[RowStatus] {spell} 同步完成",
@@ -501,9 +487,60 @@ class SyncManager:
                 if not task_done_manually:
                     self.sync_queue.task_done()
 
+            # 每轮循环末检查是否需要刷写缓冲
+            self._maybe_flush()
+
+        # 退出前最终刷写
+        self._flush_pending_writes()
         self._sync_worker_stopped = True
 
+    def _maybe_flush(self):
+        """定量/定时触发批量刷盘。"""
+        with self._flush_lock:
+            pending_count = len(self._pending_synced) + len(self._pending_status)
+        if pending_count <= 0:
+            return
+        elapsed = time.time() - self._last_flush_ts
+        if pending_count >= self._flush_batch_size or elapsed >= self._flush_interval_s:
+            self._flush_pending_writes()
+
+    def _flush_pending_writes(self):
+        """将积攒的终态写入合并为批量事务一次性刷盘。"""
+        with self._flush_lock:
+            synced_batch = list(self._pending_synced)
+            status_batch = list(self._pending_status)
+            self._pending_synced.clear()
+            self._pending_status.clear()
+            self._last_flush_ts = time.time()
+
+        if not synced_batch and not status_batch:
+            return
+
+        # 1. 批量写 processed 标记
+        if synced_batch:
+            try:
+                db_kw = {"db_path": self.db_path} if self.db_path else {}
+                if not mark_processed_batch(synced_batch, **db_kw):
+                    self.logger.warning(f"⚠️ 批量 processed 标记写入返回 False（{len(synced_batch)} 条）")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 批量 processed 标记写入失败: {e}")
+
+        # 2. 批量写 sync_status 终态
+        if status_batch:
+            try:
+                db_kw = {"db_path": self.db_path} if self.db_path else {}
+                if not update_sync_status_batch(status_batch, **db_kw):
+                    self.logger.warning(f"⚠️ 批量 sync_status 写入返回 False（{len(status_batch)} 条）")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 批量 sync_status 写入失败: {e}")
+
+        total = len(synced_batch) + len(status_batch)
+        if total > 0:
+            self.logger.info(f"[SyncFlush] 批量刷盘完成: {len(synced_batch)} 条 processed + {len(status_batch)} 条 status")
+
     def flush_pending_syncs(self, context_name: str):
+        # 先刷写积攒的终态
+        self._flush_pending_writes()
         pending_count = self.sync_queue.qsize()
         if pending_count > 0:
             self.logger.info(f"🔁 还有 {pending_count} 个 {context_name} 结果正在后台同步，可继续其他操作。")
@@ -513,6 +550,8 @@ class SyncManager:
         self.logger.info(f"退出前关闭后台同步线程，剩余任务 {pending_count} 个...")
         self._stop_event.set()
         self.sync_worker_thread.join(timeout=5.0)
+        # 确保 worker 退出后残余缓冲也被刷写
+        self._flush_pending_writes()
         if self.sync_worker_thread.is_alive():
             self.logger.warning("后台同步线程未在 10 秒内结束")
         else:

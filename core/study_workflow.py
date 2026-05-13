@@ -15,7 +15,6 @@ from database.momo_words import (
     save_ai_word_notes_batch,
     save_ai_batch,
     mark_processed_batch,
-    set_note_sync_status,
 )
 from database.utils import clean_for_maimemo
 from core.sync_priority import Priority
@@ -307,12 +306,7 @@ class StudyWorkflow:
                     force_sync=True,  # 内存信任：刚生成结果直接同步，跳过写后即读
                     priority=Priority.P1,
                 )
-                # 标记为已入队（兼容新状态 3=queued）以便前端/API 可感知“待同步”状态
-                try:
-                    set_note_sync_status(item["voc_id"], 3)
-                except Exception:
-                    # 写回失败不阻断主流程
-                    self.logger.debug(f"无法写入 sync_status=3 for {item.get('voc_id')}")
+                # 相态 3（queued）已虚化为内存态广播，不再硬写数据库。
                 self.logger.info(
                     f"[RowStatus] {item['spell']} 已入同步队列",
                     extra={
