@@ -279,24 +279,9 @@ def get_word_notes_in_batch(voc_ids: list[str], db_path: Optional[str] = None, s
 def set_note_sync_status(voc_id: str, sync_status: int, db_path: Optional[str] = None, *, match_confidence: Optional[float] = None, match_reason: Optional[str] = None) -> bool:
     """更新 sync_status，同时可选写入 match_confidence 和 match_reason。"""
     try:
-        if match_confidence is not None or match_reason is not None:
-            mc = match_confidence if match_confidence is not None else "NULL"
-            mr = match_reason if match_reason is not None else None
-            if mr is not None:
-                return dispatch_write(
-                    "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?",
-                    (int(sync_status), mc, mr, get_timestamp_with_tz(), str(voc_id)),
-                    db_path=db_path,
-                )
-            else:
-                return dispatch_write(
-                    "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, updated_at = ? WHERE voc_id = ?",
-                    (int(sync_status), mc, get_timestamp_with_tz(), str(voc_id)),
-                    db_path=db_path,
-                )
         return dispatch_write(
-            "UPDATE ai_word_notes SET sync_status = ?, updated_at = ? WHERE voc_id = ?",
-            (int(sync_status), get_timestamp_with_tz(), str(voc_id)),
+            "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?",
+            (int(sync_status), match_confidence, match_reason, get_timestamp_with_tz(), str(voc_id)),
             db_path=db_path,
         )
     except (sqlite3.DatabaseError, OSError, ValueError) as e:
@@ -318,25 +303,19 @@ def mark_note_sync_conflict(voc_id: str, db_path: Optional[str] = None) -> bool:
 def update_sync_status_batch(items: List[Tuple[int, str]], db_path: Optional[str] = None, *, match_items: Optional[List[Tuple[int, Optional[float], Optional[str], str]]] = None) -> bool:
     """批量合并更新 sync_status。
 
-    items 格式: [(sync_status, voc_id), ...]
+    items 格式: [(sync_status, voc_id), ...]（兼容旧调用）
     match_items 格式: [(sync_status, match_confidence, match_reason, voc_id), ...]
-    优先使用 match_items（含置信度），否则用 items。
+    优先使用 match_items（含置信度）。
     """
     if match_items:
         ts = get_timestamp_with_tz()
-        batch_args = []
-        for s, mc, mr, vid in match_items:
-            if mr is not None:
-                batch_args.append((int(s), mc, mr, ts, str(vid)))
-            else:
-                batch_args.append((int(s), mc, ts, str(vid)))
+        batch_args = [
+            (int(s), mc, mr, ts, str(vid))
+            for s, mc, mr, vid in match_items
+        ]
         try:
-            if any(mr is not None for _, mc, mr, _ in match_items):
-                sql = "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?"
-            else:
-                sql = "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, updated_at = ? WHERE voc_id = ?"
             return dispatch_batch_write(
-                sql,
+                "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?",
                 batch_args,
                 db_path=db_path,
                 queue_full_log=lambda m: _debug_log(f"批量更新 sync_status+confidence {m}", level="WARNING", module=_LOG_MOD),

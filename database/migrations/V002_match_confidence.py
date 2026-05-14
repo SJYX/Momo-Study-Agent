@@ -1,5 +1,5 @@
 """
-V002_match_confidence.py: 新增 ai_word_notes.match_confidence 列。
+V002_match_confidence.py: 新增 ai_word_notes.match_confidence / match_reason 列。
 
 存储释义同步时的匹配置信度（0.0~1.0）：
 - 精确匹配 = 1.0
@@ -10,7 +10,7 @@ V002_match_confidence.py: 新增 ai_word_notes.match_confidence 列。
 """
 from __future__ import annotations
 
-from typing import Any
+from .V001_initial import _column_exists
 
 _ADD_COLUMNS = [
     ("ai_word_notes", "match_confidence", "REAL"),
@@ -18,17 +18,7 @@ _ADD_COLUMNS = [
 ]
 
 
-def _column_exists(cur: Any, table: str, column: str) -> bool:
-    cur.execute(f"PRAGMA table_info({table})")
-    rows = cur.fetchall() or []
-    for row in rows:
-        name = row[1] if not isinstance(row, dict) else row.get("name")
-        if str(name) == column:
-            return True
-    return False
-
-
-def apply(cur: Any) -> None:
+def apply(cur) -> None:
     for table, column, ddl in _ADD_COLUMNS:
         if _column_exists(cur, table, column):
             continue
