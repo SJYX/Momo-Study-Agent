@@ -23,6 +23,28 @@
 
 ---
 
+## 📊 修复进度跟踪(实时更新)
+
+| 编号 | 问题 | 状态 | Commit |
+|---|---|---|---|
+| **H1** | failed 词在跳过分支被静默显示为"完成" | ✅ 已修复 | [`07b0c55`](#-h1--failed-状态被静默显示为完成--已修复-07b0c55) |
+| **H2** | `word_progress_history` 兜底死代码 / SSoT 模糊 | ✅ 已修复(随 M5 一并) | [`8282bd0`](#-h2--word_progress_history-兜底是半死代码ssot-实际模糊--已修复-8282bd0随-m5-重写一并解决) |
+| **H3** | `conflict_sync_queue` / `on_conflict` 三件死代码 | ✅ 已修复 | [`d6b0d24`](#-h3--_defer_maimemo_conflict--conflict_sync_queue--on_conflict-全是死代码--已修复-d6b0d24) |
+| **H4** | "重试冲突"按钮文案与行为不符(UX) | ✅ 短期已修复 | [`87c7da6`](#-h4--重试冲突按钮的文案与行为不符ux-问题非逻辑-bug--短期已修复-87c7da6) |
+| **M5** | partition 与 enrich 重复劳动 + DRY_RUN 词静默丢失 | ✅ 已修复(含 M6/M7/L6/L8) | [`8282bd0`](#-m5--partition_by_processability-与-enrich_with_states-重复劳动且边界场景静默丢词--已修复-8282bd0) |
+| M1 | sync_status 数值 3/4 是死状态但代码假装存在 | 🚧 待处理 | — |
+| M2 | `on_mark_processed` 是空回调 | 🚧 待处理 | — |
+| M3 | SyncManager.shutdown 注释/超时不一致 | 🚧 待处理 | — |
+| M4 | 释义匹配算法可能误报冲突 | 🚧 待处理(保护语义下优先级低) | — |
+| L1-L7 | 杂项性能/文档/UX | 🚧 待处理 | — |
+| **设计** | 6.1 / 6.2 / 6.3 / 7.6.x / 8.6.x | 📌 待用户拍板 | — |
+
+> 修复链接锚点用 GitHub markdown anchor 风格(小写、空格变 -)。
+
+---
+
+---
+
 ## 1. 链路与状态机回顾
 
 ### 1.1 数据通路
@@ -61,7 +83,7 @@
 
 ## 2. 问题清单(按严重程度)
 
-### 🔴 H1 — failed 状态被静默显示为"完成"
+### ✅ H1 — failed 状态被静默显示为"完成" *(已修复 `07b0c55`)*
 
 **位置**:[../../core/study_workflow.py:210-227](../../core/study_workflow.py#L210-L227)
 
@@ -104,7 +126,7 @@ elif sync_status == 5:
 
 ---
 
-### 🔴 H2 — `word_progress_history` 兜底是"半死代码",SSoT 实际模糊
+### ✅ H2 — `word_progress_history` 兜底是"半死代码",SSoT 实际模糊 *(已修复 `8282bd0`,随 M5 重写一并解决)*
 
 **位置**:[../../core/word_service.py:104-150](../../core/word_service.py#L104-L150)、[../../database/progress_repo.py:122](../../database/progress_repo.py#L122)
 
@@ -275,14 +297,14 @@ Python `with ThreadPoolExecutor` 的 `__exit__` 调用的是 `shutdown(wait=True
 
 ## 5. 推荐修复顺序
 
-| 优先级 | 修复 | 工作量 | 风险 |
-|---|---|---|---|
-| 🔴 必修 | **H1**:`process_word_list` 加 `sync_status==5` 显示分支 + 考虑是否重新入队 | 小(<10 行) | 低 |
-| 🔴 必修 | **H2**:删 `_get_tracked_ids` 或加显式废弃注释 | 小 | 中(需确认无其它语义依赖) |
-| 🟡 建议 | **M1**:统一 sync_status 实际可达值,删除 3/4 引用 | 中(多处) | 中(若计划恢复 queued/syncing 写入则不要做) |
-| 🟡 建议 | **M2**:删 `on_mark_processed` 死接口,或真的实装内存缓存 | 小 | 低 |
-| 🟡 建议 | **M3**:shutdown 5/10 文案对齐 + Web 端自愈优先级提到 P1/P2 | 小 | 低 |
-| 🟢 可选 | **L1/L2/L3** | 各小 | 低 |
+| 优先级 | 修复 | 工作量 | 风险 | 状态 |
+|---|---|---|---|---|
+| 🔴 必修 | **H1**:`process_word_list` 加 `sync_status==5` 显示分支 + 考虑是否重新入队 | 小(<10 行) | 低 | ✅ `07b0c55` |
+| 🔴 必修 | **H2**:删 `_get_tracked_ids` 或加显式废弃注释 | 小 | 中(需确认无其它语义依赖) | ✅ 已在 M5 重写中一并解决 |
+| 🟡 建议 | **M1**:统一 sync_status 实际可达值,删除 3/4 引用 | 中(多处) | 中(若计划恢复 queued/syncing 写入则不要做) | 🚧 待处理 |
+| 🟡 建议 | **M2**:删 `on_mark_processed` 死接口,或真的实装内存缓存 | 小 | 低 | 🚧 待处理 |
+| 🟡 建议 | **M3**:shutdown 5/10 文案对齐 + Web 端自愈优先级提到 P1/P2 | 小 | 低 | 🚧 待处理 |
+| 🟢 可选 | **L1/L2/L3** | 各小 | 低 | 🚧 待处理 |
 
 ---
 
@@ -396,7 +418,7 @@ Python `with ThreadPoolExecutor` 的 `__exit__` 调用的是 `shutdown(wait=True
 
 ### 7.3 问题清单
 
-#### 🔴 H3 — `_defer_maimemo_conflict` / `conflict_sync_queue` / `on_conflict` 全是死代码
+#### ✅ H3 — `_defer_maimemo_conflict` / `conflict_sync_queue` / `on_conflict` 全是死代码 *(已修复 `d6b0d24`)*
 
 **位置**:[../../core/sync_manager.py:48](../../core/sync_manager.py#L48)、[../../core/sync_manager.py:229-250](../../core/sync_manager.py#L229-L250)、[../../core/sync_manager.py:309](../../core/sync_manager.py#L309)
 
@@ -436,7 +458,7 @@ on_conflict.assert_not_called()
 - **(B 启用)**:让 `retry_conflicts` 用 `force_sync=False`,并实装一个真正的 `on_conflict` 处理器(例如"标记为待用户决策")
 - **(C 强化语义)**:retry 前先重置 sync_status=0,让冲突词回到普通同步流程
 
-#### 🟡 H4 — "重试冲突"按钮的文案与行为不符(UX 问题,非逻辑 bug)
+#### ✅ H4 — "重试冲突"按钮的文案与行为不符(UX 问题,非逻辑 bug) *(短期已修复 `87c7da6`)*
 
 **位置**:[../../web/backend/routers/sync.py:73-116](../../web/backend/routers/sync.py#L73-L116)、[../../web/frontend/src/pages/SyncStatus.tsx:71-79](../../web/frontend/src/pages/SyncStatus.tsx#L71-L79)
 
@@ -496,14 +518,14 @@ on_conflict.assert_not_called()
 
 ### 7.5 冲突相关修复顺序
 
-| 优先级 | 修复 | 工作量 | 风险 |
-|---|---|---|---|
-| 🔴 必修 | **H3 (A) 方案**:删除死代码三件套(`conflict_sync_queue` + `on_conflict` + `_defer_maimemo_conflict`)+ 修正测试 | 小 | 低(全是无用代码) |
-| 🟡 建议 | **H4 短期**:按钮改名 "复查云端状态" + tooltip 说明真实解决路径 | 小 | 低 |
-| 🟡 建议 | **M4**:匹配算法对称归一化(剥 markdown/HTML/标点/大小写) + 短释义阈值放宽 | 中 | 中(可能改变现有冲突词的判定结果,需小心回归) |
-| 🟢 可选 | **H4 中期**:API 返回 `still_conflict_count` + 前端区分显示 | 小 | 低 |
-| 🟢 可选 | **L4**:前端冲突表格补 `match_confidence` / `match_reason` 列 | 小 | 低 |
-| 🟢 可选 | **L5**:文档补"如何解决冲突释义" | 小 | 低 |
+| 优先级 | 修复 | 工作量 | 风险 | 状态 |
+|---|---|---|---|---|
+| 🔴 必修 | **H3 (A) 方案**:删除死代码三件套(`conflict_sync_queue` + `on_conflict` + `_defer_maimemo_conflict`)+ 修正测试 | 小 | 低(全是无用代码) | ✅ `d6b0d24` |
+| 🟡 建议 | **H4 短期**:按钮改名 "复查云端状态" + tooltip 说明真实解决路径 | 小 | 低 | ✅ `87c7da6` |
+| 🟡 建议 | **M4**:匹配算法对称归一化(剥 markdown/HTML/标点/大小写) + 短释义阈值放宽 | 中 | 中(可能改变现有冲突词的判定结果,需小心回归) | 🚧 待处理 |
+| 🟢 可选 | **H4 中期**:API 返回 `still_conflict_count` + 前端区分显示 | 小 | 低 | 🚧 待处理 |
+| 🟢 可选 | **L4**:前端冲突表格补 `match_confidence` / `match_reason` 列 | 小 | 低 | 🚧 待处理 |
+| 🟢 可选 | **L5**:文档补"如何解决冲突释义" | 小 | 低 | 🚧 待处理 |
 
 ### 7.6 留给用户拍板的设计问题(冲突部分)
 
@@ -628,7 +650,7 @@ pending_items, processed_items = self.word_service.partition_by_processability(
 
 ### 8.3 问题清单
 
-#### 🟡 M5 — `partition_by_processability` 与 `enrich_with_states` 重复劳动,且边界场景静默丢词
+#### ✅ M5 — `partition_by_processability` 与 `enrich_with_states` 重复劳动,且边界场景静默丢词 *(已修复 `8282bd0`)*
 
 **位置**:[../../core/word_service.py:104-159](../../core/word_service.py#L104-L159)、[../../core/study_workflow.py:194-195](../../core/study_workflow.py#L194-L195)
 
@@ -753,11 +775,11 @@ def partition_by_processability(self, items: List[WordItem]) -> Tuple[List[WordI
 
 ### 8.5 修复优先级
 
-| 优先级 | 修复 | 工作量 | 风险 |
-|---|---|---|---|
-| 🟡 建议 | **M5 + M6 + M7 合并修复**:partition 重写为 WordState 分组,删除 `_get_tracked_ids` / `_get_ids_with_local_notes` / 内部 N+1 | 中(改 word_service.py + 同步测试) | 中(行为细微变化,需回归 DRY_RUN 与空笔记场景) |
-| 🟢 可选 | **L6**:降级路径改为 `return [], items` 或抛异常 | 极小 | 低 |
-| 🟢 可选 | **L7**:`normalize_cloud_items` 返回 `dropped_count`,progress 事件展示 | 小 | 低 |
+| 优先级 | 修复 | 工作量 | 风险 | 状态 |
+|---|---|---|---|---|
+| 🟡 建议 | **M5 + M6 + M7 合并修复**:partition 重写为 WordState 分组,删除 `_get_tracked_ids` / `_get_ids_with_local_notes` / 内部 N+1 | 中(改 word_service.py + 同步测试) | 中(行为细微变化,需回归 DRY_RUN 与空笔记场景) | ✅ `8282bd0` |
+| 🟢 可选 | **L6**:降级路径改为 `return [], items` 或抛异常 | 极小 | 低 | ✅ 已在 M5 重写中一并解决 |
+| 🟢 可选 | **L7**:`normalize_cloud_items` 返回 `dropped_count`,progress 事件展示 | 小 | 低 | 🚧 待处理 |
 
 注:**M5 重写会同时解决 M6 / M7 / L8**,所以建议一次合并改造,不要分批改。
 
