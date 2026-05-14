@@ -4,7 +4,7 @@ tests/core/test_word_service.py: WordService 业务编排层单元测试。
 测试覆盖：
 1. normalize_cloud_items —— 脏数据过滤、WordItem 构造
 2. enrich_with_states —— 状态查询、自动 backfill
-3. partition_by_processability —— 3 套兜底判重、分组精度
+3. partition_by_processability —— 基于 WordState 的分组（M5 重写后）
 4. mark_completed —— 标记完成、队列满降级
 5. update_word_memory_aid —— 单词笔记编辑
 """
@@ -134,7 +134,7 @@ class TestEnrichWithStates:
 
 
 class TestPartitionByProcessability:
-    """Test partition_by_processability: 3-tier dedup & grouping."""
+    """Test partition_by_processability: WordState-based grouping (M5 重写后)。"""
 
     def test_empty_input(self, word_service):
         """空输入返回两个空列表。"""
@@ -142,84 +142,74 @@ class TestPartitionByProcessability:
         assert unprocessed == []
         assert processed == []
 
-    def test_all_unprocessed(self, word_service):
-        """全部词未处理。"""
-        items = [
-            WordItem(voc_id="v1", spelling="apple"),
-            WordItem(voc_id="v2", spelling="banana"),
+    def test_all_not_started(self, word_service):
+        """全部词 NOT_STARTED → 全部分到 unprocessed。"""
+        enriched = [
+            (WordItem(voc_id="v1", spelling="apple"), WordState.NOT_STARTED),
+            (WordItem(voc_id="v2", spelling="banana"), WordState.NOT_STARTED),
+        ]
+        unprocessed, processed = word_service.partition_by_processability(enriched)
+        assert len(unprocessed) == 2
+        assert len(processed) == 0
+        assert {u.voc_id for u in unprocessed} == {"v1", "v2"}
+
+    def test_all_processed_states_grouped_correctly(self, word_service):
+        """LOCAL_READY / SYNCED / CONFLICT / FAILED 都视为 processed。"""
+        enriched = [
+            (WordItem(voc_id="v1", spelling="a"), WordState.LOCAL_READY),
+            (WordItem(voc_id="v2", spelling="b"), WordState.SYNCED),
+            (WordItem(voc_id="v3", spelling="c"), WordState.CONFLICT),
+            (WordItem(voc_id="v4", spelling="d"), WordState.FAILED),
+        ]
+        unprocessed, processed = word_service.partition_by_processability(enriched)
+        assert len(unprocessed) == 0
+        assert len(processed) == 4
+        assert {p.voc_id for p in processed} == {"v1", "v2", "v3", "v4"}
+
+    def test_mixed(self, word_service):
+        """混合状态：NOT_STARTED → unprocessed，其余 → processed。"""
+        enriched = [
+            (WordItem(voc_id="v1", spelling="a"), WordState.NOT_STARTED),
+            (WordItem(voc_id="v2", spelling="b"), WordState.LOCAL_READY),
+            (WordItem(voc_id="v3", spelling="c"), WordState.SYNCED),
+        ]
+        unprocessed, processed = word_service.partition_by_processability(enriched)
+        assert [u.voc_id for u in unprocessed] == ["v1"]
+        assert {p.voc_id for p in processed} == {"v2", "v3"}
+
+    def test_dry_run_word_treated_as_processed(self, word_service):
+        """回归 case：DRY_RUN 词（只在 processed_words，无 ai_word_notes）对应
+        LOCAL_READY，应分到 processed。这是 M5 修复的核心
+        （见 docs/dev/AI_REVIEW_20260514_TODAY_TASK_PIPELINE.md §8.3）。
+
+        修复前：partition 会把这种词遗漏（既不在 unprocessed 也不在 processed）。
+        修复后：基于 WordState 分组，LOCAL_READY → processed。
+        """
+        enriched = [
+            (WordItem(voc_id="vDRY", spelling="dryword"), WordState.LOCAL_READY),
+        ]
+        unprocessed, processed = word_service.partition_by_processability(enriched)
+        assert len(unprocessed) == 0
+        assert len(processed) == 1
+        assert processed[0].voc_id == "vDRY"
+
+    def test_exception_fallback_is_conservative(self, word_service):
+        """异常降级：保守地把全部当 processed，避免雪崩式重调 AI。"""
+        enriched = [
+            (WordItem(voc_id="v1", spelling="a"), WordState.NOT_STARTED),
+            (WordItem(voc_id="v2", spelling="b"), WordState.NOT_STARTED),
         ]
 
-        with mock.patch("core.word_service.filter_unprocessed") as mock_filter:
-            mock_filter.return_value = {"v1", "v2"}
-            with mock.patch(
-                "core.word_service.WordService._get_tracked_ids"
-            ) as mock_tracked:
-                mock_tracked.return_value = set()
-                with mock.patch(
-                    "core.word_service.WordService._get_ids_with_local_notes"
-                ) as mock_notes:
-                    mock_notes.return_value = set()
+        # 触发异常：让 WordItem 比较抛错（通过破坏 state 比较）
+        # 这里用 mock 在循环里抛异常更简单
+        bad_state = mock.MagicMock()
+        bad_state.__eq__ = mock.MagicMock(side_effect=RuntimeError("boom"))
+        bad_enriched = [(WordItem(voc_id="v1", spelling="a"), bad_state)]
 
-                    unprocessed, processed = word_service.partition_by_processability(
-                        items
-                    )
-
-                    assert len(unprocessed) == 2
-                    assert len(processed) == 0
-
-    def test_all_processed(self, word_service):
-        """全部词已处理。"""
-        items = [
-            WordItem(voc_id="v1", spelling="apple"),
-            WordItem(voc_id="v2", spelling="banana"),
-        ]
-
-        with mock.patch("core.word_service.filter_unprocessed") as mock_filter:
-            mock_filter.return_value = set()
-            with mock.patch(
-                "core.word_service.WordService._get_tracked_ids"
-            ) as mock_tracked:
-                mock_tracked.return_value = {"v1", "v2"}
-                with mock.patch(
-                    "core.word_service.WordService._get_ids_with_local_notes"
-                ) as mock_notes:
-                    mock_notes.return_value = set()
-
-                    unprocessed, processed = word_service.partition_by_processability(
-                        items
-                    )
-
-                    assert len(unprocessed) == 0
-                    assert len(processed) == 2
-
-    def test_mixed_processability(self, word_service):
-        """部分已处理、部分待处理。"""
-        items = [
-            WordItem(voc_id="v1", spelling="apple"),
-            WordItem(voc_id="v2", spelling="banana"),
-            WordItem(voc_id="v3", spelling="cherry"),
-        ]
-
-        with mock.patch("core.word_service.filter_unprocessed") as mock_filter:
-            # v1 未处理，v2/v3 已处理
-            mock_filter.return_value = {"v1"}
-            with mock.patch(
-                "core.word_service.WordService._get_tracked_ids"
-            ) as mock_tracked:
-                mock_tracked.return_value = set()
-                with mock.patch(
-                    "core.word_service.WordService._get_ids_with_local_notes"
-                ) as mock_notes:
-                    mock_notes.return_value = {"v2", "v3"}
-
-                    unprocessed, processed = word_service.partition_by_processability(
-                        items
-                    )
-
-                    assert len(unprocessed) == 1
-                    assert unprocessed[0].voc_id == "v1"
-                    assert len(processed) == 2
-                    assert set(p.voc_id for p in processed) == {"v2", "v3"}
+        unprocessed, processed = word_service.partition_by_processability(bad_enriched)
+        # 降级：unprocessed 空，全部分到 processed
+        assert unprocessed == []
+        assert len(processed) == 1
 
 
 class TestMarkCompleted:
@@ -277,53 +267,6 @@ class TestUpdateWordMemoryAid:
 
             assert result is True
             mock_update.assert_called_once()
-
-
-class TestInternalHelpers:
-    """Test internal helper methods."""
-
-    def test_get_tracked_ids_success(self, word_service):
-        """查询进度历史成功。"""
-        with mock.patch(
-            "database.progress_repo.get_progress_tracked_ids_in_batch"
-        ) as mock_tracked:
-            mock_tracked.return_value = {"v1", "v2"}
-
-            result = word_service._get_tracked_ids({"v1", "v2", "v3"})
-
-            assert result == {"v1", "v2"}
-
-    def test_get_tracked_ids_empty(self, word_service):
-        """空候选集返回空。"""
-        result = word_service._get_tracked_ids(set())
-        assert result == set()
-
-    def test_get_ids_with_local_notes_empty(self, word_service):
-        """无本地笔记返回空。"""
-        with mock.patch(
-            "database.notes_repo.get_word_notes_in_batch"
-        ) as mock_notes:
-            mock_notes.return_value = {}
-
-            result = word_service._get_ids_with_local_notes({"v1", "v2"})
-
-            assert result == set()
-
-    def test_get_ids_with_local_notes_backfill_triggered(self, word_service):
-        """验证 backfill 入队机制（简化版）。
-
-        完整的集成测试留给 partition_by_processability 的高层测试。
-        """
-        with mock.patch(
-            "database.notes_repo.get_word_notes_in_batch"
-        ) as mock_notes:
-            # 返回空（无笔记）
-            mock_notes.return_value = {}
-
-            result = word_service._get_ids_with_local_notes({"v1"})
-
-            # 无笔记返回空
-            assert result == set()
 
 
 class TestIntegration:

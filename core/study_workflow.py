@@ -192,7 +192,7 @@ class StudyWorkflow:
         )
 
         enriched = self.word_service.enrich_with_states(normalized_items, auto_backfill=True)
-        pending_items, processed_items = self.word_service.partition_by_processability([item for item, _ in enriched])
+        pending_items, processed_items = self.word_service.partition_by_processability(enriched)
 
         skipped_spells = [item.spelling for item in processed_items]
         self.logger.info(
