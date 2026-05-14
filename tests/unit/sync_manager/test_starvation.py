@@ -8,7 +8,7 @@ def test_starvation_guard_yields_after_five_p1():
     logger = MagicMock()
     momo_api = MagicMock()
     momo_api.sync_interpretation.return_value = {"sync_status": 1}
-    sm = SyncManager(logger, momo_api, MagicMock(), MagicMock())
+    sm = SyncManager(logger, momo_api, MagicMock())
 
     sm.queue_maimemo_sync("p2-x", "p2x", "x", ["t"], force_sync=True, priority=Priority.P2)
     for i in range(6):

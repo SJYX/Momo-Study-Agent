@@ -9,7 +9,7 @@ def _build_sm():
     logger = MagicMock()
     momo_api = MagicMock()
     momo_api.sync_interpretation.return_value = {"sync_status": 1}
-    sm = SyncManager(logger, momo_api, MagicMock(), MagicMock())
+    sm = SyncManager(logger, momo_api, MagicMock())
     return sm, momo_api
 
 

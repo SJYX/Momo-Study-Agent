@@ -24,7 +24,7 @@ def _make_sm():
     logger = MagicMock()
     momo_api = MagicMock()
     momo_api.sync_interpretation.return_value = {"sync_status": 1}
-    sm = SyncManager(logger, momo_api, MagicMock(), MagicMock())
+    sm = SyncManager(logger, momo_api, MagicMock())
     # 停掉 worker 防止它消费 metrics 干扰断言
     sm._stop_event.set()
     sm.sync_worker_thread.join(timeout=2.0)

@@ -35,17 +35,14 @@ class SyncManager:
         logger,
         momo_api,
         on_mark_processed: Callable[[str, str], None],
-        on_conflict: Optional[Callable[[dict, str], None]] = None,
         db_path: Optional[str] = None,
     ):
         self.logger = logger
         self.momo = momo_api
         self.on_mark_processed = on_mark_processed
-        self.on_conflict = on_conflict
         self.db_path = db_path
 
         self.sync_queue = queue.PriorityQueue()
-        self.conflict_sync_queue = queue.Queue()
         self._sync_worker_stopped = False
         self._stop_event = threading.Event()
         self._seq = 0
@@ -226,29 +223,6 @@ class SyncManager:
             return False
         return (time.time() - self._idle_since) >= IDLE_DEBOUNCE_S
 
-    def _defer_maimemo_conflict(self, item, reason: str):
-        self.conflict_sync_queue.put(item)
-        self.logger.info(
-            f"[RowStatus] {item.get('spell', '')} 同步冲突",
-            extra={
-                "event": "row_status",
-                "data": {
-                    "rows": [
-                        {
-                            "item_id": str(item.get("spell", "")).lower(),
-                            "status": "error",
-                            "phase": "sync_conflict",
-                            "error": reason,
-                        }
-                    ]
-                },
-            },
-        )
-        if self.on_conflict:
-            self.on_conflict(item, reason)
-            return
-        self.logger.warning(f"⚠️ {item.get('spell', item.get('voc_id', 'unknown'))} 已进入冲突队列: {reason}")
-
     def _maimemo_sync_worker(self):
         while True:
             if self._stop_event.is_set() and self.sync_queue.empty():
@@ -306,10 +280,7 @@ class SyncManager:
 
                     current_status = int(current_note.get("sync_status", 0) or 0) if current_note else 0
 
-                if current_status == 2:
-                    self._defer_maimemo_conflict(item, "当前状态已是冲突态")
-                    continue
-                # 兼容新状态：允许处理 0(unsynced) 与 3(queued) 的任务；其余状态均跳过
+                # 兼容新状态：允许处理 0(unsynced) 与 3(queued) 的任务；其余状态(1/2/5)均跳过
                 if current_status not in (0, 3):
                     self.logger.info(f"ℹ️ {spell} 当前sync_status={current_status}，跳过重复同步")
                     continue

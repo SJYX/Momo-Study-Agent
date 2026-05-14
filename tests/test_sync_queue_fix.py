@@ -21,8 +21,7 @@ class TestQueueTaskDoneLogic(unittest.TestCase):
         self.logger = MagicMock()
         self.momo_api = MagicMock()
         self.on_mark_processed = MagicMock()
-        self.on_conflict = MagicMock()
-        self.sm = SyncManager(self.logger, self.momo_api, self.on_mark_processed, self.on_conflict)
+        self.sm = SyncManager(self.logger, self.momo_api, self.on_mark_processed)
         # 强制设置连续 P1 计数以触发防饥饿
         self.sm._consecutive_p1_count = 5
 

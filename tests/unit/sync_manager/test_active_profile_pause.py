@@ -14,7 +14,7 @@ def test_active_profile_pause_for_p3_until_active_switch():
     logger = MagicMock()
     momo_api = MagicMock()
     momo_api.sync_interpretation.return_value = {"sync_status": 1}
-    sm = SyncManager(logger, momo_api, MagicMock(), MagicMock())
+    sm = SyncManager(logger, momo_api, MagicMock())
 
     sm.queue_maimemo_sync(
         "v-p3",
