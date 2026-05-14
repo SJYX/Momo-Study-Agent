@@ -41,7 +41,7 @@ export default function SyncStatus() {
     mutationFn: () => apiPost<{ retried: number; total_conflicts: number; message?: string }>('/api/sync/retry'),
     onSuccess: (res) => {
       if (res.data) {
-        setRetryResult(`已重试 ${res.data.retried} / ${res.data.total_conflicts} 项`)
+        setRetryResult(`已发起 ${res.data.retried} 次云端复查（云端未变化的词仍保留冲突状态，需先在墨墨 App 中删除冲突释义）`)
       }
       setTimeout(() => queryClient.invalidateQueries({ queryKey: ['sync_status'] }), 1500)
     },
@@ -71,10 +71,13 @@ export default function SyncStatus() {
         <div className="flex gap-2">
           <button onClick={() => refetch()} className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50">刷新</button>
           {data && conflictCount > 0 && (
-            <button onClick={() => retryMutation.mutate()} disabled={retryMutation.isPending}
+            <button
+              onClick={() => retryMutation.mutate()}
+              disabled={retryMutation.isPending}
+              title="复查云端释义是否仍冲突。若云端未变,本地仍标记为冲突；真正解除需先在墨墨 App 中删除冲突释义,再次点击复查即可自动同步本地版本。"
               className="flex items-center gap-1 px-3 py-1.5 bg-orange-500 text-white rounded text-sm hover:bg-orange-600 disabled:opacity-50">
               {retryMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-              重试冲突
+              复查云端状态
             </button>
           )}
           <button onClick={() => flushMutation.mutate()} disabled={flushMutation.isPending}
