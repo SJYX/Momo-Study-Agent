@@ -18,6 +18,7 @@ from database.momo_words import (
     set_note_sync_status,
     update_sync_status_batch,
 )
+from database.utils import clean_for_maimemo
 
 
 # PLAYBOOK B3 闲时引擎阈值。"_is_idle" 全部满足 + 连续稳定 IDLE_DEBOUNCE_S 秒才进入 idle。
@@ -57,7 +58,7 @@ class SyncManager:
 
         # 写合并缓冲：积攒终态写入，定量/定时批量刷盘
         self._pending_synced: list = []  # [(voc_id, spell), ...] 成功同步待刷盘
-        self._pending_status: list = []  # [(sync_status, match_confidence, match_reason, voc_id), ...] 终态状态待刷盘
+        self._pending_status: list = []  # [(sync_status, match_confidence, match_reason, last_synced_content, voc_id), ...] 终态状态待刷盘
         self._flush_lock = threading.Lock()
         self._last_flush_ts = time.time()
         self._flush_batch_size = 20   # 积攒满 N 条即刷
@@ -267,6 +268,8 @@ class SyncManager:
 
                 current_note = None
                 current_status = 0
+                last_synced_content = None
+                synced_content = clean_for_maimemo(interpretation)
 
                 # 仅在非内存信任路径下执行 DB 查询
                 if not force_sync:
@@ -337,10 +340,13 @@ class SyncManager:
                         sync_status = 0
 
                     if sync_status == 1:
+                        synced_content = clean_for_maimemo(
+                            sync_result.get("cloud_interpretation", "") if isinstance(sync_result, dict) else interpretation
+                        ) or synced_content
                         # 积攒到写合并缓冲，由 _flush_pending_writes 统一批量刷盘
                         with self._flush_lock:
                             self._pending_synced.append((voc_id, spell))
-                            self._pending_status.append((1, match_confidence, match_reason, interpretation, voc_id))
+                            self._pending_status.append((1, match_confidence, match_reason, synced_content, voc_id))
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
                         self.logger.info(
                             f"[RowStatus] {spell} 同步完成",
@@ -376,9 +382,10 @@ class SyncManager:
                                 sync_status = 1
                                 match_confidence = 1.0
                                 match_reason = "3-way-merged"
+                                synced_content = clean_for_maimemo(interpretation)
                                 with self._flush_lock:
                                     self._pending_synced.append((voc_id, spell))
-                                    self._pending_status.append((1, match_confidence, match_reason, interpretation, voc_id))
+                                    self._pending_status.append((1, match_confidence, match_reason, synced_content, voc_id))
                                 self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 3-Way Merge 覆盖成功并入库")
                             else:
                                 self.logger.warning(f"[Pipeline] ⚠️ {spell} - 3-Way Merge: 尝试覆盖失败，回退冲突态")
