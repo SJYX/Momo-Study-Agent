@@ -181,6 +181,46 @@ def test_dedup_recovers_from_progress_history(workflow, mock_deps):
                 ai_client.generate_mnemonics.assert_not_called()
 
 
+def test_skipped_row_status_for_failed_sync(workflow, mock_deps):
+    """H1 回归：sync_status=5 的词在 skipped 分支应显示为 error/sync_failed,
+    而不是被静默渲染为 done/skipped(见审查报告 §2 H1)。"""
+    logger, ai_client, _, _ = mock_deps
+    word_list = [{"voc_id": "vFAIL", "voc_spelling": "failed_word"}]
+
+    with patch.object(workflow.word_service, "normalize_cloud_items") as mock_normalize:
+        with patch.object(workflow.word_service, "enrich_with_states") as mock_enrich:
+            with patch.object(workflow.word_service, "partition_by_processability") as mock_partition:
+                with patch("core.study_workflow.get_local_word_note") as mock_note:
+                    from core.word_models import WordItem
+                    from database.word_state import WordState
+
+                    normalized = [WordItem(voc_id="vFAIL", spelling="failed_word")]
+                    mock_normalize.return_value = normalized
+                    mock_enrich.return_value = [(normalized[0], WordState.FAILED)]
+                    mock_partition.return_value = ([], normalized)  # 全部在 processed_items
+                    mock_note.return_value = {
+                        "sync_status": 5,
+                        "match_reason": "invalid_res_id",
+                    }
+
+                    workflow.process_word_list(word_list, "失败状态测试")
+
+                    # 找到 [RowStatus] 跳过单词状态回填 这条 info call
+                    row_status_calls = [
+                        c for c in logger.info.call_args_list
+                        if c.kwargs.get("extra", {}).get("event") == "row_status"
+                        and "本轮跳过单词状态回填" in str(c.args[0])
+                    ]
+                    assert row_status_calls, "应当发出 [RowStatus] 本轮跳过单词状态回填 事件"
+
+                    rows = row_status_calls[0].kwargs["extra"]["data"]["rows"]
+                    failed_rows = [r for r in rows if r["item_id"] == "failed_word"]
+                    assert failed_rows, "应当包含 failed_word 的状态行"
+                    assert failed_rows[0]["phase"] == "sync_failed"
+                    assert failed_rows[0]["status"] == "error"
+                    assert failed_rows[0]["error"] == "invalid_res_id"
+
+
 def test_format_words_preview_robustness():
     """验证我们在最近修复中强化的预览逻辑。"""
     from core.study_workflow import StudyWorkflow

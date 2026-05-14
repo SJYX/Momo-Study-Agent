@@ -218,6 +218,11 @@ class StudyWorkflow:
                         phase = "sync_conflict"
                         status = "warning"
                         reason = "云端释义冲突，待处理"
+                    elif sync_status == 5:
+                        # H1 修复：failed 词不再静默显示为"已完成"，前端能看到失败状态
+                        phase = "sync_failed"
+                        status = "error"
+                        reason = (note or {}).get("match_reason") or "上传失败"
                 except Exception:
                     pass
 
