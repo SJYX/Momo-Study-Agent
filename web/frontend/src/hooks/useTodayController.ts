@@ -183,6 +183,19 @@ export function useTodayController(rowRefs: RowRefMap) {
     onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
   })
 
+  const refreshMutation = useMutation({
+    mutationFn: async () => {
+      const r = await apiClient<TodayItemsResponse>('/api/study/today?refresh=true')
+      if (!r.data) throw new Error('刷新返回数据为空')
+      return r.data
+    },
+    onSuccess: (newData) => {
+      queryClient.setQueryData(todayQueryKey(), newData)
+      setActionError('')
+    },
+    onError: (e) => setActionError(`刷新失败: ${e instanceof Error ? e.message : e}`),
+  })
+
   const handleProcess = useCallback((voc_ids?: string[]) => {
     processMutation.mutate(voc_ids)
   }, [processMutation])
@@ -198,16 +211,8 @@ export function useTodayController(rowRefs: RowRefMap) {
   }, [flags.bulkGuard, flags.lightConfirm, executableItems.length, handleProcess])
 
   const refresh = useCallback(() => {
-    // 手动刷新必须带 refresh=true 让后端绕过磁盘/内存缓存，否则前端
-    // 即使 invalidate 重新请求，后端也会直接返回缓存中的旧（甚至空）数据。
-    queryClient.fetchQuery({
-      queryKey: todayQueryKey(),
-      queryFn: async () => {
-        const r = await apiClient<TodayItemsResponse>('/api/study/today?refresh=true')
-        return r.data
-      },
-    })
-  }, [queryClient])
+    refreshMutation.mutate()
+  }, [refreshMutation])
 
   const errorMsg = useMemo(() => {
     if (actionError) return actionError
@@ -239,7 +244,7 @@ export function useTodayController(rowRefs: RowRefMap) {
     isTerminal,
     runningKey,
     hiddenCount,
-    refreshing: isFetching,
+    refreshing: isFetching || refreshMutation.isPending,
     processing: processMutation.isPending || cancelMutation.isPending,
     errorMsg,
 

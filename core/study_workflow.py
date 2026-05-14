@@ -27,13 +27,8 @@ class StudyWorkflow:
         self.sync_manager = SyncManager(
             logger=self.logger,
             momo_api=self.momo,
-            on_mark_processed=self._mark_processed_for_sync,
             db_path=db_path,
         )
-
-    def _mark_processed_for_sync(self, voc_id, spelling):
-        """sync_manager 回调：当前由 WordService 负责状态管理。"""
-        pass
 
     @staticmethod
     def _format_words_preview(words, limit=20):
@@ -178,16 +173,24 @@ class StudyWorkflow:
             self.logger.info(f"{name} 无需处理")
             return
 
-        normalized_items = self.word_service.normalize_cloud_items(word_list)
+        normalized_items, discarded_count = self.word_service.normalize_cloud_items(word_list)
         if not normalized_items:
-            self.logger.info(f"{name} 过滤后无可处理有效单词")
+            self.logger.info(f"{name} 过滤后无可处理有效单词 (丢弃 {discarded_count} 词)")
             return
 
+        # 6.2: 记录进度快照以供薄弱词筛选使用
+        try:
+            from database.progress_repo import log_progress_snapshots
+            log_progress_snapshots(normalized_items)
+            self.logger.info(f"✅ 成功记录 {len(normalized_items)} 个单词的进度历史快照")
+        except Exception as e:
+            self.logger.error(f"❌ 记录进度历史快照失败: {e}")
+
         self.logger.info(
-            f"[Pipeline] {name} 任务初始化，总计 {len(normalized_items)} 词",
+            f"[Pipeline] {name} 任务初始化，总计 {len(normalized_items)} 词（过滤脏数据 {discarded_count} 词）",
             extra={
                 "event": "progress",
-                "data": {"current": 0, "total": len(normalized_items), "phase": "initializing"},
+                "data": {"current": 0, "total": len(normalized_items), "discarded": discarded_count, "phase": "initializing"},
             },
         )
 
@@ -248,74 +251,76 @@ class StudyWorkflow:
             f"[AI] {name} 开始处理：{total_pending} 词，批次大小 {BATCH_SIZE}，并发 {ai_workers}，共 {total_batches} 批"
         )
 
+        executor = ThreadPoolExecutor(max_workers=ai_workers)
         try:
-            with ThreadPoolExecutor(max_workers=ai_workers) as executor:
-                futures = []
-                start_pos = 0
-                for i in range(0, total_pending, BATCH_SIZE):
-                    batch = pending_items[i : i + BATCH_SIZE]
-                    batch_spells = [item.spelling for item in batch]
-                    batch_no = (i // BATCH_SIZE) + 1
+            futures = []
+            start_pos = 0
+            for i in range(0, total_pending, BATCH_SIZE):
+                batch = pending_items[i : i + BATCH_SIZE]
+                batch_spells = [item.spelling for item in batch]
+                batch_no = (i // BATCH_SIZE) + 1
 
-                    future = executor.submit(self._run_ai_batch, batch_no, total_batches, batch_spells)
-                    futures.append((future, batch, start_pos, batch_no, batch_spells))
-                    start_pos += len(batch)
+                future = executor.submit(self._run_ai_batch, batch_no, total_batches, batch_spells)
+                futures.append((future, batch, start_pos, batch_no, batch_spells))
+                start_pos += len(batch)
+
+            self.logger.info(
+                f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。",
+                extra={
+                    "event": "batch_start",
+                    "progress": {"current": 0, "total": total_pending, "batches": total_batches},
+                },
+            )
+
+            for future, batch, start_pos, batch_no, batch_spells in futures:
+                results, metadata = future.result()
+                if not results:
+                    self.logger.warning(
+                        f"⚠️ AI 批次 {batch_no}/{total_batches} 返回空结果，已跳过: {self._format_words_preview(batch_spells)}",
+                        extra={
+                            "event": "batch_error",
+                            "progress": {"batch_no": batch_no, "total_batches": total_batches},
+                        },
+                    )
+                    continue
 
                 self.logger.info(
-                    f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。",
+                    f"[Pipeline] {self._format_words_preview(batch_spells)} - 2. AI 助记处理成功 (耗时: {metadata.get('total_latency_ms', 0)}ms，返回 {len(results)} 条)",
                     extra={
-                        "event": "batch_start",
-                        "progress": {"current": 0, "total": total_pending, "batches": total_batches},
+                        "event": "batch_done",
+                        "progress": {
+                            "batch_no": batch_no,
+                            "total_batches": total_batches,
+                            "words": len(batch),
+                            "total": total_pending,
+                        },
                     },
                 )
 
-                for future, batch, start_pos, batch_no, batch_spells in futures:
-                    results, metadata = future.result()
-                    if not results:
-                        self.logger.warning(
-                            f"⚠️ AI 批次 {batch_no}/{total_batches} 返回空结果，已跳过: {self._format_words_preview(batch_spells)}",
-                            extra={
-                                "event": "batch_error",
-                                "progress": {"batch_no": batch_no, "total_batches": total_batches},
-                            },
-                        )
-                        continue
+                batch_id = str(uuid.uuid4())
+                ok = save_ai_batch(
+                    {
+                        "batch_id": batch_id,
+                        "request_id": metadata.get("request_id"),
+                        "ai_provider": AI_PROVIDER,
+                        "model_name": self.ai_client.model_name,
+                        "prompt_version": getattr(self.ai_client, "prompt_version", ""),
+                        "batch_size": len(batch),
+                        "total_latency_ms": metadata.get("total_latency_ms", 0),
+                        "total_tokens": metadata.get("total_tokens", 0),
+                        "finish_reason": metadata.get("finish_reason"),
+                    }
+                )
+                if not ok:
+                    self.logger.warning("⚠️ 批次元数据入队失败（写队列可能已满）")
 
-                    self.logger.info(
-                        f"[Pipeline] {self._format_words_preview(batch_spells)} - 2. AI 助记处理成功 (耗时: {metadata.get('total_latency_ms', 0)}ms，返回 {len(results)} 条)",
-                        extra={
-                            "event": "batch_done",
-                            "progress": {
-                                "batch_no": batch_no,
-                                "total_batches": total_batches,
-                                "words": len(batch),
-                                "total": total_pending,
-                            },
-                        },
-                    )
-
-                    batch_id = str(uuid.uuid4())
-                    ok = save_ai_batch(
-                        {
-                            "batch_id": batch_id,
-                            "request_id": metadata.get("request_id"),
-                            "ai_provider": AI_PROVIDER,
-                            "model_name": self.ai_client.model_name,
-                            "prompt_version": getattr(self.ai_client, "prompt_version", ""),
-                            "batch_size": len(batch),
-                            "total_latency_ms": metadata.get("total_latency_ms", 0),
-                            "total_tokens": metadata.get("total_tokens", 0),
-                            "finish_reason": metadata.get("finish_reason"),
-                        }
-                    )
-                    if not ok:
-                        self.logger.warning("⚠️ 批次元数据入队失败（写队列可能已满）")
-
-                    self._process_results(batch, results, start_pos, total_pending, batch_id)
+                self._process_results(batch, results, start_pos, total_pending, batch_id)
         except KeyboardInterrupt:
             self.logger.warning("检测到中断，正在取消所有待处理的 AI 任务...")
             executor.shutdown(wait=False, cancel_futures=True)
             raise
+        finally:
+            executor.shutdown(wait=True)
 
         self.sync_manager.flush_pending_syncs(name)
 

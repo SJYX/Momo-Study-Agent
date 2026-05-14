@@ -36,15 +36,15 @@ class WordService:
 
     def normalize_cloud_items(
         self, raw_items: List[Dict[str, Any]]
-    ) -> List[WordItem]:
+    ) -> Tuple[List[WordItem], int]:
         """归一化云端项目为 WordItem。
 
         过滤脏数据（缺 voc_id / spelling）。
 
-        返回: 有效项列表
+        返回: (有效项列表, 丢弃数量)
         """
         if not raw_items:
-            return []
+            return [], 0
 
         normalized = []
         for raw in raw_items:
@@ -59,7 +59,7 @@ class WordService:
                     module="core.word_service",
                 )
 
-        return normalized
+        return normalized, len(raw_items) - len(normalized)
 
     def enrich_with_states(
         self, items: List[WordItem], auto_backfill: bool = True

@@ -34,12 +34,10 @@ class SyncManager:
         self,
         logger,
         momo_api,
-        on_mark_processed: Callable[[str, str], None],
         db_path: Optional[str] = None,
     ):
         self.logger = logger
         self.momo = momo_api
-        self.on_mark_processed = on_mark_processed
         self.db_path = db_path
 
         self.sync_queue = queue.PriorityQueue()
@@ -122,6 +120,7 @@ class SyncManager:
         force_sync: bool = False,
         priority: Priority = Priority.P1,
         profile_name: str = "",
+        retry_count: int = 0,
     ):
         item = {
             "voc_id": str(voc_id),
@@ -131,6 +130,7 @@ class SyncManager:
             "force_sync": bool(force_sync),
             "priority": int(priority),
             "profile_name": str(profile_name or "").strip().lower(),
+            "retry_count": int(retry_count),
         }
         self.sync_queue.put((int(priority), self._next_seq(), item))
         # 相态 3（queued）虚化为内存态广播，不再硬写数据库以减轻写锁争用。
@@ -279,9 +279,10 @@ class SyncManager:
                         self.logger.warning(f"⚠️ {spell} 本地数据库读取失败: {local_read_error}")
 
                     current_status = int(current_note.get("sync_status", 0) or 0) if current_note else 0
+                    last_synced_content = current_note.get("last_synced_content") if current_note else None
 
-                # 兼容新状态：允许处理 0(unsynced) 与 3(queued) 的任务；其余状态(1/2/5)均跳过
-                if current_status not in (0, 3):
+                # 兼容新状态：允许处理 0(unsynced) 的任务；其余状态(1/2/5)均跳过
+                if current_status != 0:
                     self.logger.info(f"ℹ️ {spell} 当前sync_status={current_status}，跳过重复同步")
                     continue
 
@@ -336,15 +337,10 @@ class SyncManager:
                         sync_status = 0
 
                     if sync_status == 1:
-                        # 内存缓存立即更新（保证后续批次可跳过）
-                        try:
-                            self.on_mark_processed(voc_id, spell)
-                        except Exception as cache_error:
-                            self.logger.warning(f"⚠️ {spell} 已同步，但缓存更新失败: {cache_error}")
                         # 积攒到写合并缓冲，由 _flush_pending_writes 统一批量刷盘
                         with self._flush_lock:
                             self._pending_synced.append((voc_id, spell))
-                            self._pending_status.append((1, match_confidence, match_reason, voc_id))
+                            self._pending_status.append((1, match_confidence, match_reason, interpretation, voc_id))
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
                         self.logger.info(
                             f"[RowStatus] {spell} 同步完成",
@@ -362,25 +358,49 @@ class SyncManager:
                             },
                         )
                     elif sync_status == 2:
-                        try:
-                            if self.db_path:
-                                mark_processed(voc_id, spell, db_path=self.db_path)
+                        cloud_id = sync_result.get("cloud_id", "") if isinstance(sync_result, dict) else ""
+                        cloud_text = sync_result.get("cloud_interpretation", "") if isinstance(sync_result, dict) else ""
+                        
+                        # 3-Way Merge 检测: 如果存在 last_synced_content，并且云端内容等于上次同步的内容，
+                        # 说明云端未被用户手动修改，而是本系统之前的旧版本，允许强推更新。
+                        is_local_update = False
+                        if last_synced_content and cloud_id:
+                            from database.utils import clean_for_maimemo
+                            if clean_for_maimemo(cloud_text) == clean_for_maimemo(last_synced_content):
+                                is_local_update = True
+                        
+                        if is_local_update:
+                            self.logger.info(f"[Pipeline] {spell} - 3-Way Merge: 云端为旧版本释义，尝试更新覆盖")
+                            update_res = self.momo.update_interpretation(cloud_id, interpretation, tags=tags)
+                            if update_res and update_res.get("success"):
+                                sync_status = 1
+                                match_confidence = 1.0
+                                match_reason = "3-way-merged"
+                                with self._flush_lock:
+                                    self._pending_synced.append((voc_id, spell))
+                                    self._pending_status.append((1, match_confidence, match_reason, interpretation, voc_id))
+                                self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 3-Way Merge 覆盖成功并入库")
                             else:
-                                mark_processed(voc_id, spell)
-                        except Exception as persist_error:
-                            self.logger.warning(f"⚠️ {spell} 冲突态 processed 持久化失败: {persist_error}")
-                        try:
-                            self.on_mark_processed(voc_id, spell)
-                        except Exception as cache_error:
-                            self.logger.warning(f"⚠️ {spell} 冲突态缓存更新失败: {cache_error}")
-                        if self.db_path:
-                            ok = set_note_sync_status(voc_id, 2, db_path=self.db_path, match_confidence=match_confidence, match_reason=match_reason)
-                        else:
-                            ok = set_note_sync_status(voc_id, 2, match_confidence=match_confidence, match_reason=match_reason)
-                        if not ok:
-                            self.logger.warning(f"⚠️ {spell} sync_status=2 写回未命中")
-                        self.logger.warning(f"[Pipeline] ⚠️ {spell} - 4. 墨墨同步提示: 发现已存在的不一致释义，已标记冲突")
-                        self.logger.info(
+                                self.logger.warning(f"[Pipeline] ⚠️ {spell} - 3-Way Merge: 尝试覆盖失败，回退冲突态")
+                                # 保持 sync_status = 2 继续走冲突逻辑
+                                is_local_update = False
+
+                        if not is_local_update:
+                            try:
+                                if self.db_path:
+                                    mark_processed(voc_id, spell, db_path=self.db_path)
+                                else:
+                                    mark_processed(voc_id, spell)
+                            except Exception as persist_error:
+                                self.logger.warning(f"⚠️ {spell} 冲突态 processed 持久化失败: {persist_error}")
+                            if self.db_path:
+                                ok = set_note_sync_status(voc_id, 2, db_path=self.db_path, match_confidence=match_confidence, match_reason=match_reason)
+                            else:
+                                ok = set_note_sync_status(voc_id, 2, match_confidence=match_confidence, match_reason=match_reason)
+                            if not ok:
+                                self.logger.warning(f"⚠️ {spell} sync_status=2 写回未命中")
+                            self.logger.warning(f"[Pipeline] ⚠️ {spell} - 4. 墨墨同步提示: 发现已存在的不一致释义，已标记冲突")
+                            self.logger.info(
                             f"[RowStatus] {spell} 同步冲突",
                             extra={
                                 "event": "row_status",
@@ -428,14 +448,43 @@ class SyncManager:
                             )
                             continue
 
-                        # 其他非成功结果统一视为不可重试失败（5）以避免无限重试；写回并通知前端
+                        # 其他非成功结果（瞬态失败），最多重试 3 次
+                        retry_count = int(item.get("retry_count", 0))
+                        if retry_count < 3:
+                            self.logger.warning(f"⚠️ {spell} 墨墨同步未完成 ({reason})，准备后台第 {retry_count + 1} 次重试...")
+                            item["retry_count"] = retry_count + 1
+                            self.sync_queue.put((priority, self._next_seq(), item))
+                            self.sync_queue.task_done()
+                            task_done_manually = True
+                            
+                            self.logger.info(
+                                f"[RowStatus] {spell} 同步重试中",
+                                extra={
+                                    "event": "row_status",
+                                    "data": {
+                                        "rows": [
+                                            {
+                                                "item_id": str(spell).lower(),
+                                                "status": "warning",
+                                                "phase": "sync_retry",
+                                                "error": f"第 {retry_count + 1} 次重试中",
+                                            }
+                                        ]
+                                    },
+                                },
+                            )
+                            # 休眠一小段时间避免重试风暴
+                            time.sleep(1.0)
+                            continue
+
+                        # 重试超限，写回 5=failed 并通知前端
                         if self.db_path:
                             ok = set_note_sync_status(voc_id, 5, db_path=self.db_path, match_confidence=match_confidence, match_reason=reason or "sync_incomplete")
                         else:
                             ok = set_note_sync_status(voc_id, 5, match_confidence=match_confidence, match_reason=reason or "sync_incomplete")
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=5 写回未命中")
-                        self.logger.warning(f"⚠️ {spell} 墨墨同步未完成，已标记 failed")
+                        self.logger.warning(f"⚠️ {spell} 墨墨同步多次重试失败，已标记 failed")
                         self.logger.info(
                             f"[RowStatus] {spell} 同步未完成",
                             extra={
@@ -540,6 +589,6 @@ class SyncManager:
         # 确保 worker 退出后残余缓冲也被刷写
         self._flush_pending_writes()
         if self.sync_worker_thread.is_alive():
-            self.logger.warning("后台同步线程未在 10 秒内结束")
+            self.logger.warning("后台同步线程未在 5 秒内结束")
         else:
             self.logger.info("✅ 后台同步线程已平滑退出")

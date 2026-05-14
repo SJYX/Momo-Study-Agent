@@ -218,7 +218,7 @@ export default function TodayTasksV2() {
                               {isRunning && <RotateCw size={10} className="animate-spin" />}
                               {rowDisplayLabel(state)}
                             </div>
-                            {phase && phase !== status && (
+                            {phase && phase !== status && rowPhaseLabel(phase) !== rowDisplayLabel(state) && (
                               <span className={`text-[10px] font-normal ml-0.5 ${
                                 status === 'error' ? 'text-error' :
                                 status === 'warning' ? 'text-accent' :

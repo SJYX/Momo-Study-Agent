@@ -76,7 +76,7 @@ def get_word_states_in_batch(
     机制:
     - 单条 LEFT JOIN: processed_words (p) / ai_word_notes (n)
     - 自动 500 分批，避免 SQL 过长
-    - 若 auto_backfill=True 且发现历史漏标（processed=False 但 sync_status ∈ {0,3,4}），
+    - 若 auto_backfill=True 且发现历史漏标（processed=False 但 sync_status == 0），
       异步入队 backfill（O3 优化）
 
     实现细节:
@@ -465,7 +465,7 @@ def _enqueue_backfill_processed(
 ) -> bool:
     """异步入队：将历史漏标词加入到 processed_words（O3 优化）。
 
-    调用方: get_word_states_in_batch，在发现"sync_status ∈ {0,3,4} 但 processed_words 无该词"时触发。
+    调用方: get_word_states_in_batch，在发现"sync_status == 0 但 processed_words 无该词"时触发。
 
     实现: 入队一个 BATCH INSERT 任务到写队列，后台守护线程处理。
 
@@ -549,8 +549,8 @@ def _get_word_states_batch_internal(
         state = derive_state(processed, sync_status)
         result[voc_id] = state.value
 
-        # 历史漏标检测：processed=False 但 sync_status ∈ {0,3,4}
-        if auto_backfill and not processed and sync_status in (0, 3, 4):
+        # 历史漏标检测：processed=False 但 sync_status == 0
+        if auto_backfill and not processed and sync_status == 0:
             to_backfill.append(voc_id)
 
     # 入队 backfill 任务（异步，不阻塞当前查询）

@@ -297,7 +297,9 @@ class MaiMemoAPI:
             "sync_status": 0,
             "has_remote_interpretation": False,
             "matched_text": "",
+            "matched_id": "",
             "first_text": "",
+            "first_id": "",
             "reason": "empty",
             "match_confidence": None,
         }
@@ -307,39 +309,45 @@ class MaiMemoAPI:
             return info
 
         items = res.get("data", {}).get("interpretations", [])
-        texts: List[str] = []
+        texts: List[Dict[str, str]] = []
         for item in items:
             text = self._extract_interpretation_text(item)
+            item_id = str(item.get("id", ""))
             if text.strip():
-                texts.append(text)
+                texts.append({"text": text, "id": item_id})
 
         if not texts:
             return info
 
         info["has_remote_interpretation"] = True
-        info["first_text"] = texts[0]
+        info["first_text"] = texts[0]["text"]
+        info["first_id"] = texts[0]["id"]
 
         if expected_text:
             normalized_expected = self._normalize_interpretation_text(expected_text)
-            best_match = {"text": "", "ratio": 0.0}
-            for text in texts:
+            best_match = {"text": "", "id": "", "ratio": 0.0}
+            for text_info in texts:
+                text = text_info["text"]
+                item_id = text_info["id"]
                 normalized_text = self._normalize_interpretation_text(text)
                 if normalized_text == normalized_expected:
                     info.update({
                         "sync_status": 1,
                         "matched_text": text,
+                        "matched_id": item_id,
                         "reason": "matched",
                         "match_confidence": 1.0,
                     })
                     return info
                 ratio = self._similarity(normalized_text, normalized_expected)
                 if ratio > best_match["ratio"]:
-                    best_match = {"text": text, "ratio": ratio}
+                    best_match = {"text": text, "id": item_id, "ratio": ratio}
 
             if best_match["ratio"] >= similarity_threshold:
                 info.update({
                     "sync_status": 1,
                     "matched_text": best_match["text"],
+                    "matched_id": best_match["id"],
                     "reason": "similar",
                     "match_confidence": round(best_match["ratio"], 4),
                 })
@@ -354,7 +362,8 @@ class MaiMemoAPI:
 
         info.update({
             "sync_status": 1,
-            "matched_text": texts[0],
+            "matched_text": texts[0]["text"],
+            "matched_id": texts[0]["id"],
             "reason": "found",
             "match_confidence": None,
         })
@@ -414,7 +423,7 @@ class MaiMemoAPI:
         word标识 = spell if spell else f"voc_id:{voc_id}"
         expected_text = self._normalize_interpretation_text(local_reference or interpretation)
 
-        def _finish(sync_status: int, reason: str, cloud_text: str = "", match_confidence: Optional[float] = None, match_reason: Optional[str] = None):
+        def _finish(sync_status: int, reason: str, cloud_text: str = "", match_confidence: Optional[float] = None, match_reason: Optional[str] = None, cloud_id: str = ""):
             result = {
                 "success": sync_status == 1,
                 "sync_status": sync_status,
@@ -422,6 +431,7 @@ class MaiMemoAPI:
                 "expected_interpretation": interpretation,
                 "local_reference": local_reference or "",
                 "cloud_interpretation": cloud_text or "",
+                "cloud_id": cloud_id,
                 "match_confidence": match_confidence,
                 "match_reason": match_reason,
             }
@@ -458,6 +468,7 @@ class MaiMemoAPI:
                 status_info.get("matched_text") or status_info.get("first_text", ""),
                 match_confidence=status_info.get("match_confidence"),
                 match_reason=status_info.get("reason"),
+                cloud_id=status_info.get("matched_id") or status_info.get("first_id", ""),
             )
 
         # 如果已达到创建限制，先尝试核验远端现状
@@ -480,6 +491,7 @@ class MaiMemoAPI:
                 1, status_info["reason"], status_info.get("matched_text", ""),
                 match_confidence=status_info.get("match_confidence"),
                 match_reason=status_info.get("reason"),
+                cloud_id=status_info.get("matched_id", ""),
             )
 
         # 云端与本地冲突：标记冲突状态
@@ -489,6 +501,7 @@ class MaiMemoAPI:
                 2, status_info["reason"], status_info.get("first_text", ""),
                 match_confidence=status_info.get("match_confidence"),
                 match_reason=status_info.get("reason"),
+                cloud_id=status_info.get("first_id", ""),
             )
         
         # 云端无一致释义

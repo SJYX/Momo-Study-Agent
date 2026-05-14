@@ -2,7 +2,7 @@
 
 5 个互斥状态：
     NOT_STARTED  — processed_words 无该 voc_id（判重 = 此态）
-    LOCAL_READY  — processed + sync_status ∈ {0, 3, 4, NULL}（同步队列深度 = 此态计数）
+    LOCAL_READY  — processed + sync_status ∈ {0, NULL}（同步队列深度 = 此态计数）
     SYNCED       — sync_status = 1
     CONFLICT     — sync_status = 2（异常态，需用户处理）
     FAILED       — sync_status = 5（异常态，不可重试）
@@ -36,11 +36,11 @@ def derive_state(processed: bool, sync_status: Optional[int]) -> WordState:
         0    — unsynced（本地已生成，未同步）
         1    — synced（远端已确认）
         2    — conflict（远端释义不一致）
-        3    — queued（已入同步队列）
-        4    — syncing（正在远端同步）
+        3    — queued（已废弃，代码内统一折叠为 0 处理）
+        4    — syncing（已废弃，代码内统一折叠为 0 处理）
         5    — failed（不可重试失败）
 
-    历史漏标兼容：当 sync_status ∈ {0,1,3,4} 但 processed=False 时，
+    历史漏标兼容：当 sync_status ∈ {0,1} 但 processed=False 时，
     word_repo 内部会异步 backfill processed_words（O3）。
     """
     if sync_status == 2:
@@ -49,7 +49,7 @@ def derive_state(processed: bool, sync_status: Optional[int]) -> WordState:
         return WordState.FAILED
     if sync_status == 1:
         return WordState.SYNCED
-    if processed or sync_status in (0, 3, 4):
+    if processed or sync_status == 0:
         return WordState.LOCAL_READY
     return WordState.NOT_STARTED
 
@@ -73,7 +73,7 @@ def state_to_where_clause(state: WordState) -> Tuple[str, Tuple]:
         return ("n.sync_status = ?", (1,))
     if state == WordState.LOCAL_READY:
         return (
-            "(p.voc_id IS NOT NULL OR n.sync_status IN (0, 3, 4)) "
+            "(p.voc_id IS NOT NULL OR n.sync_status = 0) "
             "AND (n.sync_status IS NULL OR n.sync_status NOT IN (1, 2, 5))",
             (),
         )

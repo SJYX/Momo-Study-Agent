@@ -188,6 +188,27 @@ async def get_today(
             items_raw = (res or {}).get("data", {}).get("today_items", [])
             # 同步保存一份基础 raw 列表到本地磁盘，供冷启动快速重载
             _save_today_items_raw(user, items_raw)
+
+            # 6.2 进度历史：在每次获取最新今日任务后补齐 word_progress_history
+            if items_raw:
+                try:
+                    from database.progress_repo import log_progress_snapshots
+                    snapshots = []
+                    for it in items_raw:
+                        vid = it.get("voc_id") or it.get("id")
+                        if not vid: continue
+                        snapshots.append({
+                            "voc_id": vid,
+                            "short_term_familiarity": it.get("familiarity_short", 0) or it.get("voc_familiarity", 0),
+                            "long_term_familiarity": it.get("familiarity_long", 0),
+                            "review_count": it.get("review_count", 0)
+                        })
+                    # 这里必须确保 DB global 切过去
+                    from web.backend.user_context import UserContextManager
+                    UserContextManager.prepare_for_task(ctx)
+                    log_progress_snapshots(snapshots, db_path=ctx.db_path)
+                except Exception as e:
+                    ctx.logger.warning(f"⚠️ 进度历史写入失败: {e}", module="study_router")
         except asyncio.TimeoutError:
             # 云端抖动时优先保证接口可用：回退到磁盘缓存（可接受过期）
             stale_items = _load_today_items_raw(user)
@@ -211,7 +232,9 @@ async def get_today(
     from database.word_state import WordState
 
     word_service = WordService(logger=ctx.logger)
-    normalized_items = word_service.normalize_cloud_items(items_raw)
+    normalized_items, discarded_count = word_service.normalize_cloud_items(items_raw)
+    if discarded_count > 0:
+        ctx.logger.info(f"[Web] get_today 过滤脏数据 {discarded_count} 词", module="study_router")
     enriched_items = await run_in_threadpool(word_service.enrich_with_states, normalized_items)
 
     state_to_status = {

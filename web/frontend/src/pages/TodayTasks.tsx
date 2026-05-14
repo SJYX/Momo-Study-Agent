@@ -220,7 +220,7 @@ export default function TodayTasks() {
                               {status === 'running' && <Loader2 size={10} className="animate-spin" />}
                               {rowDisplayLabel(state)}
                             </div>
-                            {phase && phase !== status && (
+                            {phase && phase !== status && rowPhaseLabel(phase) !== rowDisplayLabel(state) && (
                               <span className={`text-[10px] font-normal ml-0.5 ${status === 'error' ? 'text-red-400' : status === 'warning' ? 'text-amber-500' : status === 'done' ? 'text-green-500/80' : 'text-blue-400'}`}>
                                 {rowPhaseLabel(phase)}
                               </span>

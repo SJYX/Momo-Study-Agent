@@ -11,7 +11,7 @@ import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
 import DegradedBanner from '../components/ui/DegradedBanner'
 import type { SyncStatusResponse } from '../api/types'
-import { RefreshCcw, Loader2, AlertTriangle, RotateCcw } from 'lucide-react'
+import { RefreshCcw, Loader2, AlertTriangle, RotateCcw, AlertOctagon } from 'lucide-react'
 
 export default function SyncStatus() {
   const queryClient = useQueryClient()
@@ -48,16 +48,29 @@ export default function SyncStatus() {
     onError: () => setRetryResult(''),
   })
 
+  const retryFailedMutation = useMutation({
+    mutationFn: () => apiPost<{ retried: number; total_failed: number; message?: string }>('/api/sync/retry_failed'),
+    onSuccess: (res) => {
+      if (res.data) {
+        setRetryResult(`已发起 ${res.data.retried} 次失败重试`)
+      }
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ['sync_status'] }), 1500)
+    },
+    onError: () => setRetryResult(''),
+  })
+
   const queueDepth = data?.queue_depth ?? 0
   const conflictCount = data?.conflict_count ?? 0
   const conflicts = data?.conflicts ?? []
+  const failedCount = data?.failed_count ?? 0
+  const failedItems = data?.failed_items ?? []
 
   // 错误展示：query / 任一 mutation 出错都显示
   const errorMsg = (
-    error || flushMutation.error || retryMutation.error
-      ? String((error ?? flushMutation.error ?? retryMutation.error) instanceof Error
-          ? (error ?? flushMutation.error ?? retryMutation.error as Error).message
-          : (error ?? flushMutation.error ?? retryMutation.error))
+    error || flushMutation.error || retryMutation.error || retryFailedMutation.error
+      ? String((error ?? flushMutation.error ?? retryMutation.error ?? retryFailedMutation.error) instanceof Error
+          ? (error ?? flushMutation.error ?? retryMutation.error ?? retryFailedMutation.error as Error).message
+          : (error ?? flushMutation.error ?? retryMutation.error ?? retryFailedMutation.error))
       : ''
   )
 
@@ -78,6 +91,16 @@ export default function SyncStatus() {
               className="flex items-center gap-1 px-3 py-1.5 bg-orange-500 text-white rounded text-sm hover:bg-orange-600 disabled:opacity-50">
               {retryMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
               复查云端状态
+            </button>
+          )}
+          {data && failedCount > 0 && (
+            <button
+              onClick={() => retryFailedMutation.mutate()}
+              disabled={retryFailedMutation.isPending}
+              title="重试同步失败的记录"
+              className="flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">
+              {retryFailedMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              重试失败记录
             </button>
           )}
           <button onClick={() => flushMutation.mutate()} disabled={flushMutation.isPending}
@@ -106,9 +129,36 @@ export default function SyncStatus() {
             <thead className="bg-gray-50"><tr>
               <th className="text-left px-4 py-2 font-medium text-gray-600">单词</th>
               <th className="text-left px-4 py-2 font-medium text-gray-600">释义</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">匹配度</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">差异原因</th>
               <th className="text-left px-4 py-2 font-medium text-gray-600">创建时间</th>
             </tr></thead>
-            <tbody>{conflicts.map(c => (
+            <tbody>{conflicts.map((c: any) => (
+              <tr key={c.voc_id} className="border-t hover:bg-gray-50">
+                <td className="px-4 py-2 font-medium">{c.spelling}</td>
+                <td className="px-4 py-2 text-gray-600 max-w-xs truncate">{c.basic_meanings || '—'}</td>
+                <td className="px-4 py-2 text-gray-600">{c.match_confidence !== null && c.match_confidence !== undefined ? `${(c.match_confidence * 100).toFixed(1)}%` : '—'}</td>
+                <td className="px-4 py-2 text-gray-600 text-xs">{c.match_reason || '—'}</td>
+                <td className="px-4 py-2 text-gray-400 text-xs">{c.created_at}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+
+      {data && failedItems.length > 0 && (
+        <div className="bg-white rounded-lg shadow overflow-hidden mt-4">
+          <div className="px-4 py-2 bg-red-100 text-red-800 text-sm font-medium border-b flex items-center gap-2">
+            <AlertOctagon size={14} />
+            失败记录（sync_status=5）
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50"><tr>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">单词</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">释义</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">创建时间</th>
+            </tr></thead>
+            <tbody>{failedItems.map((c: any) => (
               <tr key={c.voc_id} className="border-t hover:bg-gray-50">
                 <td className="px-4 py-2 font-medium">{c.spelling}</td>
                 <td className="px-4 py-2 text-gray-600 max-w-xs truncate">{c.basic_meanings || '—'}</td>
@@ -119,14 +169,14 @@ export default function SyncStatus() {
         </div>
       )}
 
-      {data && queueDepth > 0 && conflicts.length === 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-blue-700 text-sm">
+      {data && queueDepth > 0 && conflicts.length === 0 && failedItems.length === 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-blue-700 text-sm mt-4">
           📤 有 {queueDepth} 条待同步记录正在处理中...
         </div>
       )}
 
-      {data && conflicts.length === 0 && queueDepth === 0 && (
-        <div className="text-center py-12 text-gray-400">✅ 无冲突记录，同步队列为空</div>
+      {data && conflicts.length === 0 && failedItems.length === 0 && queueDepth === 0 && (
+        <div className="text-center py-12 text-gray-400 mt-4">✅ 无冲突或失败记录，同步队列为空</div>
       )}
     </div>
   )

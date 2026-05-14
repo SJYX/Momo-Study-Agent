@@ -50,11 +50,14 @@ async def sync_status(
 
     queue_depth = count_by_state(WordState.LOCAL_READY, db_path=ctx.db_path)
     conflicts = list_by_state(WordState.CONFLICT, limit=limit, offset=0, db_path=ctx.db_path)
+    failed_items = list_by_state(WordState.FAILED, limit=limit, offset=0, db_path=ctx.db_path)
 
     return ok_response({
         "queue_depth": queue_depth,
         "conflict_count": len(conflicts),
         "conflicts": conflicts,
+        "failed_count": len(failed_items),
+        "failed_items": failed_items,
     }, user_id=user)
 
 
@@ -114,3 +117,48 @@ async def retry_conflicts(
             continue
 
     return ok_response({"retried": retried, "total_conflicts": len(conflicts)}, user_id=user)
+
+
+@router.post("/retry_failed", response_model=ApiResponse[SyncRetryResponse])
+async def retry_failed(
+    ctx = Depends(get_user_context),
+    workflow=Depends(get_workflow),
+):
+    """重试所有失败的同步项（sync_status=5），将其重新入队。"""
+    from core.feature_flags import is_enabled
+    from database.utils import clean_for_maimemo
+    from database.word_repo import list_by_state
+    from database.word_state import WordState
+
+    user = ctx.profile_name
+
+    if not is_enabled("BACKGROUND_RETRY_ENABLED", default=True):
+        return error_response(
+            "BACKGROUND_RETRY_DISABLED",
+            "后台重试功能当前已禁用（BACKGROUND_RETRY_ENABLED=False）",
+            user_id=user,
+        )
+
+    failed_items = list_by_state(WordState.FAILED, limit=5000, offset=0, db_path=ctx.db_path)
+
+    if not failed_items:
+        return ok_response({"retried": 0, "message": "无失败项需重试"}, user_id=user)
+
+    retried = 0
+    for f in failed_items:
+        try:
+            brief = clean_for_maimemo(f.get("basic_meanings", ""))
+            workflow.sync_manager.queue_maimemo_sync(
+                f["voc_id"],
+                f.get("spelling", ""),
+                brief,
+                ["雅思"],
+                force_sync=True,
+                priority=Priority.P2,
+                profile_name=user,
+            )
+            retried += 1
+        except Exception:
+            continue
+
+    return ok_response({"retried": retried, "total_failed": len(failed_items)}, user_id=user)

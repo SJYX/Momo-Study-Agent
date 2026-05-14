@@ -51,6 +51,7 @@ function rowKeyOf(spelling: string | undefined): string {
 export function isExecutable(state: RowState | undefined): boolean {
   if (!state) return true
   if (state.phase === 'skipped') return false
+  if (state.phase === 'sync_conflict') return false // 冲突项需要手动处理，不属于自动化可执行项
   if (state.status === 'done') return false
   return true
 }

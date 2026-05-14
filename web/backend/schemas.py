@@ -372,6 +372,8 @@ class SyncStatusItem(BaseModel):
     sync_status: int = 0
     basic_meanings: str = ""
     created_at: str = ""
+    match_confidence: Optional[float] = None
+    match_reason: Optional[str] = None
 
 
 class SyncConflict(BaseModel):
@@ -380,12 +382,16 @@ class SyncConflict(BaseModel):
     basic_meanings: str = ""
     sync_status: int = 0
     created_at: str = ""
+    match_confidence: Optional[float] = None
+    match_reason: Optional[str] = None
 
 
 class SyncStatusResponse(BaseModel):
     queue_depth: int = 0
     conflict_count: int = 0
     conflicts: list[SyncConflict] = Field(default_factory=list)
+    failed_count: int = 0
+    failed_items: list[SyncConflict] = Field(default_factory=list)
     # PLAYBOOK A4 Kill Switch 降级指示：当 SYNC_STATUS_HEAVY_QUERY_ENABLED=False 时为 true
     degraded: bool = False
     degraded_reason: Optional[str] = None
@@ -398,6 +404,7 @@ class SyncFlushResponse(BaseModel):
 class SyncRetryResponse(BaseModel):
     retried: int = 0
     total_conflicts: Optional[int] = None
+    total_failed: Optional[int] = None
     message: Optional[str] = None
 
 

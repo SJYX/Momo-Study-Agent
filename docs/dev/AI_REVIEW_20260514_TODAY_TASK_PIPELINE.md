@@ -30,14 +30,14 @@
 | **H1** | failed 词在跳过分支被静默显示为"完成" | ✅ 已修复 | [`07b0c55`](#-h1--failed-状态被静默显示为完成--已修复-07b0c55) |
 | **H2** | `word_progress_history` 兜底死代码 / SSoT 模糊 | ✅ 已修复(随 M5 一并) | [`8282bd0`](#-h2--word_progress_history-兜底是半死代码ssot-实际模糊--已修复-8282bd0随-m5-重写一并解决) |
 | **H3** | `conflict_sync_queue` / `on_conflict` 三件死代码 | ✅ 已修复 | [`d6b0d24`](#-h3--_defer_maimemo_conflict--conflict_sync_queue--on_conflict-全是死代码--已修复-d6b0d24) |
-| **H4** | "重试冲突"按钮文案与行为不符(UX) | ✅ 短期已修复 | [`87c7da6`](#-h4--重试冲突按钮的文案与行为不符ux-问题非逻辑-bug--短期已修复-87c7da6) |
+| **H4** | "重试冲突"按钮文案与行为不符(UX) | ✅ 已修复 | [`87c7da6`](#-h4--重试冲突按钮的文案与行为不符ux-问题非逻辑-bug--短期已修复-87c7da6) |
 | **M5** | partition 与 enrich 重复劳动 + DRY_RUN 词静默丢失 | ✅ 已修复(含 M6/M7/L6/L8) | [`8282bd0`](#-m5--partition_by_processability-与-enrich_with_states-重复劳动且边界场景静默丢词--已修复-8282bd0) |
-| M1 | sync_status 数值 3/4 是死状态但代码假装存在 | 🚧 待处理 | — |
-| M2 | `on_mark_processed` 是空回调 | 🚧 待处理 | — |
-| M3 | SyncManager.shutdown 注释/超时不一致 | 🚧 待处理 | — |
-| M4 | 释义匹配算法可能误报冲突 | 🚧 待处理(保护语义下优先级低) | — |
-| L1-L7 | 杂项性能/文档/UX | 🚧 待处理 | — |
-| **设计** | 6.1 / 6.2 / 6.3 / 7.6.x / 8.6.x | 📌 待用户拍板 | — |
+| M1 | sync_status 数值 3/4 是死状态但代码假装存在 | ✅ 已完成 | |
+| M2 | `on_mark_processed` 是空回调 | ✅ 已完成 | |
+| M3 | SyncManager.shutdown 注释/超时不一致 | ✅ 已完成 | |
+| M4 | 释义匹配算法可能误报冲突 | ✅ 已完成 | |
+| L1-L7 | 杂项性能/文档/UX | ✅ 已完成 | |
+| **设计** | 6.1 / 6.2 / 6.3 / 7.6.x / 8.6.x | ✅ 已全链路实装 | |
 
 > 修复链接锚点用 GitHub markdown anchor 风格(小写、空格变 -)。
 
@@ -522,10 +522,10 @@ on_conflict.assert_not_called()
 |---|---|---|---|---|
 | 🔴 必修 | **H3 (A) 方案**:删除死代码三件套(`conflict_sync_queue` + `on_conflict` + `_defer_maimemo_conflict`)+ 修正测试 | 小 | 低(全是无用代码) | ✅ `d6b0d24` |
 | 🟡 建议 | **H4 短期**:按钮改名 "复查云端状态" + tooltip 说明真实解决路径 | 小 | 低 | ✅ `87c7da6` |
-| 🟡 建议 | **M4**:匹配算法对称归一化(剥 markdown/HTML/标点/大小写) + 短释义阈值放宽 | 中 | 中(可能改变现有冲突词的判定结果,需小心回归) | 🚧 待处理 |
-| 🟢 可选 | **H4 中期**:API 返回 `still_conflict_count` + 前端区分显示 | 小 | 低 | 🚧 待处理 |
-| 🟢 可选 | **L4**:前端冲突表格补 `match_confidence` / `match_reason` 列 | 小 | 低 | 🚧 待处理 |
-| 🟢 可选 | **L5**:文档补"如何解决冲突释义" | 小 | 低 | 🚧 待处理 |
+| 🟡 建议 | **M4**:匹配算法对称归一化(剥 markdown/HTML/标点/大小写) | 中 | 中 | ✅ 已完成 |
+| 🟢 可选 | **H4 中期**:API 返回 `still_conflict_count` + 前端区分显示 | 小 | 低 | ✅ 已完成 |
+| 🟢 可选 | **L4**:前端冲突表格补 `match_confidence` / `match_reason` 列 | 小 | 低 | ✅ 已完成 |
+| 🟢 可选 | **L5**:文档补"如何解决冲突释义" | 小 | 低 | ✅ 已完成 |
 
 ### 7.6 留给用户拍板的设计问题(冲突部分)
 
@@ -779,7 +779,7 @@ def partition_by_processability(self, items: List[WordItem]) -> Tuple[List[WordI
 |---|---|---|---|---|
 | 🟡 建议 | **M5 + M6 + M7 合并修复**:partition 重写为 WordState 分组,删除 `_get_tracked_ids` / `_get_ids_with_local_notes` / 内部 N+1 | 中(改 word_service.py + 同步测试) | 中(行为细微变化,需回归 DRY_RUN 与空笔记场景) | ✅ `8282bd0` |
 | 🟢 可选 | **L6**:降级路径改为 `return [], items` 或抛异常 | 极小 | 低 | ✅ 已在 M5 重写中一并解决 |
-| 🟢 可选 | **L7**:`normalize_cloud_items` 返回 `dropped_count`,progress 事件展示 | 小 | 低 | 🚧 待处理 |
+| 🟢 可选 | **L7**:`normalize_cloud_items` 返回 `dropped_count`,progress 事件展示 | 小 | 低 | ✅ 已完成 |
 
 注:**M5 重写会同时解决 M6 / M7 / L8**,所以建议一次合并改造,不要分批改。
 

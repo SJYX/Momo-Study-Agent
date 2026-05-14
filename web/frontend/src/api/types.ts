@@ -264,12 +264,16 @@ export interface SyncConflict {
   basic_meanings?: string
   sync_status?: number
   created_at?: string
+  match_confidence?: number | null
+  match_reason?: string | null
 }
 
 export interface SyncStatusResponse {
   queue_depth?: number
   conflict_count?: number
   conflicts?: SyncConflict[]
+  failed_count?: number
+  failed_items?: SyncConflict[]
   degraded?: boolean
   degraded_reason?: string | null
 }
@@ -281,6 +285,7 @@ export interface SyncFlushResponse {
 export interface SyncRetryResponse {
   retried?: number
   total_conflicts?: number | null
+  total_failed?: number | null
   message?: string | null
 }
 

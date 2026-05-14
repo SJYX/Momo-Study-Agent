@@ -43,6 +43,7 @@ class UserContextManager:
         self._lock = threading.Lock()
         # warmup 三态：not_started → in_progress → done
         self._warmup_state: Dict[str, str] = {}
+        self._first_warmup_done: Dict[str, bool] = {}
 
     def get(self, profile_name: str) -> UserContext:
         """获取指定 profile 的 context，不存在则创建。"""
@@ -247,8 +248,17 @@ class UserContextManager:
         if not unsynced:
             return
 
+        profile = ctx.profile_name
+        is_first = False
+        with self._lock:
+            if not self._first_warmup_done.get(profile, False):
+                is_first = True
+                self._first_warmup_done[profile] = True
+        
+        target_priority = Priority.P1 if is_first else Priority.P3
+
         ctx.logger.info(
-            f"发现 {len(unsynced)} 条待同步笔记，正在后台入队...",
+            f"发现 {len(unsynced)} 条待同步笔记，正在后台入队 (Priority: {target_priority.name})...",
             module="user_context",
         )
         for note in unsynced:
@@ -258,7 +268,7 @@ class UserContextManager:
                 clean_for_maimemo(note.get("basic_meanings", "")),
                 ["雅思"],
                 force_sync=True,
-                priority=Priority.P3,
+                priority=target_priority,
                 profile_name=ctx.profile_name,
             )
 

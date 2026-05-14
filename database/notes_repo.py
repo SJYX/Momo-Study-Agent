@@ -129,13 +129,20 @@ def build_note_upsert_args(
     if sync_status is None:
         sync_status = 0 if content_origin == "ai_generated" else 1
 
+    basic_meanings_clean = _clean_payload_field(payload, "basic_meanings")
+    
+    # 8.6.1: DB 兜底拒绝空入库。若核心内容为空且非明确的 failed 态，强制转为 failed，避免空数据污染查重与同步链路
+    if not basic_meanings_clean and sync_status != 5:
+        sync_status = 5
+        match_reason = "empty_content_rejected"
+
     if timestamp is None:
         timestamp = get_timestamp_with_tz()
 
     return (
         str(voc_id),
         payload.get("spelling", ""),
-        _clean_payload_field(payload, "basic_meanings"),
+        basic_meanings_clean,
         _clean_payload_field(payload, "ielts_focus"),
         _clean_payload_field(payload, "collocations"),
         _clean_payload_field(payload, "traps"),
@@ -276,14 +283,29 @@ def get_word_notes_in_batch(voc_ids: list[str], db_path: Optional[str] = None, s
         return _rows_to_map(rows)
 
 
-def set_note_sync_status(voc_id: str, sync_status: int, db_path: Optional[str] = None, *, match_confidence: Optional[float] = None, match_reason: Optional[str] = None) -> bool:
-    """更新 sync_status，同时可选写入 match_confidence 和 match_reason。"""
+def set_note_sync_status(
+    voc_id: str,
+    sync_status: int,
+    db_path: Optional[str] = None,
+    *,
+    match_confidence: Optional[float] = None,
+    match_reason: Optional[str] = None,
+    last_synced_content: Optional[str] = None,
+) -> bool:
+    """更新 sync_status，同时可选写入 match_confidence, match_reason 和 last_synced_content。"""
     try:
-        return dispatch_write(
-            "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?",
-            (int(sync_status), match_confidence, match_reason, get_timestamp_with_tz(), str(voc_id)),
-            db_path=db_path,
-        )
+        if last_synced_content is not None:
+            return dispatch_write(
+                "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, last_synced_content = ?, updated_at = ? WHERE voc_id = ?",
+                (int(sync_status), match_confidence, match_reason, last_synced_content, get_timestamp_with_tz(), str(voc_id)),
+                db_path=db_path,
+            )
+        else:
+            return dispatch_write(
+                "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?",
+                (int(sync_status), match_confidence, match_reason, get_timestamp_with_tz(), str(voc_id)),
+                db_path=db_path,
+            )
     except (sqlite3.DatabaseError, OSError, ValueError) as e:
         _log_repo_failure("set_note_sync_status", e)
         return False
@@ -300,22 +322,22 @@ def mark_note_sync_conflict(voc_id: str, db_path: Optional[str] = None) -> bool:
     return set_note_sync_status(voc_id, 2, db_path=db_path)
 
 
-def update_sync_status_batch(items: List[Tuple[int, str]], db_path: Optional[str] = None, *, match_items: Optional[List[Tuple[int, Optional[float], Optional[str], str]]] = None) -> bool:
+def update_sync_status_batch(items: List[Tuple[int, str]], db_path: Optional[str] = None, *, match_items: Optional[List[Tuple[int, Optional[float], Optional[str], Optional[str], str]]] = None) -> bool:
     """批量合并更新 sync_status。
 
     items 格式: [(sync_status, voc_id), ...]（兼容旧调用）
-    match_items 格式: [(sync_status, match_confidence, match_reason, voc_id), ...]
+    match_items 格式: [(sync_status, match_confidence, match_reason, last_synced_content, voc_id), ...]
     优先使用 match_items（含置信度）。
     """
     if match_items:
         ts = get_timestamp_with_tz()
         batch_args = [
-            (int(s), mc, mr, ts, str(vid))
-            for s, mc, mr, vid in match_items
+            (int(s), mc, mr, lsc, ts, str(vid))
+            for s, mc, mr, lsc, vid in match_items
         ]
         try:
             return dispatch_batch_write(
-                "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, updated_at = ? WHERE voc_id = ?",
+                "UPDATE ai_word_notes SET sync_status = ?, match_confidence = ?, match_reason = ?, last_synced_content = ?, updated_at = ? WHERE voc_id = ?",
                 batch_args,
                 db_path=db_path,
                 queue_full_log=lambda m: _debug_log(f"批量更新 sync_status+confidence {m}", level="WARNING", module=_LOG_MOD),
