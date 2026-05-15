@@ -181,8 +181,17 @@ class StudyWorkflow:
         # 6.2: 记录进度快照以供薄弱词筛选使用
         try:
             from database.progress_repo import log_progress_snapshots
-            log_progress_snapshots(normalized_items)
-            self.logger.info(f"✅ 成功记录 {len(normalized_items)} 个单词的进度历史快照")
+            # 将 WordItem 转换为 log_progress_snapshots 预期的 dict 格式 (ProgressSnapshot)
+            snapshots = [
+                {
+                    "voc_id": item.voc_id,
+                    "short_term_familiarity": item.short_term_familiarity,
+                    "review_count": item.review_count,
+                }
+                for item in normalized_items
+            ]
+            log_progress_snapshots(snapshots)
+            self.logger.info(f"✅ 成功记录 {len(snapshots)} 个单词的进度历史快照")
         except Exception as e:
             self.logger.error(f"❌ 记录进度历史快照失败: {e}")
 

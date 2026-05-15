@@ -371,7 +371,6 @@ class SyncManager:
                         # 说明云端未被用户手动修改，而是本系统之前的旧版本，允许强推更新。
                         is_local_update = False
                         if last_synced_content and cloud_id:
-                            from database.utils import clean_for_maimemo
                             if clean_for_maimemo(cloud_text) == clean_for_maimemo(last_synced_content):
                                 is_local_update = True
                         

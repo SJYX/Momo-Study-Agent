@@ -120,15 +120,23 @@ def mark_processed_batch(items: List[Tuple[str, str]], db_path: Optional[str] = 
 
 @with_read_session(default_return=0)
 def log_progress_snapshots(
-    words: List[ProgressSnapshot],
+    words: List[Any],
     db_path: Optional[str] = None,
     session: DBSession = None,
 ) -> int:
+    """记录单词进度快照。兼容 WordItem 对象与字典。"""
     if not words:
         return 0
 
+    def _get(obj, key, default=0):
+        if hasattr(obj, key):
+            return getattr(obj, key)
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return default
+
     started = time.time()
-    vids = [str(w["voc_id"]) for w in words]
+    vids = [str(_get(w, "voc_id")) for w in words]
     ph = ",".join(["?"] * len(vids))
 
     itm_rows = session.fetchall(f"SELECT voc_id, it_level FROM ai_word_notes WHERE voc_id IN ({ph})", vids)
@@ -146,12 +154,12 @@ def log_progress_snapshots(
 
     ins: List[Tuple[Any, ...]] = []
     for w in words:
-        v = str(w["voc_id"])
-        nf = w.get("short_term_familiarity", 0) or w.get("voc_familiarity", 0)
-        nr = w.get("review_count", 0)
+        v = str(_get(w, "voc_id"))
+        nf = _get(w, "short_term_familiarity", 0) or _get(w, "voc_familiarity", 0)
+        nr = _get(w, "review_count", 0)
         l = lh.get(v)
         if not l or abs(l[0] - float(nf)) > 0.01 or l[1] != int(nr):
-            ins.append((v, nf, w.get("long_term_familiarity", 0), nr, itm.get(v, 0)))
+            ins.append((v, nf, _get(w, "long_term_familiarity", 0), nr, itm.get(v, 0)))
 
     if ins:
         ok = dispatch_batch_write(
