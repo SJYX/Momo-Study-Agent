@@ -44,6 +44,17 @@ from .utils import (
 
 _LOG_MOD = "database.momo_words"
 
+# ai_word_notes SELECT * 列序（裸 tuple 回退用）
+_NOTE_COLUMNS = [
+    "voc_id", "spelling", "basic_meanings", "ielts_focus", "collocations",
+    "traps", "synonyms", "discrimination", "example_sentences", "memory_aid",
+    "word_ratings", "raw_full_text", "prompt_tokens", "completion_tokens",
+    "total_tokens", "batch_id", "original_meanings", "maimemo_context",
+    "it_level", "it_history", "updated_at", "content_origin",
+    "content_source_db", "content_source_scope", "sync_status",
+    "match_confidence", "match_reason", "last_synced_content",
+]
+
 
 def _classify_db_error(e: BaseException) -> str:
     """对常见数据库异常分类，返回结构化标签便于日志检索。"""
@@ -241,7 +252,8 @@ def get_unsynced_notes(db_path: Optional[str] = None, session: DBSession = None)
 
 @with_read_session(default_return=None)
 def get_word_note(voc_id: str, db_path: Optional[str] = None, session: DBSession = None) -> Optional[Dict[str, Any]]:
-    return row_to_dict(session.fetchone("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),)))
+    return row_to_dict(session.fetchone("SELECT * FROM ai_word_notes WHERE voc_id = ?", (str(voc_id),)),
+                       fallback_columns=_NOTE_COLUMNS)
 
 
 def get_local_word_note(voc_id: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -259,7 +271,7 @@ def get_word_notes_in_batch(voc_ids: list[str], db_path: Optional[str] = None, s
         for row in rows:
             if not row:
                 continue
-            d = row_to_dict(row)
+            d = row_to_dict(row, fallback_columns=_NOTE_COLUMNS)
             vid = str(d.get("voc_id") or "")
             if vid:
                 result[vid] = d

@@ -18,6 +18,7 @@ database/word_repo.py: 单词数据统一访问层（替代散落的 3 套兜底
 
 import json
 import sqlite3
+import time
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
@@ -530,11 +531,21 @@ def _get_word_states_batch_internal(
         f"WHERE n.voc_id IN ({ph})"
     )
 
+    t_sql_start = time.time()
+
     rows = session.fetchall(sql, vs + vs)
+    t_sql_end = time.time()
+    sql_duration = int((t_sql_end - t_sql_start) * 1000)
+    if sql_duration > 100:
+        _debug_log(f"[Profiling] {len(voc_ids)} 词状态查询 SQL 耗时: {sql_duration}ms", level="INFO", module=_LOG_MOD)
+
     to_backfill: List[str] = []
 
+    # UNION 查询返回的列名，用于裸 tuple 回退映射（singleton 连接无 row_factory）
+    _row_columns = ["voc_id", "n_voc_id", "sync_status"]
+
     for row in rows:
-        row_dict = row_to_dict(row)
+        row_dict = row_to_dict(row, fallback_columns=_row_columns)
         if not row_dict:
             continue
 
