@@ -1,7 +1,40 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python tools/check_docs_quality.py)"
+      "Bash(python tools/check_docs_quality.py)",
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile database/notes_repo.py)",
+      "Bash(python tools/debug_string_conflict.py)",
+      "Bash(python -c \"from config import DB_PATH; print\\(DB_PATH\\)\")",
+      "Bash(python -m pytest tests/unit/database/migrations/test_runner.py -v)",
+      "Bash(python -m pytest tests/ -v --tb=short -m \"not slow\")",
+      "Bash(python -m pytest tests/ -v --tb=short -m \"not slow\" --ignore=tests/integration/pipeline/test_raw_fix.py)",
+      "Bash(python -m pytest tests/unit/database/migrations/ tests/unit/test_notes_repo.py tests/unit/test_word_repo.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/database/ -v --tb=short)",
+      "Bash(python -m py_compile scripts/start_web.py)",
+      "Bash(python -m py_compile web/backend/__main__.py)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(sqlite3 data/history-asher.db \"PRAGMA integrity_check;\")",
+      "Bash(MOMO_USER=asher python -c ' *)",
+      "Bash(Get-Process python *)",
+      "Bash(Select-Object Id, ProcessName, Path)",
+      "Bash(Format-Table -AutoSize)",
+      "PowerShell(Get-Process python, pythonw -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Process | Where-Object { $_.ProcessName -match 'python|uvicorn' } | Select-Object Id, ProcessName | Format-Table -AutoSize)",
+      "Bash(python -m py_compile database/execution_engine.py)",
+      "Bash(python -m py_compile database/connection.py)",
+      "Bash(python -m py_compile web/backend/app.py)",
+      "Bash(MOMO_USER=asher timeout 30 python -c ' *)",
+      "Bash(MOMO_USER=asher timeout 20 python -c ' *)",
+      "Bash(MOMO_USER=asher timeout 15 python -c ' *)",
+      "Bash(pip show *)",
+      "Bash(timeout 10 python -c ' *)",
+      "Skill(executing-plans)",
+      "Skill(executing-plans:*)",
+      "Bash(python -m py_compile web/backend/routers/stats.py)",
+      "Bash(python -m py_compile web/backend/routers/words.py)",
+      "Bash(python -m pytest tests/ --tb=short -m \"not slow\" --ignore=tests/integration/pipeline/test_raw_fix.py)"
     ],
     "additionalDirectories": [
       "E:\\MOMO_Script"

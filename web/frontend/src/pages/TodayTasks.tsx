@@ -11,7 +11,7 @@
  * 状态机/数据/副作用全部由 useTodayController 承担；本组件只做渲染编排。
  */
 import { useRef } from 'react'
-import { PlayCircle, Loader2, Filter, Eye, EyeOff, Info, RotateCw, Square } from 'lucide-react'
+import { PlayCircle, Loader2, Filter, Eye, EyeOff, Info, RotateCw, Square, CloudDownload } from 'lucide-react'
 import { rowPhaseLabel, rowDisplayLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'
@@ -75,6 +75,14 @@ export default function TodayTasks() {
           </button>
         )}
       </div>
+
+      {/* DB 同步中提示 */}
+      {c.dbSyncing && !c.data && (
+        <div className="flex items-center gap-2 mb-4 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 text-sm">
+          <CloudDownload size={16} className="animate-pulse" />
+          <span>正在从云端同步数据库，初次启动可能需要几秒...</span>
+        </div>
+      )}
 
       {/* V1-T4: 结果摘要面板（终态） */}
       {c.flags.summaryStay && c.isTerminal && c.items.length > 0 && (

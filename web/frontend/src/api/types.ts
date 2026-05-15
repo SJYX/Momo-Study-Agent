@@ -20,6 +20,11 @@ export interface SessionInfo {
 export interface HealthInfo {
   status?: string
   version?: string
+  db_sync?: {
+    syncing: boolean
+    phase?: string
+    started_at?: number
+  }
 }
 
 export interface TodayItem {

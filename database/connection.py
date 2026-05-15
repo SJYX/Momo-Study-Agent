@@ -197,10 +197,30 @@ def _resolve_conn_context(db_path: Optional[str] = None) -> Dict[str, Any]:
 
 
 def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool = False) -> Any:
+    """创建 Embedded Replica 连接。
+
+    关键修复：libsql.connect(sync_url=...) 在本地 DB 文件不存在时会自动执行
+    初始 pull（拉取整个远程数据库），在某些网络环境下会无限卡住。
+    因此先用 sqlite3 创建空 DB 文件，再用 libsql.connect(sync_url=...) 连接——
+    此时 libsql 检测到已有 DB 文件，跳过初始 pull，连接瞬间完成。
+    """
     if not HAS_LIBSQL:
         raise RuntimeError("libsql is not available")
 
     final_url = url.replace("libsql://", "https://")
+
+    # 预创建空 DB 文件（如果不存在），避免 libsql.connect(sync_url=...)
+    # 在无本地文件时自动执行初始 pull 而卡住
+    if not os.path.exists(db_path):
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+            _pre = sqlite3.connect(db_path)
+            _pre.execute("PRAGMA journal_mode=WAL")
+            _pre.close()
+            _debug_log(f"已预创建空 DB 文件: {db_path}", level="INFO")
+        except Exception as e:
+            _debug_log(f"预创建 DB 文件失败（可忽略）: {e}", level="WARNING")
+
     conn = libsql.connect(db_path, sync_url=final_url, auth_token=token)
 
     try:
@@ -210,7 +230,18 @@ def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool 
         _debug_log(f"Embedded Replica PRAGMA 配置失败（可忽略）: {e}", level="WARNING")
 
     if do_sync and hasattr(conn, "sync"):
-        conn.sync()
+        try:
+            from database.execution_engine import set_db_syncing, clear_db_syncing
+            set_db_syncing(phase="initial_sync")
+        except ImportError:
+            pass
+        try:
+            conn.sync()
+        finally:
+            try:
+                clear_db_syncing()
+            except ImportError:
+                pass
     return conn
 
 
@@ -439,6 +470,15 @@ def _get_main_write_conn_singleton(
             last_error = e
             if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
                 _backup_broken_database_file(_config.DB_PATH, "主库副本状态损坏，已备份后重试")
+                # metadata 缺失时必须同时清理 .db-info，否则重试会因旧元数据再次失败
+                if _is_replica_metadata_missing_error(e):
+                    try:
+                        info_path = os.path.abspath(_config.DB_PATH) + ".info"
+                        if os.path.exists(info_path):
+                            os.remove(info_path)
+                            _debug_log(f"已清理过期元数据: {info_path}", level="INFO")
+                    except Exception:
+                        pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
@@ -863,5 +903,8 @@ from database.execution_engine import (
     _mark_main_db_needs_sync,
     _execute_write_sql_sync,
     _execute_batch_write_sql_sync,
-    get_write_queue_stats
+    get_write_queue_stats,
+    get_db_sync_status,
+    set_db_syncing,
+    clear_db_syncing,
 )

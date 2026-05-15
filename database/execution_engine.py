@@ -36,6 +36,10 @@ _last_write_time = 0.0
 _sync_daemon_thread: Optional[threading.Thread] = None
 _sync_daemon_stop_event = threading.Event()
 
+# DB 级别的 Embedded Replica 同步状态（供前端展示）
+_db_syncing = False
+_db_sync_progress: Dict[str, Any] = {}  # {"started_at": float, "phase": str}
+
 _write_queue_stats = {
     "total_queued": 0,
     "total_written": 0,
@@ -47,6 +51,28 @@ _write_queue_stats = {
 _SLOW_BATCH_WRITE_MS = 100
 # 同步线程 sync() 慢阈值：网络往返 + 远端 commit，>500ms 视为慢
 _SLOW_SYNC_MS = 500
+
+def set_db_syncing(phase: str = "") -> None:
+    """标记 DB 正在同步（嵌入式副本的 conn.sync() 进行中）。"""
+    global _db_syncing, _db_sync_progress
+    _db_syncing = True
+    _db_sync_progress = {"started_at": time.time(), "phase": phase}
+
+
+def clear_db_syncing() -> None:
+    """清除 DB 同步标记。"""
+    global _db_syncing, _db_sync_progress
+    _db_syncing = False
+    _db_sync_progress = {}
+
+
+def get_db_sync_status() -> Dict[str, Any]:
+    """返回 DB 同步状态，供 health endpoint 使用。"""
+    return {
+        "syncing": _db_syncing,
+        **(_db_sync_progress if _db_syncing else {}),
+    }
+
 
 def _debug_log(msg: str, level: str = "DEBUG") -> None:
     try:
@@ -279,6 +305,7 @@ def _sync_daemon() -> None:
                 continue
             conn_lock = _get_singleton_conn_op_lock(conn)
             sync_started_at = time.time()
+            set_db_syncing(phase="idle_sync")
 
             # Phase D：在持锁窗口内限时执行 conn.sync()
             # 使用独立线程 + Event 实现软超时，避免 sync() 长时间阻塞锁
@@ -317,6 +344,7 @@ def _sync_daemon() -> None:
                 raise sync_error[0]
 
             _needs_sync = False
+            clear_db_syncing()
             sync_duration_ms = int((time.time() - sync_started_at) * 1000)
             is_slow = sync_duration_ms >= _SLOW_SYNC_MS
             try:
@@ -347,6 +375,7 @@ def _sync_daemon() -> None:
             except Exception:
                 pass
         except BaseException as e:
+            clear_db_syncing()
             _debug_log(f"闲时后台自动同步失败: {e}", level="WARNING")
 
 def _start_writer_daemon() -> None:

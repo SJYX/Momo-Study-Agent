@@ -17,7 +17,7 @@ import {
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient, apiPost } from '../api/client'
-import type { TodayItemsResponse, TaskSubmitResponse } from '../api/types'
+import type { TodayItemsResponse, TaskSubmitResponse, HealthInfo } from '../api/types'
 import { activeProfile } from '../queries/queryClient'
 import { useTaskStore } from '../stores/tasks'
 import { useOnActiveUserChanged } from './useOnActiveUserChanged'
@@ -47,6 +47,21 @@ export function useTodayController(rowRefs: RowRefMap) {
   useOnActiveUserChanged(() => {
     queryClient.invalidateQueries({ queryKey: ['today'] })
   })
+
+  // -------------------------------------------------------------------------
+  // DB 同步状态（加载等待期间每 3s 轮询）
+  // -------------------------------------------------------------------------
+  const { data: healthData } = useQuery({
+    queryKey: ['health-poll', activeProfile()],
+    queryFn: async () => {
+      const r = await apiClient<HealthInfo>('/api/health')
+      return r.data
+    },
+    refetchInterval: data ? false : 3000,  // 数据加载后停止轮询
+    staleTime: 2000,
+  })
+
+  const dbSyncing = healthData?.db_sync?.syncing ?? false
 
   const items = data?.items ?? []
 
@@ -246,6 +261,7 @@ export function useTodayController(rowRefs: RowRefMap) {
     hiddenCount,
     refreshing: isFetching || refreshMutation.isPending,
     processing: processMutation.isPending || cancelMutation.isPending,
+    dbSyncing,
     errorMsg,
 
     // 动作

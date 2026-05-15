@@ -106,7 +106,10 @@ def create_app() -> FastAPI:
     # ---- 健康检查 ----
     @app.get("/api/health")
     async def health():
-        return ok_response(HealthInfo().model_dump())
+        from database.execution_engine import get_db_sync_status
+        data = HealthInfo().model_dump()
+        data["db_sync"] = get_db_sync_status()
+        return ok_response(data)
 
     # ---- 生产模式：托管前端静态文件 ----
     frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"

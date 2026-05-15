@@ -5,7 +5,7 @@
  * 只换渲染：Hero 4 态 + 紧凑表格 + 暖色 pill。
  */
 import { useMemo, useRef } from 'react'
-import { Filter, Eye, EyeOff, Info, RotateCw } from 'lucide-react'
+import { Filter, Eye, EyeOff, Info, RotateCw, CloudDownload } from 'lucide-react'
 import { rowPhaseLabel, rowDisplayLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'
@@ -170,6 +170,14 @@ export default function TodayTasksV2() {
                 </div>
               )}
             </>
+          )}
+
+          {/* DB 同步中提示 */}
+          {c.dbSyncing && !c.data && (
+            <div className="flex items-center gap-2 mb-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 text-sm">
+              <CloudDownload size={16} className="animate-pulse" />
+              <span>正在从云端同步数据库，初次启动可能需要几秒...</span>
+            </div>
           )}
 
           <ErrorBanner message={c.errorMsg} size="base" />
