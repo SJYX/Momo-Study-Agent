@@ -75,11 +75,12 @@ pm = ProfileManager(PROFILES_DIR)
 MOMO_TOKEN = os.getenv("MOMO_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MIMO_API_KEY = os.getenv("MIMO_API_KEY")
-MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com/v1")
+# MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com/v1")
+MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://token-plan-sgp.xiaomimimo.com/v1")
 
 # 模型设置 (AI Settings)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2-flash")
+MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2.5")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
 
 # 当前使用的 AI 提供商: "gemini" 或 "mimo"
