@@ -240,7 +240,7 @@ def _run_dev(args: argparse.Namespace) -> None:
 
     if args.open:
         try:
-            webbrowser.open(f"http://{args.frontend_host}:{args.frontend_port}")
+            _open_browser_smart(f"http://{args.frontend_host}:{args.frontend_port}")
         except Exception:
             pass
 
@@ -255,6 +255,52 @@ def _run_dev(args: argparse.Namespace) -> None:
             time.sleep(0.5)
     except KeyboardInterrupt:
         _cleanup()
+
+
+def _open_browser_smart(url: str) -> None:
+    """打开浏览器，优先复用已有标签页（Windows）。
+    逻辑：
+    1. 用 PowerShell 查找 Chrome/Edge 窗口中已打开该 URL 的标签
+    2. 找到 → 激活窗口（不新开标签）
+    3. 未找到 → webbrowser.open 正常打开
+    """
+    import platform
+    import subprocess
+
+    if platform.system() != "Windows":
+        webbrowser.open(url)
+        return
+
+    try:
+        # Chrome 在 window.title 中暴露完整 URL，Edge 同理
+        ps_script = (
+            "$u = '" + url + "'\n"
+            "$found = $false\n"
+            "foreach ($proc in @('chrome', 'msedge')) {\n"
+            "  try {\n"
+            "    $w = New-Object -ComObject Shell.Application\n"
+            "    foreach ($window in $w.Windows()) {\n"
+            "      $t = ''\n"
+            "      try { $t = $window.LocationURL } catch {}\n"
+            "      if ($t -and $t.StartsWith($u)) {\n"
+            "        $window.Document.ParentWindow.Focus()\n"
+            "        $found = $true\n"
+            "        break\n"
+            "      }\n"
+            "    }\n"
+            "    if ($found) { break }\n"
+            "  } catch {}\n"
+            "}\n"
+            "if (-not $found) { Start-Process '" + url + "' }"
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        # 任何异常回退到标准打开
+        webbrowser.open(url)
 
 
 def main():
