@@ -15,8 +15,8 @@ def _fresh_db():
 
 
 def test_target_version_matches_v001():
-    # V001_initial.py + V002_match_confidence.py 是当前已知迁移
-    assert target_version() == 2
+    # V001 ~ V004 是当前已知迁移
+    assert target_version() == 4
 
 
 def test_empty_db_starts_at_v0():
@@ -45,22 +45,22 @@ def test_apply_migrations_to_empty_db_only_creates_user_version_marker():
 
     start, end = apply_migrations(conn)
     assert start == 0
-    assert end == 2
-    assert current_version(cur) == 2
+    assert end == 4
+    assert current_version(cur) == 4
 
 
 def test_idempotent_second_run_is_noop():
     conn = _fresh_db()
     cur = conn.cursor()
     cur.execute("CREATE TABLE processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT, updated_at TIMESTAMP)")
-    cur.execute("CREATE TABLE ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, sync_status INTEGER DEFAULT 0, updated_at TIMESTAMP, batch_id TEXT, content_origin TEXT, content_source_scope TEXT, it_level INTEGER, it_history TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, original_meanings TEXT, maimemo_context TEXT, content_source_db TEXT, raw_full_text TEXT, word_ratings TEXT)")
+    cur.execute("CREATE TABLE ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, sync_status INTEGER DEFAULT 0, updated_at TIMESTAMP, batch_id TEXT, content_origin TEXT, content_source_scope TEXT, it_level INTEGER, it_history TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, original_meanings TEXT, maimemo_context TEXT, content_source_db TEXT, raw_full_text TEXT, word_ratings TEXT)")
     conn.commit()
 
     start1, end1 = apply_migrations(conn)
     start2, end2 = apply_migrations(conn)
-    assert start1 == 0 and end1 == 2
+    assert start1 == 0 and end1 == 4
     # 第二次跑：current >= target，立即返回
-    assert start2 == 2 and end2 == 2
+    assert start2 == 4 and end2 == 4
 
 
 def test_legacy_db_without_some_columns_gets_columns_added():
@@ -88,7 +88,7 @@ def test_legacy_db_without_some_columns_gets_columns_added():
     cols2 = {row[1] for row in cur.fetchall()}
     assert "updated_at" in cols2
 
-    assert current_version(cur) == 2
+    assert current_version(cur) == 4
 
 
 def test_failure_in_migration_rolls_back_user_version(monkeypatch):
@@ -136,7 +136,7 @@ def test_failure_in_migration_rolls_back_user_version(monkeypatch):
         runner_mod.apply_migrations(conn)
     assert "V999" in str(ex.value)
 
-    # V001 + V002 已成功提交，V999 在自己的事务里回滚 → user_version 应停在 2
+    # V001 ~ V004 已成功提交，V999 在自己的事务里回滚 → user_version 应停在 4
     cur2 = conn.cursor()
     cur2.execute("PRAGMA user_version")
-    assert cur2.fetchone()[0] == 2
+    assert cur2.fetchone()[0] == 4
