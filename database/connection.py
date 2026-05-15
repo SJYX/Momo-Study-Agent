@@ -87,6 +87,8 @@ TURSO_TEST_DB_HOSTNAME = os.getenv("TURSO_TEST_DB_HOSTNAME")
 # Background write/sync system state is now in database/execution_engine.py
 
 _main_write_conn_singleton: Any = None
+_main_write_conn_singleton_path: Optional[str] = None
+_main_write_conn_last_check: float = 0
 _main_write_conn_lock = threading.Lock()
 _main_write_conn_op_lock = threading.RLock()
 
@@ -213,10 +215,11 @@ def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool 
 
 
 def _close_main_write_conn_singleton() -> None:
-    global _main_write_conn_singleton
+    global _main_write_conn_singleton, _main_write_conn_singleton_path
     with _main_write_conn_lock:
         conn = _main_write_conn_singleton
         _main_write_conn_singleton = None
+        _main_write_conn_singleton_path = None
 
     if conn is None:
         return
@@ -376,7 +379,7 @@ def _get_main_write_conn_singleton(
     max_retries: int = 3,
     retry_delay: float = 1.0,
 ) -> Any:
-    global _main_write_conn_singleton
+    global _main_write_conn_singleton, _main_write_conn_singleton_path, _main_write_conn_last_check
 
     ctx = _resolve_conn_context(_config.DB_PATH)
     if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
@@ -384,9 +387,26 @@ def _get_main_write_conn_singleton(
 
     with _main_write_conn_lock:
         if _main_write_conn_singleton is not None:
+            # 路径感知：如果当前请求的路径与单例路径不符，必须重建
+            current_path = os.path.abspath(_config.DB_PATH)
+            if _main_write_conn_singleton_path and os.path.abspath(_main_write_conn_singleton_path) != current_path:
+                _debug_log(f"主库单例路径切换: {_main_write_conn_singleton_path} -> {current_path}", level="INFO")
+                try:
+                    _main_write_conn_singleton.close()
+                except Exception:
+                    pass
+                _main_write_conn_singleton = None
+                _main_write_conn_singleton_path = None
+
+        if _main_write_conn_singleton is not None:
             try:
                 with _main_write_conn_op_lock:
-                    _main_write_conn_singleton.execute("SELECT 1")
+                    # 性能优化：1秒内不重复进行健康检查
+                    now = time.time()
+                    if now - _main_write_conn_last_check > 1.0:
+                        _main_write_conn_singleton.execute("SELECT 1")
+                        _main_write_conn_last_check = now
+                        
                     if do_sync and hasattr(_main_write_conn_singleton, "sync"):
                         _main_write_conn_singleton.sync()
                 return _main_write_conn_singleton
@@ -397,6 +417,7 @@ def _get_main_write_conn_singleton(
                 except Exception:
                     pass
                 _main_write_conn_singleton = None
+                _main_write_conn_singleton_path = None
 
     last_error = None
     for attempt in range(max_retries):
@@ -405,7 +426,8 @@ def _get_main_write_conn_singleton(
             with _main_write_conn_lock:
                 if _main_write_conn_singleton is None:
                     _main_write_conn_singleton = conn
-                    _debug_log("主库 Embedded Replica 写连接单例已创建", level="INFO")
+                    _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
+                    _debug_log(f"主库 Embedded Replica 写连接单例已创建 ({_main_write_conn_singleton_path})", level="INFO")
                     return _main_write_conn_singleton
 
                 try:
@@ -531,25 +553,9 @@ def _get_read_conn_impl(
         return _wrap_and_track_connection(db_path, conn, True)
 
     if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and HAS_LIBSQL:
-        # Phase B：优先走独立 sqlite3 只读连接（无锁竞争）
-        try:
-            from core.feature_flags import is_enabled
-            use_isolated = is_enabled("ISOLATED_READ_CONN_ENABLED", default=True)
-        except Exception:
-            use_isolated = True
-
-        if use_isolated:
-            try:
-                conn = _get_local_read_conn(db_path)
-                return _wrap_and_track_connection(db_path, conn, True)
-            except Exception as iso_err:
-                _debug_log(
-                    f"独立只读连接失败，回退到写单例: {iso_err}",
-                    level="WARNING",
-                )
-                # 回退到写单例
-
-        # 回退路径：复用写单例（旧行为）
+        # CRITICAL WalConflict fix: 
+        # In LibSQL mode, we MUST reuse the singleton connection to avoid deadlocks
+        # during background sync, especially on Windows/OneDrive.
         last_error = None
         for attempt in range(max_retries):
             try:
@@ -560,16 +566,13 @@ def _get_read_conn_impl(
                 if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
                     _backup_broken_database_file(db_path, "Embedded Replica 本地状态损坏，已备份并重试")
                 if attempt < max_retries - 1:
-                    _debug_log(
-                        f"Embedded Replica 读连接失败 (尝试 {attempt + 1})，{retry_delay} 秒后重试: {e}",
-                        level="WARNING",
-                    )
                     time.sleep(retry_delay)
-                else:
-                    _debug_log(f"Embedded Replica 读连接失败 (已尝试 {max_retries} 次): {e}", level="WARNING")
+                    continue
+                break
 
         if ctx["force_cloud_mode"]:
             raise RuntimeError(f"强制云端模式读连接失败 (已尝试 {max_retries} 次): {last_error}")
+
 
     if allow_local_fallback and (not ctx["force_cloud_mode"] or ctx["is_test"]):
         conn = _get_local_conn(db_path)

@@ -62,7 +62,7 @@ class WordService:
         return normalized, len(raw_items) - len(normalized)
 
     def enrich_with_states(
-        self, items: List[WordItem], auto_backfill: bool = True
+        self, items: List[WordItem], auto_backfill: bool = True, db_path: Optional[str] = None
     ) -> List[Tuple[WordItem, WordState]]:
         """查询并附加 5 态状态。
 
@@ -81,7 +81,7 @@ class WordService:
 
         try:
             states_dict = get_word_states_in_batch(
-                voc_ids, auto_backfill=auto_backfill
+                voc_ids, auto_backfill=auto_backfill, db_path=db_path
             )
             result = []
             for item in items:
@@ -142,6 +142,11 @@ class WordService:
             )
             # 保守降级：全部当已处理，避免雪崩式重调 AI（详见审查报告 §8.6.2）
             return [], [item for item, _ in enriched]
+
+    def get_notes_in_batch(self, voc_ids: List[str], db_path: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+        """批量获取笔记数据副本。"""
+        from database.notes_repo import get_word_notes_in_batch
+        return get_word_notes_in_batch(voc_ids, db_path=db_path)
 
     def mark_completed(
         self,

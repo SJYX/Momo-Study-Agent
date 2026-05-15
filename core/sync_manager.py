@@ -251,8 +251,8 @@ class SyncManager:
             priority, _, item = wrapped
             task_done_manually = False
             try:
+                # B3 闲时引擎：系统稳定 idle 时全速消费 P3/P4，不再因非 active profile 暂停
                 if int(priority) >= int(Priority.P3) and not is_active(item.get("profile_name", "")):
-                    # B3 闲时引擎：系统稳定 idle 时全速消费 P3/P4，不再因非 active profile 暂停
                     if not self._is_idle(item.get("profile_name", "")):
                         self.sync_queue.put((priority, self._next_seq(), item))
                         self.sync_queue.task_done()
@@ -274,10 +274,14 @@ class SyncManager:
                 # 仅在非内存信任路径下执行 DB 查询
                 if not force_sync:
                     try:
+                        read_start = time.time()
                         if self.db_path:
                             current_note = get_local_word_note(voc_id, db_path=self.db_path)
                         else:
                             current_note = get_local_word_note(voc_id)
+                        read_duration = int((time.time() - read_start) * 1000)
+                        if read_duration > 50:
+                            self.logger.info(f"[Profiling] {spell} 本地DB读取耗时: {read_duration}ms")
                     except Exception as local_read_error:
                         self.logger.warning(f"⚠️ {spell} 本地数据库读取失败: {local_read_error}")
 
@@ -291,9 +295,8 @@ class SyncManager:
 
                 try:
                     # 相态 4（syncing）虚化为内存态广播，不再硬写数据库。
-                    # 发出行级状态：正在同步
                     self.logger.info(
-                        f"[RowStatus] {spell} 开始同步",
+                        f"[RowStatus] {spell} 开始同步 (队列剩余: {self.sync_queue.qsize()})",
                         extra={
                             "event": "row_status",
                             "data": {
@@ -308,7 +311,6 @@ class SyncManager:
                         },
                     )
 
-                
                     _task_started_at = time.time()
                     sync_result = self.momo.sync_interpretation(
                         voc_id,
@@ -319,9 +321,13 @@ class SyncManager:
                         local_reference=interpretation,
                         return_details=True,
                     )
-                    # PLAYBOOK B5：记录单条同步耗时（不区分成功/失败状态，都进窗口）
+                    
+                    # 记录 Profiling 耗时
                     try:
                         _task_duration_ms = int((time.time() - _task_started_at) * 1000)
+                        self.logger.info(f"[Profiling] {spell} Maimemo API 同步耗时: {_task_duration_ms}ms")
+                        
+                        from core.metrics import get_metrics_collector
                         get_metrics_collector().record(
                             item.get("profile_name", "") or "_global",
                             "sync.task.duration_ms",
@@ -329,6 +335,7 @@ class SyncManager:
                         )
                     except Exception:
                         pass
+
                     sync_status = 1
                     match_confidence = None
                     match_reason = None

@@ -235,7 +235,7 @@ async def get_today(
     normalized_items, discarded_count = word_service.normalize_cloud_items(items_raw)
     if discarded_count > 0:
         ctx.logger.info(f"[Web] get_today 过滤脏数据 {discarded_count} 词", module="study_router")
-    enriched_items = await run_in_threadpool(word_service.enrich_with_states, normalized_items)
+    enriched_items = await run_in_threadpool(word_service.enrich_with_states, normalized_items, db_path=ctx.db_path)
 
     state_to_status = {
         WordState.NOT_STARTED: None,

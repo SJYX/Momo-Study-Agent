@@ -61,9 +61,11 @@ def _debug_log(msg: str, level: str = "DEBUG") -> None:
 
 def _execute_batch_writes_unlocked(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
     cur = write_conn.cursor()
+    t0 = time.time()
     try:
         # 【关键修复】使用具名游标执行，绝不能用 write_conn.execute
         cur.execute("BEGIN IMMEDIATE")
+        t1 = time.time()
         for item in batch:
             op_type = item.get("op_type", "insert")
             if op_type == "insert_or_replace":
@@ -75,7 +77,18 @@ def _execute_batch_writes_unlocked(write_conn: Any, batch: List[Dict[str, Any]])
                 args_list = item.get("args_list", [])
                 if args_list:
                     cur.executemany(sql, args_list)
+        t2 = time.time()
         write_conn.commit()
+        t3 = time.time()
+
+        # 仅在慢查询时详细记录分段耗时
+        duration_ms = int((t3 - t0) * 1000)
+        if duration_ms >= 500:
+            _debug_log(
+                f"[Profiling] batch_write detail | total={duration_ms}ms | "
+                f"begin={int((t1-t0)*1000)}ms | exec={int((t2-t1)*1000)}ms | commit={int((t3-t2)*1000)}ms",
+                level="INFO"
+            )
     except Exception:
         # 如果发生任何异常，强行回滚，防止事务卡死
         try:
@@ -85,6 +98,7 @@ def _execute_batch_writes_unlocked(write_conn: Any, batch: List[Dict[str, Any]])
         raise
     finally:
         cur.close()
+
 
 def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
     if not batch:

@@ -51,9 +51,11 @@ class WordItem:
         )
 
         try:
-            review_count = int(raw.get("review_count") or 0)
+            # 兼容性：优先从 review_count 读取，其次从 study_count (query_study_records 接口) 读取
+            review_count = int(raw.get("review_count") or raw.get("study_count") or 0)
         except (TypeError, ValueError):
             review_count = 0
+
 
         try:
             stf = float(

@@ -4,6 +4,7 @@ core/study_workflow.py: 主学习流程与任务编排，负责单词处理流�
 
 import os
 import uuid
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from config import AI_PROVIDER, BATCH_SIZE, DRY_RUN
@@ -21,6 +22,7 @@ class StudyWorkflow:
         self.ai_client = ai_client
         self.momo = momo_api
         self.ui = ui_manager
+        self.db_path = db_path
 
         self.word_service = WordService(logger=logger)
 
@@ -169,9 +171,11 @@ class StudyWorkflow:
             return [], {}
 
     def process_word_list(self, word_list, name):
+
         if not word_list:
             self.logger.info(f"{name} 无需处理")
             return
+
 
         normalized_items, discarded_count = self.word_service.normalize_cloud_items(word_list)
         if not normalized_items:
@@ -181,6 +185,24 @@ class StudyWorkflow:
         # 6.2: 记录进度快照以供薄弱词筛选使用
         try:
             from database.progress_repo import log_progress_snapshots
+            
+            # 如果是 Warmup 任务或 review_count 全为 0，尝试回填 study_count
+            all_zero = all((item.review_count or 0) == 0 for item in normalized_items)
+            if all_zero:
+                try:
+                    from datetime import datetime, timedelta
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    # 查询今日已学记录（覆盖今日前后的窗口以防时区差异）
+                    records_res = self.momo.query_study_records(today_str, today_str)
+                    if records_res and records_res.get("data", {}).get("records"):
+                        records = records_res["data"]["records"]
+                        count_map = {str(r.get("voc_id")): int(r.get("study_count", 0)) for r in records}
+                        for item in normalized_items:
+                            if item.voc_id in count_map:
+                                item.review_count = count_map[item.voc_id]
+                except Exception as enrichment_err:
+                    self.logger.warning(f"⚠️ 进度数据补全失败 (不影响主流程): {enrichment_err}")
+
             # 将 WordItem 转换为 log_progress_snapshots 预期的 dict 格式 (ProgressSnapshot)
             snapshots = [
                 {
@@ -190,10 +212,13 @@ class StudyWorkflow:
                 }
                 for item in normalized_items
             ]
-            log_progress_snapshots(snapshots)
-            self.logger.info(f"✅ 成功记录 {len(snapshots)} 个单词的进度历史快照")
+            count = log_progress_snapshots(snapshots)
+            if count > 0:
+                self.logger.info(f"✅ 成功记录 {count} 个单词的进度历史快照 (总计 {len(snapshots)} 词)")
+
         except Exception as e:
             self.logger.error(f"❌ 记录进度历史快照失败: {e}")
+
 
         self.logger.info(
             f"[Pipeline] {name} 任务初始化，总计 {len(normalized_items)} 词（过滤脏数据 {discarded_count} 词）",
@@ -203,8 +228,20 @@ class StudyWorkflow:
             },
         )
 
-        enriched = self.word_service.enrich_with_states(normalized_items, auto_backfill=True)
+
+
+        self.logger.info(f"[Pipeline] {name} 正在查询单词状态库...")
+        t_enrich_start = time.time()
+
+        enriched = self.word_service.enrich_with_states(normalized_items, auto_backfill=True, db_path=self.db_path)
+        t_enrich_end = time.time()
+        self.logger.info(f"[Profiling] {name} 状态增强耗时: {int((t_enrich_end - t_enrich_start)*1000)}ms")
+
+        t_part_start = time.time()
         pending_items, processed_items = self.word_service.partition_by_processability(enriched)
+        t_part_end = time.time()
+        self.logger.info(f"[Profiling] {name} 任务分组耗时: {int((t_part_end - t_part_start)*1000)}ms")
+
 
         skipped_spells = [item.spelling for item in processed_items]
         self.logger.info(
@@ -213,6 +250,10 @@ class StudyWorkflow:
 
         if skipped_spells:
             self.logger.info(f"[去重] 本轮跳过单词: {self._format_words_preview(skipped_spells)}")
+            # B1 优化：使用批量查询替代循环查询 (避免 N+1 问题)
+            processed_voc_ids = [item.voc_id for item in processed_items]
+            notes_map = self.word_service.get_notes_in_batch(processed_voc_ids, db_path=self.db_path)
+            
             rows = []
             for item in processed_items:
                 phase = "skipped"
@@ -220,7 +261,7 @@ class StudyWorkflow:
                 reason = ""
 
                 try:
-                    note = get_local_word_note(item.voc_id)
+                    note = notes_map.get(str(item.voc_id))
                     sync_status = int((note or {}).get("sync_status", 0) or 0)
                     if sync_status == 0:
                         phase = "sync_pending"
@@ -231,7 +272,6 @@ class StudyWorkflow:
                         status = "warning"
                         reason = "云端释义冲突，待处理"
                     elif sync_status == 5:
-                        # H1 修复：failed 词不再静默显示为"已完成"，前端能看到失败状态
                         phase = "sync_failed"
                         status = "error"
                         reason = (note or {}).get("match_reason") or "上传失败"
@@ -244,7 +284,7 @@ class StudyWorkflow:
                 rows.append(row)
 
             self.logger.info(
-                "[RowStatus] 本轮跳过单词状态回填",
+                f"[RowStatus] 本轮跳过单词状态回填 ({len(rows)} 词)",
                 extra={"event": "row_status", "data": {"rows": rows}},
             )
 

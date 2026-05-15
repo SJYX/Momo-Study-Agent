@@ -276,9 +276,14 @@ class UserContextManager:
     def prepare_for_task(ctx: UserContext) -> None:
         """在执行数据库相关任务前，将 DB globals 切换到此 context。
 
-        因为 database 模块使用模块级 DB_PATH，此方法确保任务执行期间
-        读写的是正确的 profile 数据库。
+        因为 database 模块使用模块级 DB_PATH 或直接读 config.DB_PATH，
+        此方法确保任务执行期间读写的是正确的 profile 数据库。
         """
+        try:
+            import config as _cfg
+            _cfg.DB_PATH = ctx.db_path
+        except Exception:
+            pass
         try:
             import database.connection as _db_conn
             _db_conn.DB_PATH = ctx.db_path
