@@ -247,6 +247,7 @@ class WordNoteSummary(BaseModel):
     memory_aid: str = ""
     it_level: int = 0
     sync_status: int = 0
+    updated_at: str = ""
     created_at: str = ""
 
 

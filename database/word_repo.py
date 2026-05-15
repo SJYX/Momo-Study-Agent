@@ -183,7 +183,7 @@ def list_by_state(
             "LIMIT ? OFFSET ?"
         )
         rows = session.fetchall(sql, params + (limit, offset))
-        return rows_to_dicts(rows)
+        return rows_to_dicts(rows, fallback_columns=["voc_id", "spelling", "basic_meanings", "memory_aid", "sync_status", "it_level", "updated_at", "is_processed"])
     except Exception as e:
         _log_word_repo_failure("list_by_state", e)
         return []
@@ -259,7 +259,7 @@ def query_weak_words(
                 return default
 
         scored_rows: List[Dict[str, Any]] = []
-        for row in rows_to_dicts(rows):
+        for row in rows_to_dicts(rows, fallback_columns=["voc_id", "spelling", "basic_meanings", "review_count", "familiarity_short", "it_level", "updated_at"]):
             score = 0.0
 
             familiarity = _to_number(row.get("familiarity_short"), 0.0)
@@ -370,7 +370,7 @@ def list_word_notes_paginated(
         params.extend([page_size, offset])
 
         rows = session.fetchall(sql, params)
-        return rows_to_dicts(rows)
+        return rows_to_dicts(rows, fallback_columns=["voc_id", "spelling", "basic_meanings", "memory_aid", "sync_status", "it_level", "updated_at", "is_processed"])
     except Exception as e:
         _log_word_repo_failure("list_word_notes_paginated", e)
         return []
@@ -431,7 +431,7 @@ def get_word_iterations(
             "ORDER BY created_at DESC"
         )
         rows = session.fetchall(sql, (str(voc_id),))
-        return rows_to_dicts(rows)
+        return rows_to_dicts(rows, fallback_columns=["id", "voc_id", "spelling", "stage", "it_level", "score", "justification", "tags", "refined_content", "candidate_notes", "raw_response", "created_at"])
     except Exception as e:
         _log_word_repo_failure("get_word_iterations", e)
         return []

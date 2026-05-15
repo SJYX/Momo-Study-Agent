@@ -34,7 +34,27 @@
       "Skill(executing-plans:*)",
       "Bash(python -m py_compile web/backend/routers/stats.py)",
       "Bash(python -m py_compile web/backend/routers/words.py)",
-      "Bash(python -m pytest tests/ --tb=short -m \"not slow\" --ignore=tests/integration/pipeline/test_raw_fix.py)"
+      "Bash(python -m pytest tests/ --tb=short -m \"not slow\" --ignore=tests/integration/pipeline/test_raw_fix.py)",
+      "Bash(curl -s http://127.0.0.1:8765/api/words?page=1\\\\&page_size=5)",
+      "Bash(python -m json.tool)",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(Format-Table)",
+      "PowerShell(Get-Process python -ErrorAction SilentlyContinue)",
+      "Bash(curl -s http://127.0.0.1:8765/api/health)",
+      "Bash(python -m web.backend --user asher)",
+      "Bash(break)",
+      "Bash(curl -s \"http://127.0.0.1:8765/api/words?page=1&page_size=5\")",
+      "Bash(curl -s \"http://127.0.0.1:8765/api/words?page=1&page_size=5\" -H \"X-Momo-Profile: asher\")",
+      "PowerShell(Stop-Process -Force)",
+      "Bash(python -c \"import web.backend.routers.words; print\\(web.backend.routers.words.__file__\\)\")",
+      "Bash(kill %1)",
+      "Bash(kill -9 63028)",
+      "PowerShell(Get-Process python -ErrorAction SilentlyContinue | ForEach-Object { Write-Host \"Killing PID $\\($_.Id\\)\"; Stop-Process -Id $_.Id -Force }; Start-Sleep 2; Remove-Item -Force data/.process.lock -ErrorAction SilentlyContinue; Write-Host \"All killed\")",
+      "Bash(curl -s \"http://127.0.0.1:8765/api/words?page=1&page_size=3\")",
+      "Bash(curl -v \"http://127.0.0.1:8765/api/words?page=1&page_size=3\")",
+      "Read(//proc/44856/fd/**)",
+      "Bash(jobs -l)",
+      "Bash(python -m py_compile database/word_repo.py web/backend/routers/words.py web/backend/routers/stats.py web/backend/schemas.py)"
     ],
     "additionalDirectories": [
       "E:\\MOMO_Script"
