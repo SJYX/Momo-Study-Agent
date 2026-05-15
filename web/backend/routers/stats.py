@@ -10,6 +10,7 @@ import time
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Header, Query
+from fastapi.concurrency import run_in_threadpool
 
 import config
 from web.backend.deps import get_user_context
@@ -26,15 +27,13 @@ from web.backend.schemas import (
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 
-@router.get("/summary", response_model=ApiResponse[StatsSummary])
-async def stats_summary(ctx = Depends(get_user_context)):
-    """返回系统聚合统计信息。"""
+def _fetch_summary_data(db_path: str) -> dict:
+    """同步 DB 操作，由 run_in_threadpool 在线程池执行，避免阻塞 ASGI 事件循环。"""
     from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
     from database.word_repo import count_by_state
     from database.word_state import WordState
 
-    user = ctx.profile_name
-    conn = _get_read_conn(ctx.db_path)
+    conn = _get_read_conn(db_path)
     conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 
@@ -93,13 +92,12 @@ async def stats_summary(ctx = Depends(get_user_context)):
         if not _is_main_write_singleton_conn(conn):
             conn.close()
 
-    # 同步队列深度：仅计数，不拉取全量记录
     try:
-        sync_queue_depth = count_by_state(WordState.LOCAL_READY, db_path=ctx.db_path)
+        sync_queue_depth = count_by_state(WordState.LOCAL_READY, db_path=db_path)
     except Exception:
         sync_queue_depth = 0
 
-    return ok_response({
+    return {
         "total_words": total_words,
         "processed_words": processed_words,
         "ai_batches": ai_batches,
@@ -108,7 +106,82 @@ async def stats_summary(ctx = Depends(get_user_context)):
         "avg_latency_ms": round(avg_latency, 1),
         "sync_queue_depth": sync_queue_depth,
         "weak_words_count": weak_words,
-    }, user_id=user)
+    }
+
+
+@router.get("/summary", response_model=ApiResponse[StatsSummary])
+async def stats_summary(ctx = Depends(get_user_context)):
+    """返回系统聚合统计信息。"""
+    data = await run_in_threadpool(_fetch_summary_data, ctx.db_path)
+    return ok_response(data, user_id=ctx.profile_name)
+
+
+def _fetch_ops_db_data(db_path: str) -> dict:
+    """同步 DB 操作，由 run_in_threadpool 在线程池执行。"""
+    from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+    from database.word_repo import count_by_state
+    from database.word_state import WordState
+
+    # sync_queue_depth
+    try:
+        conn1 = _get_read_conn(db_path)
+        lock1 = _get_singleton_conn_op_lock(conn1)
+        cur1 = conn1.cursor()
+        try:
+            if lock1 is not None:
+                with lock1:
+                    cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+                    row = cur1.fetchone()
+            else:
+                cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+                row = cur1.fetchone()
+            sync_queue_depth = int((row or [0])[0] or 0)
+        finally:
+            cur1.close()
+        if not _is_main_write_singleton_conn(conn1):
+            conn1.close()
+    except Exception:
+        sync_queue_depth = 0
+
+    # avg_latency
+    try:
+        conn = _get_read_conn(db_path)
+        conn_lock = _get_singleton_conn_op_lock(conn)
+        cur = conn.cursor()
+        try:
+            def _q(sql):
+                cur.execute(sql)
+                row = cur.fetchone()
+                return row[0] if row else 0
+
+            if conn_lock is not None:
+                with conn_lock:
+                    avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
+                    cur.close()
+                conn.commit()
+            else:
+                try:
+                    avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
+                finally:
+                    cur.close()
+                conn.commit()
+        finally:
+            if not _is_main_write_singleton_conn(conn):
+                conn.close()
+    except Exception:
+        avg_latency = 0.0
+
+    # sync_conflict_count
+    try:
+        sync_conflict_count = count_by_state(WordState.CONFLICT, db_path=db_path)
+    except Exception:
+        sync_conflict_count = 0
+
+    return {
+        "sync_queue_depth": sync_queue_depth,
+        "avg_latency_ms": round(avg_latency, 1),
+        "sync_conflict_count": sync_conflict_count,
+    }
 
 
 _WINDOW_SECONDS = {
@@ -189,60 +262,7 @@ async def stats_ops(
         health_checks = []
 
     # --- 卡片4：队列 ---
-    try:
-        from database.connection import _get_read_conn as _rc1, _get_singleton_conn_op_lock as _lk1, _is_main_write_singleton_conn as _im1
-        conn1 = _rc1(ctx.db_path)
-        lock1 = _lk1(conn1)
-        cur1 = conn1.cursor()
-        try:
-            if lock1 is not None:
-                with lock1:
-                    cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                    row = cur1.fetchone()
-            else:
-                cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                row = cur1.fetchone()
-            sync_queue_depth = int((row or [0])[0] or 0)
-        finally:
-            cur1.close()
-        if not _im1(conn1):
-            conn1.close()
-    except Exception:
-        sync_queue_depth = 0
-
-    try:
-        from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
-        conn = _get_read_conn(ctx.db_path)
-        conn_lock = _get_singleton_conn_op_lock(conn)
-        cur = conn.cursor()
-        try:
-            def _q(sql):
-                cur.execute(sql)
-                row = cur.fetchone()
-                return row[0] if row else 0
-
-            if conn_lock is not None:
-                with conn_lock:
-                    avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
-                    cur.close()
-                conn.commit()
-            else:
-                try:
-                    avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
-                finally:
-                    cur.close()
-                conn.commit()
-        finally:
-            if not _is_main_write_singleton_conn(conn):
-                conn.close()
-    except Exception:
-        avg_latency = 0.0
-
-    # sync conflicts
-    try:
-        sync_conflict_count = count_by_state(WordState.CONFLICT, db_path=ctx.db_path)
-    except Exception:
-        sync_conflict_count = 0
+    db_data = await run_in_threadpool(_fetch_ops_db_data, ctx.db_path)
 
     return ok_response(OpsStatsResponse(
         tasks_running=tasks_running,
@@ -252,7 +272,7 @@ async def stats_ops(
         failure_hotspots=failure_hotspots,
         system_ok=system_ok,
         health_checks=health_checks,
-        sync_queue_depth=sync_queue_depth,
-        sync_conflict_count=sync_conflict_count,
-        avg_latency_ms=round(avg_latency, 1),
+        sync_queue_depth=db_data["sync_queue_depth"],
+        sync_conflict_count=db_data["sync_conflict_count"],
+        avg_latency_ms=db_data["avg_latency_ms"],
     ).model_dump(), user_id=prof)

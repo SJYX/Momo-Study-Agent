@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 
 import config
 from web.backend.deps import get_user_context
@@ -26,6 +27,27 @@ from web.backend.schemas import (
 router = APIRouter(prefix="/api/words", tags=["words"])
 
 
+def _list_words_data(
+    db_path: str,
+    search: Optional[str],
+    sync_status: Optional[int],
+    it_level: Optional[int],
+    page: int,
+    page_size: int,
+) -> dict:
+    """同步 DB 操作，由 run_in_threadpool 在线程池执行。"""
+    from database.word_repo import count_word_notes, list_word_notes_paginated
+
+    total = count_word_notes(
+        search=search, sync_status=sync_status, it_level=it_level, db_path=db_path,
+    )
+    rows = list_word_notes_paginated(
+        search=search, sync_status=sync_status, it_level=it_level,
+        page=page, page_size=page_size, db_path=db_path,
+    )
+    return {"total": total, "page": page, "page_size": page_size, "items": rows}
+
+
 @router.get("", response_model=ApiResponse[WordsListResponse])
 async def list_words(
     page: int = Query(default=1, ge=1),
@@ -36,30 +58,10 @@ async def list_words(
     ctx = Depends(get_user_context),
 ):
     """分页列出 ai_word_notes，支持搜索和筛选。"""
-    from database.word_repo import count_word_notes, list_word_notes_paginated
-
-    user = ctx.profile_name
-    total = count_word_notes(
-        search=search,
-        sync_status=sync_status,
-        it_level=it_level,
-        db_path=ctx.db_path,
+    data = await run_in_threadpool(
+        _list_words_data, ctx.db_path, search, sync_status, it_level, page, page_size,
     )
-    rows = list_word_notes_paginated(
-        search=search,
-        sync_status=sync_status,
-        it_level=it_level,
-        page=page,
-        page_size=page_size,
-        db_path=ctx.db_path,
-    )
-
-    return ok_response({
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": rows,
-    }, user_id=user)
+    return ok_response(data, user_id=ctx.profile_name)
 
 
 @router.get("/{voc_id}", response_model=ApiResponse[WordNoteDetail])
@@ -67,11 +69,10 @@ async def get_word_detail(voc_id: str, ctx = Depends(get_user_context)):
     """获取单个单词的完整笔记详情。"""
     from database.notes_repo import get_local_word_note
 
-    user = ctx.profile_name
-    note = get_local_word_note(voc_id, db_path=ctx.db_path)
+    note = await run_in_threadpool(get_local_word_note, voc_id, db_path=ctx.db_path)
     if not note:
-        return error_response("NOT_FOUND", f"Word note not found: {voc_id}", user_id=user)
-    return ok_response(note, user_id=user)
+        return error_response("NOT_FOUND", f"Word note not found: {voc_id}", user_id=ctx.profile_name)
+    return ok_response(note, user_id=ctx.profile_name)
 
 
 @router.put("/{voc_id}")
@@ -82,17 +83,16 @@ async def update_word_note(
     ctx = Depends(get_user_context),
 ):
     """编辑单词笔记的 memory_aid 字段。"""
-    user = ctx.profile_name
     memory_aid = body.get("memory_aid", "")
     if not memory_aid:
-        return error_response("INVALID_INPUT", "memory_aid 不能为空", user_id=user)
+        return error_response("INVALID_INPUT", "memory_aid 不能为空", user_id=ctx.profile_name)
 
     from database.word_repo import update_memory_aid
 
-    ok = update_memory_aid(voc_id, memory_aid, db_path=ctx.db_path)
+    ok = await run_in_threadpool(update_memory_aid, voc_id, memory_aid, db_path=ctx.db_path)
     if not ok:
-        return error_response("UPDATE_ERROR", "更新 memory_aid 失败", user_id=user)
-    return ok_response({"updated": True, "voc_id": voc_id}, user_id=user)
+        return error_response("UPDATE_ERROR", "更新 memory_aid 失败", user_id=ctx.profile_name)
+    return ok_response({"updated": True, "voc_id": voc_id}, user_id=ctx.profile_name)
 
 
 @router.get("/{voc_id}/iterations", response_model=ApiResponse[WordIterationsResponse])
@@ -100,8 +100,7 @@ async def get_word_iterations(voc_id: str, ctx = Depends(get_user_context)):
     """获取单词的迭代历史。"""
     from database.word_repo import get_word_iterations as get_word_iterations_repo
 
-    user = ctx.profile_name
-    rows = get_word_iterations_repo(voc_id, db_path=ctx.db_path)
+    rows = await run_in_threadpool(get_word_iterations_repo, voc_id, db_path=ctx.db_path)
     iterations = [
         {
             "voc_id": str(row.get("voc_id", voc_id)),
@@ -116,4 +115,4 @@ async def get_word_iterations(voc_id: str, ctx = Depends(get_user_context)):
         for row in rows
     ]
 
-    return ok_response({"voc_id": voc_id, "iterations": iterations}, user_id=user)
+    return ok_response({"voc_id": voc_id, "iterations": iterations}, user_id=ctx.profile_name)
