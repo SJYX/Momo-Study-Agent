@@ -44,28 +44,30 @@ class UserContextManager:
         # warmup 三态：not_started → in_progress → done
         self._warmup_state: Dict[str, str] = {}
         self._first_warmup_done: Dict[str, bool] = {}
+        self._init_locks: Dict[str, threading.Lock] = {}  # Profile 级别的初始化锁
 
     def get(self, profile_name: str) -> UserContext:
         """获取指定 profile 的 context，不存在则创建。"""
         # Fast path: read under lock.
+        # 针对指定 profile 获取或创建独立的初始化锁，确保同一 profile 串行初始化
         with self._lock:
-            existing = self._contexts.get(profile_name)
-        if existing is not None:
-            return existing
+            if profile_name not in self._init_locks:
+                self._init_locks[profile_name] = threading.Lock()
+            profile_init_lock = self._init_locks[profile_name]
 
-        # Slow path: initialize outside lock to avoid holding a global mutex
-        # during potentially long I/O (db warmup, cloud auth, client init).
-        created = self._create_context(profile_name)
-
-        # Publish with double-check to handle races.
-        with self._lock:
-            existing = self._contexts.get(profile_name)
+        with profile_init_lock:
+            # 再次检查，防止在等待 profile_init_lock 期间已有其他线程完成初始化
+            with self._lock:
+                existing = self._contexts.get(profile_name)
             if existing is not None:
-                # Another thread already published a context.
-                self._cleanup_context(created)
                 return existing
-            self._contexts[profile_name] = created
-            return created
+
+            created = self._create_context(profile_name)
+
+            with self._lock:
+                # 最后的发布逻辑
+                self._contexts[profile_name] = created
+                return created
 
     def has(self, profile_name: str) -> bool:
         with self._lock:
@@ -79,6 +81,7 @@ class UserContextManager:
         """清理指定 profile 的资源。"""
         with self._lock:
             ctx = self._contexts.pop(profile_name, None)
+            self._init_locks.pop(profile_name, None)
         if ctx:
             self._cleanup_context(ctx)
 
@@ -87,6 +90,7 @@ class UserContextManager:
         with self._lock:
             contexts = list(self._contexts.values())
             self._contexts.clear()
+            self._init_locks.clear()
         for ctx in contexts:
             self._cleanup_context(ctx)
 
@@ -199,13 +203,26 @@ class UserContextManager:
         thread.start()
 
     def _warmup_sync(self, ctx: UserContext) -> None:
-        """阻塞段：DB schema 初始化 + 写并发系统启动。必须先于任何任务完成。"""
+        """阻塞段：DB schema 初始化 + 写连接单例 + 写并发系统启动。必须先于任何任务完成。"""
+        from database.utils import _debug_log
         UserContextManager.prepare_for_task(ctx)
         from database.connection import init_concurrent_system
         from database.schema import init_db
 
+        try:
+            init_db()
+        except Exception as e:
+            _debug_log(f"[_warmup_sync] init_db 异常（已捕获，继续启动）: {e}", level="WARNING", module="web.user_context")
+
+        # 确保主库写连接单例已创建，避免 _warmup_async 后台线程
+        # 触发第二次 _connect_embedded_replica（初始 pull 会阻塞异步段）。
+        try:
+            from database.connection import _get_main_write_conn_singleton
+            _get_main_write_conn_singleton(do_sync=False)
+        except Exception as e:
+            _debug_log(f"[_warmup_sync] 主库单例创建失败: {e}", level="WARNING", module="web.user_context")
+
         init_concurrent_system()
-        init_db()
 
     def _warmup_async_safe(self, ctx: UserContext, profile: str) -> None:
         """异步段：扫描未同步笔记并入队。失败不影响 ctx 可用性。"""

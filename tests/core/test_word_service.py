@@ -132,6 +132,27 @@ class TestEnrichWithStates:
             call_kwargs = mock_states.call_args[1]
             assert call_kwargs.get("auto_backfill") is False
 
+    def test_enrich_raises_on_db_failure(self, word_service):
+        """DB 查询彻底失败（返回 None）时必须抛异常，不可降级为 NOT_STARTED。
+
+        回归：电脑唤醒后 Turso stream not found 一瞬，get_word_states_in_batch
+        曾返回空 dict，使所有已处理词被错判为 NOT_STARTED 重新推送 AI，导致
+        120 词全部触发墨墨"已存在不一致释义"冲突。
+        """
+        import pytest
+        items = [
+            WordItem(voc_id="v1", spelling="apple"),
+            WordItem(voc_id="v2", spelling="banana"),
+        ]
+
+        with mock.patch(
+            "core.word_service.get_word_states_in_batch"
+        ) as mock_states:
+            mock_states.return_value = None  # DB 查询失败 sentinel
+
+            with pytest.raises(RuntimeError, match="单词状态查询彻底失败"):
+                word_service.enrich_with_states(items, auto_backfill=True)
+
 
 class TestPartitionByProcessability:
     """Test partition_by_processability: WordState-based grouping (M5 重写后)。"""

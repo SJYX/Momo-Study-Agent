@@ -18,6 +18,8 @@ Critical WalConflict rule:
 import os
 import queue
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -196,35 +198,203 @@ def _resolve_conn_context(db_path: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def _query_turso_db_size(url: str) -> int:
+    """查询 Turso 数据库总大小（字节）。失败返回 0（降级为绝对大小显示）。"""
+    try:
+        import requests
+    except ImportError:
+        return 0
+
+    api_token = os.getenv("TURSO_API_TOKEN", "")
+    org = os.getenv("TURSO_ORGANIZATION", "")
+    if not api_token:
+        return 0
+
+    # 从 URL 解析 db name: libsql://db-name-org.region.turso.io
+    host = url.replace("libsql://", "").replace("https://", "")
+    subdomain = host.split(".")[0]  # e.g. "history-asher-ashershi"
+
+    if not org:
+        # 尝试从 subdomain 提取 org（最后一个 - 后面的部分）
+        parts = subdomain.rsplit("-", 1)
+        if len(parts) == 2:
+            org = parts[1]
+        else:
+            return 0
+
+    # db name = subdomain 减去 "-{org}" 后缀
+    if subdomain.endswith(f"-{org}"):
+        db_name = subdomain[: -(len(org) + 1)]
+    else:
+        db_name = subdomain
+
+    try:
+        _debug_log(f"[_connect_embedded_replica] 正在查询云端数据库大小 (org={org}, db={db_name})…", level="INFO")
+        resp = requests.get(
+            f"https://api.turso.tech/v1/organizations/{org}/databases/{db_name}",
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=10,
+        )
+        if not resp.ok:
+            _debug_log(f"[_connect_embedded_replica] Turso API 返回 {resp.status_code}，跳过大小查询", level="WARNING")
+            return 0
+
+        data = resp.json()
+        db_info = data.get("database", data)
+
+        # 灵活查找 size 相关字段
+        size = (
+            db_info.get("size")
+            or db_info.get("Size")
+            or db_info.get("size_bytes")
+            or db_info.get("db_size")
+            or 0
+        )
+        if not size:
+            usage = db_info.get("usage", db_info.get("Usage", {}))
+            if isinstance(usage, dict):
+                size = usage.get("storage_bytes") or usage.get("size") or 0
+
+        size = int(size)
+        if size > 0:
+            _debug_log(f"[_connect_embedded_replica] 云端数据库总大小: {size / 1024 / 1024:.1f} MB", level="INFO")
+        return size
+    except Exception as e:
+        _debug_log(f"[_connect_embedded_replica] 查询数据库大小失败（可忽略）: {e}", level="WARNING")
+        return 0
+
+
+def _start_pull_monitor(db_path: str, total_bytes: int) -> Optional[subprocess.Popen]:
+    """启动子进程监控初始 pull 下载进度。失败返回 None。"""
+    monitor_script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "_pull_monitor.py",
+    )
+    if not os.path.exists(monitor_script):
+        _debug_log("[_connect_embedded_replica] 监控脚本不存在，跳过进度显示", level="WARNING")
+        return None
+
+    try:
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        proc = subprocess.Popen(
+            [sys.executable, monitor_script, db_path, str(total_bytes), str(os.getpid())],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            env=env,
+        )
+        return proc
+    except Exception as e:
+        _debug_log(f"[_connect_embedded_replica] 启动监控子进程失败（可忽略）: {e}", level="WARNING")
+        return None
+
+
 def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool = False) -> Any:
     """创建 Embedded Replica 连接。
 
-    关键修复：libsql.connect(sync_url=...) 在本地 DB 文件不存在时会自动执行
-    初始 pull（拉取整个远程数据库），在某些网络环境下会无限卡住。
-    因此先用 sqlite3 创建空 DB 文件，再用 libsql.connect(sync_url=...) 连接——
-    此时 libsql 检测到已有 DB 文件，跳过初始 pull，连接瞬间完成。
+    如果本地 .db 文件不存在（例如自愈恢复后被删除），libsql.connect 会执行
+    初始 pull 从云端拉取完整数据，耗时取决于网络和库大小。
+    如果本地 .db 已存在且有对应 .db-info 元数据，则跳过初始 pull，连接瞬间完成。
     """
     if not HAS_LIBSQL:
         raise RuntimeError("libsql is not available")
 
     final_url = url.replace("libsql://", "https://")
+    _debug_log(f"[_connect_embedded_replica] db_path={db_path}, url={final_url[:50]}..., do_sync={do_sync}")
 
-    # 预创建空 DB 文件（如果不存在），避免 libsql.connect(sync_url=...)
-    # 在无本地文件时自动执行初始 pull 而卡住
-    if not os.path.exists(db_path):
+    # 清理残留：如果 .db 不存在但 .db-info 残留，libsql 会报
+    # "db file exists but metadata file does not"。提前清理让 libsql 执行初始 pull。
+    has_existing_db = os.path.exists(db_path)
+    has_metadata = os.path.exists(db_path + "-info") if has_existing_db else False
+
+    if not has_existing_db:
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        from database.utils import _cleanup_stale_sidecars
+        _cleanup_stale_sidecars(os.path.abspath(db_path))
+    elif not has_metadata:
+        # .db 存在但 .db-info 不存在：libsql 无法识别此文件为有效副本，
+        # 会跳过初始 pull 或报 "metadata file does not"。
+        # 无论 .db 大小，删除它让 libsql 从零开始拉取云端数据。
+        from database.utils import _cleanup_stale_sidecars
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-            _pre = sqlite3.connect(db_path)
-            _pre.execute("PRAGMA journal_mode=WAL")
-            _pre.close()
-            _debug_log(f"已预创建空 DB 文件: {db_path}", level="INFO")
-        except Exception as e:
-            _debug_log(f"预创建 DB 文件失败（可忽略）: {e}", level="WARNING")
+            db_size = os.path.getsize(db_path)
+        except OSError:
+            db_size = 0
+        _debug_log(
+            f"[_connect_embedded_replica] .db 文件存在 ({db_size} 字节) 但无元数据，"
+            f"删除后重新拉取云端数据",
+            level="WARNING",
+        )
+        try:
+            os.remove(db_path)
+            has_existing_db = False
+        except OSError:
+            pass
+        _cleanup_stale_sidecars(os.path.abspath(db_path))
 
-    conn = libsql.connect(db_path, sync_url=final_url, auth_token=token)
+    needs_initial_pull = not has_existing_db or not has_metadata
+    monitor_proc = None
+
+    # 标记数据库类型，方便日志区分主库 vs Hub
+    db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
+
+    if needs_initial_pull:
+        total_size = _query_turso_db_size(url)
+        if total_size > 0:
+            _debug_log(
+                f"[{db_label}] 本地无有效副本（db={'存在' if has_existing_db else '不存在'}, "
+                f"metadata={'存在' if has_metadata else '不存在'}），正在连接云端并执行初始 pull…",
+                level="INFO",
+            )
+        else:
+            _debug_log(
+                f"[{db_label}] 本地无有效副本（db={'存在' if has_existing_db else '不存在'}, "
+                f"metadata={'存在' if has_metadata else '不存在'}），正在连接云端并执行初始 pull…"
+                f"（未配置 TURSO_API_TOKEN，仅显示绝对大小）",
+                level="INFO",
+            )
+        monitor_proc = _start_pull_monitor(db_path, total_size)
+    else:
+        _debug_log(f"[{db_label}] 本地已有副本，正在连接…", level="INFO")
+
+    _t0 = time.time()
+    try:
+        if needs_initial_pull:
+            _debug_log(f"[{db_label}] 正在连接云端并执行初始 pull…", level="INFO")
+        conn = libsql.connect(db_path, sync_url=final_url, auth_token=token, timeout=30.0)
+    except Exception as e:
+        _debug_log(
+            f"[{db_label}] libsql.connect 失败: {type(e).__name__}: {e}",
+            level="ERROR",
+        )
+        raise
+    finally:
+        # 无论成功失败，都要停止监控子进程
+        if monitor_proc is not None:
+            try:
+                monitor_proc.terminate()
+                monitor_proc.wait(timeout=3)
+            except Exception:
+                try:
+                    monitor_proc.kill()
+                except Exception:
+                    pass
+    _elapsed = time.time() - _t0
 
     try:
-        conn.execute("PRAGMA busy_timeout=5000;")
+        final_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    except OSError:
+        final_size = 0
+
+    if needs_initial_pull:
+        _debug_log(
+            f"[{db_label}] 连接完成，本地 DB: {final_size / 1024 / 1024:.1f} MB (耗时 {_elapsed:.1f}s)",
+            level="INFO",
+        )
+    else:
+        _debug_log(f"[{db_label}] libsql.connect 返回成功 (耗时 {_elapsed:.1f}s)", level="INFO")
+
+    try:
+        conn.execute("PRAGMA busy_timeout=30000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
     except Exception as e:
         _debug_log(f"Embedded Replica PRAGMA 配置失败（可忽略）: {e}", level="WARNING")
@@ -235,9 +405,13 @@ def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool 
             set_db_syncing(phase="initial_sync")
         except ImportError:
             pass
+        _debug_log("[_connect_embedded_replica] 执行 conn.sync()...")
+        _t1 = time.time()
         try:
             conn.sync()
         finally:
+            _sync_elapsed = time.time() - _t1
+            _debug_log(f"[_connect_embedded_replica] conn.sync() 完成 (耗时 {_sync_elapsed:.1f}s)", level="INFO")
             try:
                 clear_db_syncing()
             except ImportError:
@@ -416,42 +590,48 @@ def _get_main_write_conn_singleton(
     if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
         return _get_local_conn(_config.DB_PATH)
 
+    # 第一阶段：获取当前单例引用并执行路径校验
     with _main_write_conn_lock:
-        if _main_write_conn_singleton is not None:
-            # 路径感知：如果当前请求的路径与单例路径不符，必须重建
+        conn = _main_write_conn_singleton
+        if conn is not None:
             current_path = os.path.abspath(_config.DB_PATH)
             if _main_write_conn_singleton_path and os.path.abspath(_main_write_conn_singleton_path) != current_path:
                 _debug_log(f"主库单例路径切换: {_main_write_conn_singleton_path} -> {current_path}", level="INFO")
                 try:
-                    _main_write_conn_singleton.close()
+                    conn.close()
                 except Exception:
                     pass
                 _main_write_conn_singleton = None
                 _main_write_conn_singleton_path = None
+                conn = None
 
-        if _main_write_conn_singleton is not None:
-            try:
-                with _main_write_conn_op_lock:
-                    # 性能优化：1秒内不重复进行健康检查
-                    now = time.time()
-                    if now - _main_write_conn_last_check > 1.0:
-                        _main_write_conn_singleton.execute("SELECT 1")
-                        _main_write_conn_last_check = now
-                        
-                    if do_sync and hasattr(_main_write_conn_singleton, "sync"):
-                        _main_write_conn_singleton.sync()
-                return _main_write_conn_singleton
-            except BaseException as health_error:
-                _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
-                try:
-                    _main_write_conn_singleton.close()
-                except Exception:
-                    pass
-                _main_write_conn_singleton = None
-                _main_write_conn_singleton_path = None
+    # 第二阶段：如果已有单例，在【锁外】进行健康检查（仅持操作锁）
+    if conn is not None:
+        try:
+            with _main_write_conn_op_lock:
+                now = time.time()
+                if now - _main_write_conn_last_check > 1.0:
+                    conn.execute("SELECT 1")
+                    _main_write_conn_last_check = now
+                if do_sync and hasattr(conn, "sync"):
+                    conn.sync()
+            return conn
+        except BaseException as health_error:
+            _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
+            with _main_write_conn_lock:
+                if _main_write_conn_singleton is conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    _main_write_conn_singleton = None
+                    _main_write_conn_singleton_path = None
+            # 继续往下执行创建逻辑
 
     last_error = None
     for attempt in range(max_retries):
+        if attempt > 0:
+            _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
         try:
             conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
             with _main_write_conn_lock:
@@ -470,15 +650,6 @@ def _get_main_write_conn_singleton(
             last_error = e
             if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
                 _backup_broken_database_file(_config.DB_PATH, "主库副本状态损坏，已备份后重试")
-                # metadata 缺失时必须同时清理 .db-info，否则重试会因旧元数据再次失败
-                if _is_replica_metadata_missing_error(e):
-                    try:
-                        info_path = os.path.abspath(_config.DB_PATH) + ".info"
-                        if os.path.exists(info_path):
-                            os.remove(info_path)
-                            _debug_log(f"已清理过期元数据: {info_path}", level="INFO")
-                    except Exception:
-                        pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
@@ -497,26 +668,35 @@ def _get_hub_write_conn_singleton(
     if not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL):
         return _get_hub_local_conn()
 
+    # 第一阶段：获取当前 Hub 单例引用
     with _hub_write_conn_lock:
-        if _hub_write_conn_singleton is not None:
-            try:
-                with _hub_write_conn_op_lock:
-                    _hub_write_conn_singleton.execute("SELECT 1")
-                    if do_sync and hasattr(_hub_write_conn_singleton, "sync"):
-                        _hub_write_conn_singleton.sync()
-                return _hub_write_conn_singleton
-            except BaseException as health_error:
-                _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
-                try:
-                    _hub_write_conn_singleton.close()
-                except Exception:
-                    pass
-                _hub_write_conn_singleton = None
+        conn = _hub_write_conn_singleton
+
+    # 第二阶段：健康检查（锁外进行，仅持操作锁）
+    if conn is not None:
+        try:
+            with _hub_write_conn_op_lock:
+                conn.execute("SELECT 1")
+                if do_sync and hasattr(conn, "sync"):
+                    conn.sync()
+            return conn
+        except BaseException as health_error:
+            _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
+            with _hub_write_conn_lock:
+                if _hub_write_conn_singleton is conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    _hub_write_conn_singleton = None
+            # 继续往下执行创建逻辑
 
     last_error = None
     for attempt in range(max_retries):
         try:
+            _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
             conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+            _debug_log("[_get_hub_write_conn_singleton] _connect_embedded_replica 返回成功")
             with _hub_write_conn_lock:
                 if _hub_write_conn_singleton is None:
                     _hub_write_conn_singleton = conn
@@ -530,6 +710,7 @@ def _get_hub_write_conn_singleton(
                 return _hub_write_conn_singleton
         except Exception as e:
             last_error = e
+            _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1} 失败: {e}", level="WARNING")
             if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
                 _backup_broken_database_file(HUB_DB_PATH, "Hub 副本状态损坏，已备份后重试")
             if attempt < max_retries - 1:
@@ -699,16 +880,21 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         raise RuntimeError("强制云端模式已启用，但 libsql 不可用")
 
     if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL:
+        _debug_log("[_get_hub_conn] 检测到云端 Hub 配置，尝试连接...")
         last_error = None
         for attempt in range(max_retries):
             try:
-                return _get_hub_write_conn_singleton(
+                _debug_log(f"[_get_hub_conn] 尝试 {attempt+1}/{max_retries}，调用 _get_hub_write_conn_singleton...")
+                result = _get_hub_write_conn_singleton(
                     do_sync=False,
                     max_retries=max_retries,
                     retry_delay=retry_delay,
                 )
+                _debug_log("[_get_hub_conn] 云端 Hub 连接成功")
+                return result
             except Exception as e:
                 last_error = e
+                _debug_log(f"[_get_hub_conn] 尝试 {attempt+1} 失败: {e}", level="WARNING")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                 else:
@@ -716,6 +902,7 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         if get_force_cloud_mode():
             raise RuntimeError(f"强制云端模式连接 Hub 失败 (已尝试 {max_retries} 次): {last_error}")
 
+    _debug_log("[_get_hub_conn] 无云端配置，使用本地 Hub 连接")
     if not get_force_cloud_mode():
         return _get_hub_local_conn()
 

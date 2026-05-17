@@ -138,7 +138,12 @@ def _submit_with_profile_lock(
             ctx = _deps._context_manager.get(profile)
             UserContextManager.prepare_for_task(ctx)
         try:
+            logger.info(f"[Task] {task_type} 任务线程已启动，开始执行业务逻辑", module="study_router")
             func()
+            logger.info(f"[Task] {task_type} 任务执行完成", module="study_router")
+        except Exception as exc:
+            logger.error(f"[Task] {task_type} 任务执行异常: {exc}", module="study_router")
+            raise
         finally:
             release_profile_lock(profile)
 
@@ -318,6 +323,7 @@ async def process_today(
     # 触发处理时清理缓存，确保下次获取的是最新状态
     ctx.cache.pop("today", None)
 
+    logger.info(f"[Study] process_today 收到请求，正在获取今日列表...", module="study_router")
     res = await run_in_threadpool(momo.get_today_items, limit=500)
     items = (res or {}).get("data", {}).get("today_items", [])
 
@@ -333,10 +339,13 @@ async def process_today(
 
     loop = asyncio.get_running_loop()
 
+    logger.info(f"[Study] 获取到 {len(items)} 词，准备提交任务", module="study_router")
+
     def _run():
         workflow.process_word_list(items, "今日任务")
 
     task_id = _submit_with_profile_lock(user, registry, _run, loop, logger, task_type="today")
+    logger.info(f"[Study] 任务已提交: task_id={task_id[:8]}", module="study_router")
 
     return ok_response({"task_id": task_id, "word_count": len(items)}, user_id=user)
 

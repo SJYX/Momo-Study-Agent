@@ -5,6 +5,7 @@
  */
 import { useEffect, useRef, useCallback, useState } from 'react'
 import type { TaskEvent } from '../api/types'
+import { apiClient } from '../api/client'
 
 interface UseTaskStreamOptions {
   taskId: string | null
@@ -107,6 +108,20 @@ export function useTaskStream({ taskId, enabled = true, onEvent, onDone }: UseTa
     es.onerror = () => {
       setStatus('disconnected')
       es.close()
+      // SSE 连接失败：可能是服务器重启导致旧 task 失效。
+      // 通过 HTTP 检查任务状态，若不存在则调 onDone 解锁前端。
+      apiClient(`/api/tasks/${taskId}?profile=${encodeURIComponent(profile)}`)
+        .then(res => {
+          if (!res.ok) {
+            // 任务不存在（404）→ 标记 error 让前端恢复 idle
+            onDone?.('error')
+          }
+          // 任务存在但 SSE 断了 → 状态留在 'disconnected'，用户可手动刷新
+        })
+        .catch(() => {
+          // 网络不通 → 同样解锁，避免前端卡死
+          onDone?.('error')
+        })
     }
 
     return () => {

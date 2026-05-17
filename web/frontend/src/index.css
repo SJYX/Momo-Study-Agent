@@ -27,6 +27,14 @@
   --color-error: #B43421;
   --color-error-soft: #FDE7E3;
 
+  /* === Success === */
+  --color-success: #2E7D32;
+  --color-success-soft: #E8F5E9;
+
+  /* === Warning === */
+  --color-warning: #E65100;
+  --color-warning-soft: #FFF3E0;
+
   /* === Radius === */
   --radius-pill: 6px;
   --radius-button: 8px;

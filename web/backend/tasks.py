@@ -119,6 +119,15 @@ class TaskRegistry:
                 rec.started_at = time.time()
                 cancel_requested = rec.cancel_requested
 
+            if logger is not None:
+                try:
+                    logger.info(
+                        f"[Task] {task_type} 任务开始执行 (profile={profile}, task_id={task_id[:8]})",
+                        module="task_registry",
+                    )
+                except Exception:
+                    pass
+
             self._emit_event(rec, {
                 "type": "status",
                 "status": "running",

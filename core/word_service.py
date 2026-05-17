@@ -79,23 +79,22 @@ class WordService:
 
         voc_ids = [item.voc_id for item in items]
 
-        try:
-            states_dict = get_word_states_in_batch(
-                voc_ids, auto_backfill=auto_backfill, db_path=db_path
+        states_dict = get_word_states_in_batch(
+            voc_ids, auto_backfill=auto_backfill, db_path=db_path
+        )
+        if states_dict is None:
+            # DB 查询彻底失败（包括自愈失败）。必须中止，避免把已处理词错判为
+            # NOT_STARTED 触发 AI 重处理 + 触发墨墨"已存在不一致释义"冲突。
+            raise RuntimeError(
+                "[enrich_with_states] 单词状态查询彻底失败（DB 损坏或自愈失败），"
+                "本轮任务中止以避免重复处理已处理过的词"
             )
-            result = []
-            for item in items:
-                state_str = states_dict.get(item.voc_id, WordState.NOT_STARTED.value)
-                state = WordState(state_str)
-                result.append((item, state))
-            return result
-        except Exception as e:
-            self.logger.error(
-                f"[enrich_with_states] 状态查询失败: {e}",
-                module="core.word_service",
-            )
-            # 降级：全部标记为 NOT_STARTED（保守处理）
-            return [(item, WordState.NOT_STARTED) for item in items]
+        result = []
+        for item in items:
+            state_str = states_dict.get(item.voc_id, WordState.NOT_STARTED.value)
+            state = WordState(state_str)
+            result.append((item, state))
+        return result
 
     def partition_by_processability(
         self,

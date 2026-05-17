@@ -163,14 +163,23 @@ class StudyWorkflow:
 
     def _run_ai_batch(self, batch_no, total_batches, batch_spells):
         """执行单批 AI 处理。"""
+        self.logger.info(
+            f"[AI] 批次 {batch_no}/{total_batches} 开始调用 AI（{len(batch_spells)} 词）",
+            module="study_workflow",
+        )
         try:
             results, metadata = self.ai_client.generate_mnemonics(batch_spells)
+            self.logger.info(
+                f"[AI] 批次 {batch_no}/{total_batches} 返回 {len(results or [])} 条结果",
+                module="study_workflow",
+            )
             return results or [], metadata or {}
         except Exception as exc:
             self.logger.warning(f"⚠️ AI 批次 {batch_no}/{total_batches} 处理失败: {exc}")
             return [], {}
 
     def process_word_list(self, word_list, name):
+        self.logger.info(f"[Pipeline] {name} 开始处理，原始列表 {len(word_list)} 词", module="study_workflow")
 
         if not word_list:
             self.logger.info(f"{name} 无需处理")
@@ -185,15 +194,39 @@ class StudyWorkflow:
         # 6.2: 记录进度快照以供薄弱词筛选使用
         try:
             from database.progress_repo import log_progress_snapshots
-            
+
             # 如果是 Warmup 任务或 review_count 全为 0，尝试回填 study_count
             all_zero = all((item.review_count or 0) == 0 for item in normalized_items)
             if all_zero:
                 try:
-                    from datetime import datetime, timedelta
+                    from datetime import datetime
+                    import threading
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     # 查询今日已学记录（覆盖今日前后的窗口以防时区差异）
-                    records_res = self.momo.query_study_records(today_str, today_str)
+                    # 用 daemon 线程 + join(timeout) 超时保护：API 不可用时最多等 10 秒
+                    self.logger.info(f"[Pipeline] {name} review_count 全为 0，正在回填 study_count...", module="study_workflow")
+
+                    _api_result = [None]
+                    _api_error = [None]
+
+                    def _call_api():
+                        try:
+                            _api_result[0] = self.momo.query_study_records(today_str, today_str)
+                        except Exception as exc:
+                            _api_error[0] = exc
+
+                    api_thread = threading.Thread(target=_call_api, daemon=True)
+                    api_thread.start()
+                    api_thread.join(timeout=10)
+
+                    if api_thread.is_alive():
+                        self.logger.warning(f"⚠️ query_study_records 超时(10s)，跳过 study_count 回填", module="study_workflow")
+                        records_res = None
+                    elif _api_error[0] is not None:
+                        raise _api_error[0]
+                    else:
+                        records_res = _api_result[0]
+
                     if records_res and records_res.get("data", {}).get("records"):
                         records = records_res["data"]["records"]
                         count_map = {str(r.get("voc_id")): int(r.get("study_count", 0)) for r in records}
@@ -219,12 +252,13 @@ class StudyWorkflow:
         except Exception as e:
             self.logger.error(f"❌ 记录进度历史快照失败: {e}")
 
+        self.logger.info(f"[Pipeline] {name} 进度快照阶段完成，准备初始化任务...", module="study_workflow")
 
         self.logger.info(
             f"[Pipeline] {name} 任务初始化，总计 {len(normalized_items)} 词（过滤脏数据 {discarded_count} 词）",
             extra={
                 "event": "progress",
-                "data": {"current": 0, "total": len(normalized_items), "discarded": discarded_count, "phase": "initializing"},
+                "data": {"total": len(normalized_items), "discarded": discarded_count, "phase": "initializing"},
             },
         )
 
@@ -233,7 +267,9 @@ class StudyWorkflow:
         self.logger.info(f"[Pipeline] {name} 正在查询单词状态库...")
         t_enrich_start = time.time()
 
+        self.logger.info(f"[Pipeline] {name} 调用 enrich_with_states 前 (items={len(normalized_items)})", module="study_workflow")
         enriched = self.word_service.enrich_with_states(normalized_items, auto_backfill=True, db_path=self.db_path)
+        self.logger.info(f"[Pipeline] {name} enrich_with_states 返回 (enriched={len(enriched)})", module="study_workflow")
         t_enrich_end = time.time()
         self.logger.info(f"[Profiling] {name} 状态增强耗时: {int((t_enrich_end - t_enrich_start)*1000)}ms")
 
@@ -317,11 +353,18 @@ class StudyWorkflow:
                 f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。",
                 extra={
                     "event": "batch_start",
-                    "progress": {"current": 0, "total": total_pending, "batches": total_batches},
+                    "progress": {"total": total_pending, "batches": total_batches},
                 },
             )
 
             for future, batch, start_pos, batch_no, batch_spells in futures:
+                # 批次开始：发射 running 行状态，让前端知道当前处理哪个词
+                running_rows = [{"item_id": s, "status": "running", "phase": f"ai_batch {batch_no}/{total_batches}"} for s in batch_spells]
+                self.logger.info(
+                    f"[RowStatus] 批次 {batch_no}/{total_batches} 开始处理: {self._format_words_preview(batch_spells)}",
+                    extra={"event": "row_status", "data": {"rows": running_rows}},
+                )
+
                 results, metadata = future.result()
                 if not results:
                     self.logger.warning(

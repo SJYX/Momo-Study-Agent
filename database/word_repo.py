@@ -32,7 +32,7 @@ from ._repo_helpers import (
     row_value,
     rows_to_dicts,
 )
-from .utils import _debug_log, get_timestamp_with_tz
+from .utils import _debug_log, _is_sqlite_data_corruption_error, get_timestamp_with_tz
 
 _LOG_MOD = "database.momo_words"
 
@@ -62,17 +62,21 @@ def _log_word_repo_failure(func_name: str, e: BaseException, *, level: str = "WA
 # ============================================================================
 
 
-@with_read_session(default_return={})
+@with_read_session(default_return=None)
 def get_word_states_in_batch(
     voc_ids: List[str],
     *,
     auto_backfill: bool = True,
     db_path: Optional[str] = None,
     session: DBSession = None,
-) -> Dict[str, str]:
+) -> Optional[Dict[str, str]]:
     """批量获取单词的 5 态状态。
 
-    返回: {voc_id: "not_started" | "local_ready" | "synced" | "conflict" | "failed"}
+    返回:
+    - dict: {voc_id: "not_started" | "local_ready" | "synced" | "conflict" | "failed"}；
+            空 dict 表示所有词都是 NOT_STARTED（合法的全新词场景）。
+    - None: DB 查询彻底失败（自愈也失败）。调用方必须区分空 dict 与 None，
+            否则会把已处理词错判为 NOT_STARTED 触发 AI 重处理。
 
     机制:
     - 单条 LEFT JOIN: processed_words (p) / ai_word_notes (n)
@@ -100,6 +104,13 @@ def get_word_states_in_batch(
             )
         return result
     except Exception as e:
+        # corruption 类异常必须透传给 @with_read_session 的 fallback_on_corruption，
+        # 否则装饰器看不到异常，自愈链路不会触发；调用方拿到空 dict 会把所有词误判为
+        # NOT_STARTED，让 partition_by_processability 把已处理过的词重新推送 AI（实测：
+        # 唤醒后 Turso stream not found 一瞬抛 `database disk image is malformed`，
+        # 120 词全部 conflict）。
+        if _is_sqlite_data_corruption_error(e):
+            raise
         _log_word_repo_failure("get_word_states_in_batch", e)
         return {}
 

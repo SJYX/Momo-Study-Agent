@@ -242,26 +242,26 @@ class TaskEvent(RootModel):
 # ---------------------------------------------------------------------------
 class WordNoteSummary(BaseModel):
     voc_id: str
-    spelling: str = ""
-    basic_meanings: str = ""
-    memory_aid: str = ""
+    spelling: Optional[str] = None
+    basic_meanings: Optional[str] = None
+    memory_aid: Optional[str] = None
     it_level: int = 0
     sync_status: int = 0
-    updated_at: str = ""
-    created_at: str = ""
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 class WordNoteDetail(WordNoteSummary):
-    ielts_focus: str = ""
-    collocations: str = ""
-    traps: str = ""
-    synonyms: str = ""
-    discrimination: str = ""
-    example_sentences: str = ""
-    word_ratings: str = ""
-    tags: str = ""
-    raw_full_text: str = ""
-    it_history: str = ""
+    ielts_focus: Optional[str] = None
+    collocations: Optional[str] = None
+    traps: Optional[str] = None
+    synonyms: Optional[str] = None
+    discrimination: Optional[str] = None
+    example_sentences: Optional[str] = None
+    word_ratings: Optional[str] = None
+    tags: Optional[str] = None
+    raw_full_text: Optional[str] = None
+    it_history: Optional[str] = None
 
 
 class WordsListResponse(BaseModel):
@@ -407,6 +407,32 @@ class SyncRetryResponse(BaseModel):
     total_conflicts: Optional[int] = None
     total_failed: Optional[int] = None
     message: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# /api/ops/db/replica-health  — Embedded Replica 健康快照
+# ---------------------------------------------------------------------------
+class DbReplicaHealthResponse(BaseModel):
+    """Embedded Replica 健康快照 — 连接状态 + 同步性能 + 数据一致性。"""
+    # 连接健康
+    connection_alive: bool = False
+    is_cloud: bool = False
+    db_path: str = ""
+    sync_in_progress: bool = False
+    last_sync_phase: str = ""
+    # 同步性能（最近 5 分钟窗口）
+    sync_p50_ms: Optional[float] = None
+    sync_p95_ms: Optional[float] = None
+    sync_p99_ms: Optional[float] = None
+    sync_count: int = 0
+    # 写队列
+    write_queue_depth: int = 0
+    write_total_queued: int = 0
+    write_total_written: int = 0
+    write_total_errors: int = 0
+    # 数据一致性
+    schema_version: int = 0
+    db_size_mb: float = 0.0
 
 
 # ---------------------------------------------------------------------------

@@ -294,6 +294,24 @@ export interface SyncRetryResponse {
   message?: string | null
 }
 
+export interface DbReplicaHealthResponse {
+  connection_alive: boolean
+  is_cloud: boolean
+  db_path: string
+  sync_in_progress: boolean
+  last_sync_phase: string
+  sync_p50_ms: number | null
+  sync_p95_ms: number | null
+  sync_p99_ms: number | null
+  sync_count: number
+  write_queue_depth: number
+  write_total_queued: number
+  write_total_written: number
+  write_total_errors: number
+  schema_version: number
+  db_size_mb: number
+}
+
 export interface UserProfile {
   username: string
   ai_provider?: string
