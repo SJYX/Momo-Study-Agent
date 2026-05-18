@@ -298,9 +298,9 @@ GLOBAL_CACHE_ENABLED: bool = False
 | P2 | `database/migrations/V002_add_is_customized.py` | 是（幂等 ALTER） | false |
 | P3 | 修改 `study_workflow.py` 加 flag 分支 | 是（flag=false 走老逻辑） | false |
 | P4 | 修改 `notes_repo.py` 加 `is_customized=1` | 是（不影响读取） | false |
-| P5 | 端到端测试：设 flag=true，验证 3 级查找 | 是（可随时关回） | true/false 切换 |
-| P6 | 种子数据回填 `V003_seed_global_cache.py` | 是 | true |
-| P7 | 清理：移除老逻辑分支（可选，最后一个 PR） | 是 | 移除 flag |
+| P4.5 | Turso 建库 + 种子数据回填 `V003_seed_global_cache.py` | 是 | false |
+| P5 | 端到端测试：设 flag=true，验证 L1/L2/L3 全链路 | 是（可随时关回） | true/false 切换 |
+| P6 | 清理：移除老逻辑分支（可选，最后一个 PR） | 是 | 移除 flag |
 
 **核心原则**：每个阶段完成后 `main.py` 和 Web 都能正常启动。Flag=false 时行为与重构前 100% 一致。
 
