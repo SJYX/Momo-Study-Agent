@@ -25,12 +25,20 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 > 本节每次发版或大 PR 合入后更新；`CLAUDE.md` 的「当前状态」以此为准。
 
 - **版本**：1.0.0；Python 3.12+。
-- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；**`core/db_manager.py` 已于 2026-04-22 移除**——所有持久层操作一律经 `database/` 包 5 个子模块（老调用点可经 `database/legacy.py` 门面过渡）。
-- **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定（feat/high-perf-sync 已合回 main）。
-- **正在进行**：Web 前端界面初版（`feat/web-ui` 分支，方案见 `docs/dev/WEB_UI_PLAN.md`）。
-- **最近变更**：
-  - 2026-04-22 彻底删除 `core/db_manager.py`（3972 行僵尸副本）；顺带修 `database/legacy.py` + `database/hub_users.py` 的 `__future__` 位置 bug。
-  - 2026-04-21 文档大清理（归档 8 份已完成 PHASE/FIX 文档、architecture 三合一为 `ARCHITECTURE.md`、`CLAUDE.md` 升级为 AI 会话首页）。
+- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；所有持久层操作经 `database/` 包（老调用点可经 `database/legacy.py` 门面过渡）。
+- **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定。优先队列调度（Phase 4）、防饿死保底、ActiveProfileRegistry 多用户追踪已实现。
+- **配置层**：profile_loader 三阶段加载（Phase 6.3a）、pydantic-settings 模型（Phase 6.3b）、Kill Switch 特性开关框架（Phase 6.1）已实现。
+- **Schema 迁移**：PRAGMA user_version 管理框架（Phase 6.2）建立，V001 迁移收纳所有历史 ALTER 语句。
+- **代码质量**：pre-commit + ESLint 9 启用（Phase 6.4），37 个新单元测试。
+- **最近完成**（2026-05-11）：
+  - Phase 4：PriorityQueue (P1/P2/P3/P4) + 防饿死保底（连续 5 个 P1 强制轮转）
+  - Phase 4.5：API 查询降重（COUNT 替代全量 fetch），sync/stats 端点 P95 <100ms
+  - Phase 5：日志系统整合（ContextLogger 中央 throttle + structured logging）
+  - Phase 6.1：Kill Switch（AUTO_WARMUP_SYNC_ENABLED / SYNC_STATUS_HEAVY_QUERY_ENABLED / BACKGROUND_RETRY_ENABLED）
+  - Phase 6.2：Schema 迁移框架（apply_migrations + V001_initial）
+  - Phase 6.3：配置现代化（profile_loader 三阶段 env 加载 + Settings pydantic 模型）
+  - Phase 6.4：质量门禁（pre-commit: ruff + hooks；ESLint 9 flat config）
+  - Bug Fix：core/weak_word_filter + database/community_lookup 改为动态 `_config.DB_PATH` 读取
 - **近期不碰**：`docs/prompts/`（生产 prompt）、`docs/api/`（API 参考）。
 
 ## 1. 核心架构与边界
@@ -68,8 +76,17 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
   - 职责：模型调用、结果清洗、结构化输出。
 - 业务引擎：`core/iteration_manager.py`
   - 职责：重炼/选优链路与薄弱词迭代。
-- 基建层：`config.py`, `core/logger.py`, `core/log_config.py`
-  - 职责：多用户隔离、配置装载、结构化日志配置。
+- 基建层：`config.py`, `core/profile_loader.py`, `core/settings.py`, `core/logger.py`, `core/log_config.py`
+   - 职责：多用户隔离、三阶段环境加载、pydantic 配置模型、结构化日志配置、特性开关。
+- Web 层：`web/` 包（已集成到 main 分支）
+   - `web/backend/`：FastAPI ASGI 后端，复用 `core/*` + `database/*`，不改其签名/语义。
+   - `web/backend/app.py`：FastAPI 工厂 + lifespan + 生产模式静态文件托管。
+   - `web/backend/routers/`：REST 端点（session/study/words/sync/users/preflight/stats/tasks）。
+   - `web/backend/tasks.py`：TaskRegistry + SSE 进度推送。
+   - `web/backend/logger_bridge.py`：日志 tee 到任务事件队列。
+   - `web/frontend/`：React + Vite + TypeScript SPA。
+   - **关键约束**：Web 后端与 CLI 共享 `process.lock`（互斥）；`core/*` 和 `database/*` 不做任何为 Web 的签名变更。
+
 
 ## 3. MUST 级架构契约（违反即视为严重问题）
 
@@ -79,9 +96,9 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
     - `TURSO_HUB_DB_URL` 仅用于中央管理/鉴权/统计。
     - `TURSO_DB_URL` 仅用于个人学习数据。
     - 禁止凭据落入个人库，禁止学习记录落入 Hub。
-2. 禁用 `row_factory` 依赖。
-    - Turso（libsql）不支持 `sqlite3.Row` 语义。
-    - 查询结果统一走 `_row_to_dict(cursor, row)`。
+2. 禁用 SQLite Row 对象（Turso 兼容性约束）。
+    - Turso 的 `libsql.Connection` 对象不支持 `sqlite3.Row` 对象和 `row_factory` 赋值（详见 DEC-003）。
+    - 查询结果统一走 `_row_to_dict(cursor, row)` 映射为字典。
 3. 严禁业务线程直连写库，必须使用读写分离的高并发架构。
     - 读操作：必须使用线程专属的 `_get_thread_local_read_conn()` （防争抢与连接损坏）。
     - 写操作：必须投递给 `_write_queue`（如 `_queue_write_operation`），由后台守护线程单线程序列化执行。禁止业务代码里直接建立普通连接并随意 `INSERT/UPDATE`。
@@ -98,7 +115,7 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 
 ### 3.2 LLM 与生成
 
-1. Prompt 不得硬编码在 Python 长字符串中。
+1. Prompt 不得硬编码在 Python 长字符串中（详见 DEC-006）。
     - 必须放在 `docs/prompts/*.md` 并由配置路径读取。
 2. 生成结果契约为 JSON 数组。
     - 目标格式：`[...]`。

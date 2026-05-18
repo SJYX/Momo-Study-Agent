@@ -30,12 +30,13 @@ def save_user_info_to_hub(
                 if normalized_username == "asher":
                     final_role = "admin"
 
+                # 合并两条 SELECT 为一条，减少数据库查询次数
                 existing = None
-                if user_id:
-                    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-                    existing = cur.fetchone()
-                if not existing:
-                    cur.execute("SELECT * FROM users WHERE lower(username) = ?", (normalized_username,))
+                if user_id or normalized_username:
+                    cur.execute(
+                        "SELECT user_id, created_at, first_login_at, last_login_at, role, status FROM users WHERE user_id = ? OR lower(username) = ?",
+                        (user_id, normalized_username)
+                    )
                     existing = cur.fetchone()
 
                 existing_data = connection._row_to_dict(cur, existing) if existing else {}

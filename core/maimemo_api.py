@@ -11,6 +11,7 @@ import requests
 import time
 import threading
 import os
+import difflib
 from collections import deque
 from typing import List, Dict, Optional, Union, Any
 from requests.adapters import HTTPAdapter
@@ -66,36 +67,52 @@ class MaiMemoAPI:
         except Exception:
             pass
 
-    def _apply_rate_limit(self):
-        """根据墨墨频控窗口进行自适应节流，尽量减少 429 重试等待。"""
+    def _apply_rate_limit(self, priority: str = "normal"):
+        """根据墨墨频控窗口进行自适应节流，分配执行时间票据，避免线程饥饿。
+
+        Phase E 优先级分流：
+        - "normal"（默认）：受最小间隔 + 窗口限制约束，适用于后台同步
+        - "high"：跳过最小间隔约束，仅受窗口硬限制（10s/20次、60s/40次）约束，
+                   适用于前端查询类 API（get_today_items 等），避免被后台 sleep 阻塞
+        """
         with self._rate_limit_lock:
             now = time.time()
 
-            # 清理窗口外时间戳
+            # 清理真正过期的时间戳（基于当前时间）
             while self._req_ts_10s and now - self._req_ts_10s[0] >= 10:
                 self._req_ts_10s.popleft()
             while self._req_ts_60s and now - self._req_ts_60s[0] >= 60:
                 self._req_ts_60s.popleft()
 
-            wait_candidates = []
-            if self._req_ts_10s and len(self._req_ts_10s) >= 20:
-                wait_candidates.append(10 - (now - self._req_ts_10s[0]))
-            if self._req_ts_60s and len(self._req_ts_60s) >= 40:
-                wait_candidates.append(60 - (now - self._req_ts_60s[0]))
+            wait_candidates = [0.0]
 
-            # 平滑间隔，减少突发请求导致的额外限流
-            gap = now - self._last_request_ts
-            if gap < self._min_interval_sec:
-                wait_candidates.append(self._min_interval_sec - gap)
+            # 1. 最小间隔平滑处理（high 优先级跳过此约束）
+            if priority != "high":
+                interval_wait = (self._last_request_ts + self._min_interval_sec) - now
+                if interval_wait > 0:
+                    wait_candidates.append(interval_wait)
 
-            wait_time = max(wait_candidates) if wait_candidates else 0
-            if wait_time > 0:
-                time.sleep(wait_time)
+            # 2. 10秒20次限制（硬限制，所有优先级都受约束）
+            if len(self._req_ts_10s) >= 20:
+                wait_10 = (self._req_ts_10s[-20] + 10.0) - now
+                if wait_10 > 0:
+                    wait_candidates.append(wait_10)
 
-            req_ts = time.time()
-            self._req_ts_10s.append(req_ts)
-            self._req_ts_60s.append(req_ts)
-            self._last_request_ts = req_ts
+            # 3. 60秒40次限制（硬限制，所有优先级都受约束）
+            if len(self._req_ts_60s) >= 40:
+                wait_60 = (self._req_ts_60s[-40] + 60.0) - now
+                if wait_60 > 0:
+                    wait_candidates.append(wait_60)
+
+            wait_time = max(wait_candidates)
+            execution_time = now + wait_time
+
+            self._req_ts_10s.append(execution_time)
+            self._req_ts_60s.append(execution_time)
+            self._last_request_ts = execution_time
+
+        if wait_time > 0:
+            time.sleep(wait_time)
 
     @staticmethod
     def _is_transient_status(status_code: int) -> bool:
@@ -135,6 +152,8 @@ class MaiMemoAPI:
         """统一请求处理及限流"""
         url = f"{self.base_url}{endpoint}"
         expected_error_codes = set(kwargs.pop("expected_error_codes", []) or [])
+        # Phase E：从 kwargs 取出优先级参数（不传给 requests）
+        priority = kwargs.pop("_priority", "normal")
         kwargs.setdefault("timeout", (self._connect_timeout_s, self._read_timeout_s))
 
         # 单测通常会 patch `requests.request`；生产环境仍优先走 session 复用连接。
@@ -143,7 +162,7 @@ class MaiMemoAPI:
         # 添加重试逻辑（处理 429 错误）
         for attempt in range(3):  # MAX_RETRIES = 3
             try:
-                self._apply_rate_limit()
+                self._apply_rate_limit(priority=priority)
                 response = request_impl(method, url, headers=self.headers, **kwargs)
 
                 if 200 <= response.status_code < 300:
@@ -266,13 +285,23 @@ class MaiMemoAPI:
                     return str(value)
         return str(item or "")
 
-    def _classify_interpretation_list(self, res: Optional[Dict], expected_text: str = "") -> Dict[str, Any]:
+    @staticmethod
+    def _similarity(a: str, b: str) -> float:
+        """返回两个字符串的相似度比率（0.0 ~ 1.0）。"""
+        if not a or not b:
+            return 0.0
+        return difflib.SequenceMatcher(None, a, b).ratio()
+
+    def _classify_interpretation_list(self, res: Optional[Dict], expected_text: str = "", similarity_threshold: float = 0.95) -> Dict[str, Any]:
         info = {
             "sync_status": 0,
             "has_remote_interpretation": False,
             "matched_text": "",
+            "matched_id": "",
             "first_text": "",
+            "first_id": "",
             "reason": "empty",
+            "match_confidence": None,
         }
 
         if not res or not res.get("success"):
@@ -280,39 +309,63 @@ class MaiMemoAPI:
             return info
 
         items = res.get("data", {}).get("interpretations", [])
-        texts: List[str] = []
+        texts: List[Dict[str, str]] = []
         for item in items:
             text = self._extract_interpretation_text(item)
+            item_id = str(item.get("id", ""))
             if text.strip():
-                texts.append(text)
+                texts.append({"text": text, "id": item_id})
 
         if not texts:
             return info
 
         info["has_remote_interpretation"] = True
-        info["first_text"] = texts[0]
+        info["first_text"] = texts[0]["text"]
+        info["first_id"] = texts[0]["id"]
 
         if expected_text:
             normalized_expected = self._normalize_interpretation_text(expected_text)
-            for text in texts:
-                if self._normalize_interpretation_text(text) == normalized_expected:
+            best_match = {"text": "", "id": "", "ratio": 0.0}
+            for text_info in texts:
+                text = text_info["text"]
+                item_id = text_info["id"]
+                normalized_text = self._normalize_interpretation_text(text)
+                if normalized_text == normalized_expected:
                     info.update({
                         "sync_status": 1,
                         "matched_text": text,
+                        "matched_id": item_id,
                         "reason": "matched",
+                        "match_confidence": 1.0,
                     })
                     return info
+                ratio = self._similarity(normalized_text, normalized_expected)
+                if ratio > best_match["ratio"]:
+                    best_match = {"text": text, "id": item_id, "ratio": ratio}
+
+            if best_match["ratio"] >= similarity_threshold:
+                info.update({
+                    "sync_status": 1,
+                    "matched_text": best_match["text"],
+                    "matched_id": best_match["id"],
+                    "reason": "similar",
+                    "match_confidence": round(best_match["ratio"], 4),
+                })
+                return info
 
             info.update({
                 "sync_status": 2,
                 "reason": "mismatch",
+                "match_confidence": round(best_match["ratio"], 4),
             })
             return info
 
         info.update({
             "sync_status": 1,
-            "matched_text": texts[0],
+            "matched_text": texts[0]["text"],
+            "matched_id": texts[0]["id"],
             "reason": "found",
+            "match_confidence": None,
         })
         return info
 
@@ -370,7 +423,7 @@ class MaiMemoAPI:
         word标识 = spell if spell else f"voc_id:{voc_id}"
         expected_text = self._normalize_interpretation_text(local_reference or interpretation)
 
-        def _finish(sync_status: int, reason: str, cloud_text: str = ""):
+        def _finish(sync_status: int, reason: str, cloud_text: str = "", match_confidence: Optional[float] = None, match_reason: Optional[str] = None, cloud_id: str = ""):
             result = {
                 "success": sync_status == 1,
                 "sync_status": sync_status,
@@ -378,6 +431,9 @@ class MaiMemoAPI:
                 "expected_interpretation": interpretation,
                 "local_reference": local_reference or "",
                 "cloud_interpretation": cloud_text or "",
+                "cloud_id": cloud_id,
+                "match_confidence": match_confidence,
+                "match_reason": match_reason,
             }
             if return_details:
                 return result
@@ -410,6 +466,9 @@ class MaiMemoAPI:
                 status_info["sync_status"],
                 status_info["reason"],
                 status_info.get("matched_text") or status_info.get("first_text", ""),
+                match_confidence=status_info.get("match_confidence"),
+                match_reason=status_info.get("reason"),
+                cloud_id=status_info.get("matched_id") or status_info.get("first_id", ""),
             )
 
         # 如果已达到创建限制，先尝试核验远端现状
@@ -424,16 +483,26 @@ class MaiMemoAPI:
             return _finish(0, "lookup_failed")
 
         status_info = self._classify_interpretation_list(res, expected_text)
-        
+
         # 云端与本地一致：直接确认同步状态，避免不必要的创建尝试
         if status_info["sync_status"] == 1:
             get_logger().debug(f"[*] {word标识} - 墨墨已创建释义与本地一致，已确认同步", module="maimemo_api")
-            return _finish(1, status_info["reason"], status_info.get("matched_text", ""))
-        
+            return _finish(
+                1, status_info["reason"], status_info.get("matched_text", ""),
+                match_confidence=status_info.get("match_confidence"),
+                match_reason=status_info.get("reason"),
+                cloud_id=status_info.get("matched_id", ""),
+            )
+
         # 云端与本地冲突：标记冲突状态
         if status_info["sync_status"] == 2:
             get_logger().warning(f"[*] {word标识} - 墨墨已创建释义与本地不一致，标记冲突", module="maimemo_api")
-            return _finish(2, status_info["reason"], status_info.get("first_text", ""))
+            return _finish(
+                2, status_info["reason"], status_info.get("first_text", ""),
+                match_confidence=status_info.get("match_confidence"),
+                match_reason=status_info.get("reason"),
+                cloud_id=status_info.get("first_id", ""),
+            )
         
         # 云端无一致释义
         if not force_create:
@@ -601,12 +670,13 @@ class MaiMemoAPI:
     # ==========================
     def get_study_progress(self) -> Optional[Dict]:
         """获取今日学习进度"""
-        return self._request("POST", "/study/get_study_progress")
+        return self._request("POST", "/study/get_study_progress", _priority="high")
         
     def get_today_items(self, limit: int = 500) -> Optional[Dict]:
         """获取今日待学习/待复习的单词列表（公测新接口）"""
         # 官方默认每次只返回50个，我们通过传入更大的 limit 一次性拉满
-        return self._request("POST", "/study/get_today_items", json={"limit": limit})
+        # Phase E：前端查询类 API 使用 high 优先级，跳过最小间隔约束
+        return self._request("POST", "/study/get_today_items", json={"limit": limit}, _priority="high")
 
         
     def add_words_to_study(self, voc_ids: List[str], advance: bool = False) -> Optional[Dict]:

@@ -4,6 +4,29 @@
 
 ---
 
+## 一次性环境设置
+
+```bash
+# Python 后端
+pip install -e ".[dev,web]"
+
+# 启用 pre-commit hooks（首次 clone 后跑一次即可）
+pre-commit install
+
+# 前端
+cd web/frontend && npm install
+```
+
+`pre-commit install` 之后，每次 `git commit` 会自动跑：
+- ruff lint + format（Python）
+- 行尾空白 / 文件尾换行 / YAML/TOML 语法 / 大文件检查
+- 前端 ESLint + tsc -b（仅当 `web/frontend/src/**` 有变动）
+
+手工触发全仓：`pre-commit run --all-files`。
+紧急绕过（不推荐）：`git commit --no-verify`。
+
+---
+
 ## 日志规范
 
 **严禁使用 `print()`**，所有输出必须通过 logger：
@@ -39,14 +62,17 @@ result = _row_to_dict(cur, row) if row else None
 
 ### 新增字段
 
-只在 `database/schema.py` 的 `_create_tables()` 中添加，并在函数末尾追加兼容升级：
+所有表结构变更都通过 PRAGMA user_version 迁移框架处理（Phase 6.2）：
 
 ```python
-try:
-    cur.execute("ALTER TABLE my_table ADD COLUMN new_field TEXT")
-except Exception:
-    pass  # 字段已存在时静默跳过
+# database/migrations/V001_initial.py 中维护 _ADD_COLUMNS
+_ADD_COLUMNS = [
+    "ALTER TABLE ai_word_notes ADD COLUMN content_origin TEXT DEFAULT 'ai_generated'",
+    # ...
+]
 ```
+
+迁移会在启动时自动执行（`database/migrations/runner.py::apply_migrations()`），确保兼容性。
 
 ### 获取连接
 

@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme {
+  /* === Surface（背景层）=== */
+  --color-surface-base: #FAF8F3;
+  --color-surface-card: #FFFFFF;
+  --color-surface-sidebar: #F4ECDD;
+  --color-surface-hover: #F1ECE3;
+  --color-surface-highlight: #FCEFE5;
+
+  /* === Border === */
+  --color-border-default: #E9E0CD;
+  --color-border-soft: #F1ECE3;
+  --color-border-hero: #F4E1D2;
+
+  /* === Text === */
+  --color-text-primary: #37352F;
+  --color-text-secondary: #6B5D45;
+  --color-text-muted: #908A7F;
+
+  /* === Accent（暖橙）=== */
+  --color-accent: #D97757;
+  --color-accent-hover: #B85433;
+  --color-accent-soft: rgba(217, 119, 87, 0.15);
+
+  /* === Error === */
+  --color-error: #B43421;
+  --color-error-soft: #FDE7E3;
+
+  /* === Success === */
+  --color-success: #2E7D32;
+  --color-success-soft: #E8F5E9;
+
+  /* === Warning === */
+  --color-warning: #E65100;
+  --color-warning-soft: #FFF3E0;
+
+  /* === Radius === */
+  --radius-pill: 6px;
+  --radius-button: 8px;
+  --radius-card: 12px;
+
+  /* === Shadow === */
+  --shadow-card: 0 1px 3px rgba(15, 15, 15, 0.04);
+  --shadow-hero: 0 2px 8px rgba(217, 119, 87, 0.08);
+}

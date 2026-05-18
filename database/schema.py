@@ -8,6 +8,7 @@ database/schema.py: 数据库表结构、迁移与初始化逻辑。
 
 import json
 import os
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -128,7 +129,12 @@ def _check_table_exists(cursor: Any, table_name: str, db_type: str = "main", cac
 
 
 def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
-    """Create/upgrade main DB schema."""
+    """Create main DB tables (idempotent CREATE IF NOT EXISTS).
+
+    Phase 6 起：列演进一律走 ``database/migrations/``（PRAGMA user_version + V001+）。
+    本函数只负责"v0 setup"：建表骨架 + 索引。`skip_migrations` 名字保留兼容，但
+    实际语义已变——已无内联 ALTER 逻辑。
+    """
     cur.execute(
         "CREATE TABLE IF NOT EXISTS processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT, "
         "processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
@@ -140,6 +146,7 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
         "word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, "
         "batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, content_origin TEXT, content_source_db TEXT, "
         "content_source_scope TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, sync_status INTEGER DEFAULT 0, "
+        "match_confidence REAL, match_reason TEXT, last_synced_content TEXT, "
         "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
     cur.execute(
@@ -172,50 +179,14 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
         "error_msg TEXT, ai_results_json TEXT)"
     )
 
-    for t, c, d in [
-        ("ai_word_notes", "it_level", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "it_history", "TEXT"),
-        ("ai_word_notes", "prompt_tokens", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "completion_tokens", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "total_tokens", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "batch_id", "TEXT"),
-        ("ai_word_notes", "original_meanings", "TEXT"),
-        ("ai_word_notes", "maimemo_context", "TEXT"),
-        ("ai_word_notes", "content_origin", "TEXT"),
-        ("ai_word_notes", "content_source_db", "TEXT"),
-        ("ai_word_notes", "content_source_scope", "TEXT"),
-        ("ai_word_notes", "raw_full_text", "TEXT"),
-        ("ai_word_notes", "word_ratings", "TEXT"),
-        ("ai_word_notes", "sync_status", "INTEGER DEFAULT 0"),
-        ("ai_word_notes", "updated_at", "TIMESTAMP"),
-        ("processed_words", "updated_at", "TIMESTAMP"),
-    ]:
-        try:
-            cur.execute(f"ALTER TABLE {t} ADD COLUMN {c} {d}")
-            _debug_log(f"列添加成功: {t}.{c}", module="database.schema")
-        except Exception as e:
-            if "duplicate column name" not in str(e).lower():
-                _debug_log(f"列添加失败: {t}.{c} -> {e}", level="WARNING", module="database.schema")
-
-    if skip_migrations:
-        return
-
-    try:
-        cur.execute("UPDATE ai_word_notes SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
-        cur.execute("UPDATE processed_words SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
-        cur.execute(
-            "UPDATE ai_word_notes SET content_origin = 'ai_generated', content_source_scope = 'ai_batch' "
-            "WHERE content_origin IS NULL AND batch_id IS NOT NULL"
-        )
-        cur.execute(
-            "UPDATE ai_word_notes SET content_origin = 'legacy_unknown', content_source_scope = 'legacy' "
-            "WHERE content_origin IS NULL AND batch_id IS NULL"
-        )
-    except Exception:
-        pass
-
 
 def _init_hub_schema(conn: Any) -> None:
+    # 缓存短路：如果 Hub schema 已在最近初始化过，直接返回
+    hub_fp = _hub_db_fingerprint()
+    if _hub_init_state_is_fresh(hub_fp):
+        _debug_log("Hub schema 已在缓存窗口内初始化，短路跳过重复校验", module="database.schema")
+        return
+    
     cur = conn.cursor()
 
     cur.execute(
@@ -262,7 +233,17 @@ def _init_hub_schema(conn: Any) -> None:
 
 
 def init_db(db_path: Optional[str] = None) -> None:
-    """Initialize main db schema locally/cloud and ensure hub schema is ready."""
+    """Initialize main db schema locally/cloud and ensure hub schema is ready.
+
+    Phase 6 起：建表后调用 ``database.migrations.apply_migrations`` 推进 PRAGMA user_version
+    到当前已知最高版本。第一次跑（v=0）会跑 V001 的幂等 ALTER + backfill。
+    """
+    return _init_db_impl(db_path)
+
+
+def _init_db_impl(db_path: Optional[str] = None) -> None:
+    from database.migrations import apply_migrations
+
     path = db_path or DB_PATH
     start_time = time.time()
 
@@ -281,42 +262,97 @@ def init_db(db_path: Optional[str] = None) -> None:
     if is_cloud_configured:
         try:
             main_fp = _main_db_fingerprint(path)
-            if _is_db_initialized("main", main_fp):
-                _debug_log("云端数据库已初始化（通过标记文件），跳过检查", module="database.schema")
-            else:
-                cloud_start = time.time()
-                if is_main_db:
-                    cc = connection._get_main_write_conn_singleton(do_sync=False)
-                else:
-                    cc = connection._get_conn(path, do_sync=False)
-                _debug_log("云端数据库连接完成", start_time=cloud_start, module="database.schema")
+            marker_exists = _is_db_initialized("main", main_fp)
 
+            cloud_start = time.time()
+            _debug_log("[init_db] 正在获取云端写连接...", module="database.schema")
+            if is_main_db:
+                cc = connection._get_main_write_conn_singleton(do_sync=False)
+            else:
+                cc = connection._get_conn(path, do_sync=False)
+            _debug_log("云端数据库连接完成", start_time=cloud_start, module="database.schema")
+
+            if marker_exists:
+                _debug_log("云端数据库已初始化（通过标记文件），跳过建表检查", module="database.schema")
+            else:
                 ccur = cc.cursor()
                 table_exists = _check_table_exists(ccur, "processed_words", "main", cache_scope=main_fp)
+                ccur.close()  # 显式关闭检查游标，避免持锁期间游标状态干扰
+                _debug_log(f"[init_db] processed_words 表存在={table_exists}，准备执行建表事务...", module="database.schema")
 
+                # 获取操作锁
                 with connection._main_write_conn_op_lock:
-                    _create_tables(ccur, skip_migrations=True)
-                    cc.commit()
+                    _debug_log("[init_db] 已获取写锁，准备开启事务...", module="database.schema")
+                    wcur = cc.cursor()
+                    try:
+                        # 核心修复：先执行一次 rollback 确保清理掉之前 _check_table_exists 可能开启的隐式读事务
+                        try:
+                            cc.rollback()
+                        except:
+                            pass
 
-                if table_exists:
-                    _debug_log("云端数据库 schema 校验与补齐完成（跳过数据回填）", module="database.schema")
-                else:
-                    _debug_log("云端数据库存储初始化完成（跳过迁移）", module="database.schema")
+                        # 显式开启立即写事务
+                        wcur.execute("BEGIN IMMEDIATE")
+                        _debug_log("[init_db] 已开启显式写事务 (IMMEDIATE)", module="database.schema")
+                        _t_create = time.time()
+                        _create_tables(wcur, skip_migrations=True)
+                        cc.commit()
+                        _debug_log("[init_db] 建表成功并已提交", start_time=_t_create, level="INFO", module="database.schema")
+                    except Exception as e:
+                        try:
+                            cc.rollback()
+                        except:
+                            pass
+                        _debug_log(f"[init_db] 建表异常: {e}", level="ERROR", module="database.schema")
+                        raise
+                    finally:
+                        wcur.close()
 
                 _mark_db_initialized("main", main_fp)
+
+            # 迁移每次启动都执行（幂等）；marker 只跳过建表，不跳过迁移
+            # 版本追踪使用 system_config 表（libsql 同步），不再依赖 PRAGMA user_version。
+            _debug_log("[init_db] 开始应用迁移...", module="database.schema")
+            start_v, end_v = apply_migrations(
+                cc,
+                lock=connection._main_write_conn_op_lock,
+            )
+            if start_v != end_v:
+                _debug_log(
+                    f"数据库迁移完成 v{start_v} → v{end_v}",
+                    module="database.schema",
+                )
+            else:
+                _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
         except Exception as e:
             _debug_log(f"云端数据库初始化失败 (可能网络不通或凭据过期): {e}", start_time=start_time, level="WARNING", module="database.schema")
     else:
         try:
+            _debug_log("[init_db] 本地模式：获取连接...", module="database.schema")
             lc = connection._get_local_conn(path)
             lcur = lc.cursor()
+            _t_local_create = time.time()
+            _debug_log("[init_db] 本地模式：开始建表...", module="database.schema")
             _create_tables(lcur)
             lc.commit()
+            _debug_log("[init_db] 本地模式：建表完成", start_time=_t_local_create, module="database.schema")
+
+            # 本地连接直连，无并发锁；apply_migrations 在 BEGIN/COMMIT 内自管事务
+            start_v, end_v = apply_migrations(lc)
+            if start_v != end_v:
+                _debug_log(
+                    f"本地数据库迁移完成 v{start_v} → v{end_v}",
+                    module="database.schema",
+                )
+            else:
+                _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
+
             lc.close()
             _debug_log("本地数据库初始化/迁移完成", start_time=start_time, module="database.schema")
         except Exception as e:
             _debug_log(f"本地数据库初始化失败: {e}", start_time=start_time, level="WARNING", module="database.schema")
 
+    _debug_log("[init_db] 主库初始化完毕，开始 Hub 初始化...", module="database.schema")
     hub_start = time.time()
     hub_ok = init_users_hub_tables()
     if hub_ok:
@@ -336,8 +372,29 @@ def init_users_hub_tables() -> bool:
         if _is_db_initialized("hub", hub_fp):
             _debug_log("Hub 数据库已初始化（通过旧标记文件），执行轻量 schema 校验", module="database.schema")
 
+        _debug_log("[init_hub] 正在获取 Hub 连接...", module="database.schema")
         hub_conn = connection._get_hub_conn()
+        _debug_log("[init_hub] Hub 连接获取成功", module="database.schema")
         cur = hub_conn.cursor()
+        
+        # 检查所有关键表是否都已存在，若都存在则短路返回
+        required_tables = ["users", "user_api_keys", "user_sync_history", "user_stats", "user_sessions", "admin_logs", "user_credentials"]
+        all_tables_exist = all(_check_table_exists(cur, table, "hub", cache_scope=hub_fp) for table in required_tables)
+        
+        if all_tables_exist:
+            _debug_log("Hub 所有关键表已存在，跳过重复 CREATE TABLE 操作", module="database.schema")
+            _mark_db_initialized("hub", hub_fp)
+            _save_hub_init_state(
+                {
+                    "hub_fp": hub_fp,
+                    "schema_version": _HUB_SCHEMA_VERSION,
+                    "last_success_at": time.time(),
+                    "last_checked_at": time.time(),
+                }
+            )
+            if not connection._is_hub_write_singleton_conn(hub_conn):
+                hub_conn.close()
+            return True
 
         table_exists = _check_table_exists(cur, "users", "hub", cache_scope=hub_fp)
         if table_exists:

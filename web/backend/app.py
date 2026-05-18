@@ -1,0 +1,146 @@
+"""
+web/backend/app.py: FastAPI 工厂 — lifespan 初始化/清理 + 路由注册。
+
+P1 改造：lifespan 创建 UserContextManager，profile 级资源按需初始化。
+"""
+from __future__ import annotations
+
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from web.backend.deps import cleanup_deps, init_deps
+from web.backend.schemas import HealthInfo, ok_response
+from web.backend.user_context import UserContextManager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan：启动时创建 UserContextManager，关闭时清理所有 profile。"""
+    # ---- 启动 ----
+    import os
+
+    # 创建 context manager
+    context_manager = UserContextManager()
+
+    # 不在启动时初始化任何具体用户。
+    # 仅保留 fallback 名称用于无 header 请求兼容（默认 default）。
+    fallback_user = (os.getenv("MOMO_USER") or "default").strip().lower() or "default"
+
+    # 注册到依赖注入（fallback_user 仅用于无 header 时的降级，不影响 profile 隔离）
+    init_deps(context_manager=context_manager, fallback_user=fallback_user)
+
+    print(f"[Web] 后端启动流程继续，fallback用户: {fallback_user}")
+
+    yield  # --- 应用运行中 ---
+
+    # ---- 关闭 ----
+    print("[Web] 后端正在关闭...")
+    cleanup_deps()
+
+
+def create_app() -> FastAPI:
+    """FastAPI 工厂函数。"""
+    app = FastAPI(
+        title="MOMO Study Agent Web UI",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+
+    # CORS — 开发期间允许前端 dev server
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # PLAYBOOK B5：API timing middleware
+    # 对 /api/* 请求计时，记录到 MetricsCollector，给 B3 闲时引擎与 /api/ops/metrics 用
+    @app.middleware("http")
+    async def _record_api_timing(request: Request, call_next):
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        started_at = time.time()
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            try:
+                from core.metrics import get_metrics_collector
+                elapsed_ms = (time.time() - started_at) * 1000.0
+                profile = request.headers.get("X-Momo-Profile", "").strip().lower() or "_global"
+                get_metrics_collector().record(profile, "api.duration_ms", float(elapsed_ms))
+            except Exception:
+                # 指标采集不应影响响应
+                pass
+
+    # ---- 注册路由 ----
+    from web.backend.routers.session import router as session_router
+    from web.backend.routers.tasks import router as tasks_router
+    from web.backend.routers.preflight import router as preflight_router
+    from web.backend.routers.study import router as study_router
+    from web.backend.routers.words import router as words_router
+    from web.backend.routers.stats import router as stats_router
+    from web.backend.routers.sync import router as sync_router
+    from web.backend.routers.users import router as users_router
+    from web.backend.routers.ops import router as ops_router
+
+    app.include_router(session_router)
+    app.include_router(tasks_router)
+    app.include_router(preflight_router)
+    app.include_router(study_router)
+    app.include_router(words_router)
+    app.include_router(stats_router)
+    app.include_router(sync_router)
+    app.include_router(users_router)
+    app.include_router(ops_router)
+
+    # ---- 健康检查 ----
+    @app.get("/api/health")
+    async def health():
+        from database.execution_engine import get_db_sync_status
+        data = HealthInfo().model_dump()
+        data["db_sync"] = get_db_sync_status()
+        return ok_response(data)
+
+    # ---- 生产模式：托管前端静态文件 ----
+    frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+    if frontend_dist.is_dir():
+        # /assets/* 是 Vite 哈希命名的不可变资源（index-XXXX.js / index-XXXX.css），
+        # 可以长期缓存。index.html 必须每次回源校验，否则浏览器永远拿不到新发布。
+        IMMUTABLE_ASSETS = "public, max-age=31536000, immutable"
+        NO_CACHE_HTML = "no-cache, no-store, must-revalidate"
+
+        class _ImmutableAssetsStatic(StaticFiles):
+            async def get_response(self, path: str, scope):
+                resp = await super().get_response(path, scope)
+                resp.headers["Cache-Control"] = IMMUTABLE_ASSETS
+                return resp
+
+        app.mount("/assets", _ImmutableAssetsStatic(directory=str(frontend_dist / "assets")), name="static-assets")
+
+        @app.get("/{full_path:path}")
+        async def spa_catch_all(request: Request, full_path: str):
+            if full_path.startswith("api/"):
+                return {"ok": False, "error": {"code": "NOT_FOUND", "message": "API endpoint not found"}}
+            file_path = frontend_dist / full_path
+            if file_path.is_file():
+                # 非 /assets 的 dist 文件（favicon 等），按短缓存
+                resp = FileResponse(str(file_path))
+                resp.headers.setdefault("Cache-Control", "public, max-age=300")
+                return resp
+            # SPA fallback / index.html：必须每次校验，禁止粘滞缓存
+            resp = FileResponse(str(frontend_dist / "index.html"))
+            resp.headers["Cache-Control"] = NO_CACHE_HTML
+            resp.headers["Pragma"] = "no-cache"
+            return resp
+
+    return app

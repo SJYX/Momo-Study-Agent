@@ -1,183 +1,47 @@
 """
 core/study_workflow.py: 主学习流程与任务编排，负责单词处理流水线与 AI 调度。
 """
+
 import os
-import time
 import uuid
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from config import AI_PROVIDER, BATCH_SIZE, DRY_RUN
-from database.momo_words import (
-    get_processed_ids_in_batch,
-    get_progress_tracked_ids_in_batch,
-    get_local_word_note,
-    save_ai_word_notes_batch,
-    save_ai_batch,
-    mark_processed_batch,
-)
+from database.momo_words import get_local_word_note, save_ai_batch, save_ai_word_notes_batch
 from database.utils import clean_for_maimemo
 from core.sync_manager import SyncManager
+from core.word_service import WordService
 
 
 class StudyWorkflow:
-    """核心业务层：单词处理流水线、缓存判重、AI 调度、DB 写入与同步任务投递。"""
+    """核心业务层：单词处理流水线、AI 调度、DB 写入与同步任务投递。"""
 
-    def __init__(self, logger, ai_client, momo_api, ui_manager):
+    def __init__(self, logger, ai_client, momo_api, ui_manager, db_path=None):
         self.logger = logger
         self.ai_client = ai_client
         self.momo = momo_api
         self.ui = ui_manager
+        self.db_path = db_path
 
-        # 判重缓存（内存态）
-        self._session_processed_ids = set()
-        self._processed_cache = {}
-        self._processed_cache_ttl_seconds = int(os.getenv("PROCESSED_CACHE_TTL_SECONDS", "900"))
-        self._processed_cache_max_entries = int(os.getenv("PROCESSED_CACHE_MAX_ENTRIES", "50000"))
+        self.word_service = WordService(logger=logger)
 
         self.sync_manager = SyncManager(
             logger=self.logger,
             momo_api=self.momo,
-            on_mark_processed=self._mark_processed_with_cache,
+            db_path=db_path,
         )
-
-    def _prune_processed_cache(self):
-        if len(self._processed_cache) <= self._processed_cache_max_entries:
-            return
-        overflow = len(self._processed_cache) - self._processed_cache_max_entries
-        keys = sorted(self._processed_cache.items(), key=lambda kv: kv[1].get("ts", 0.0))
-        for k, _ in keys[:overflow]:
-            self._processed_cache.pop(k, None)
-
-    def _get_processed_ids_cached(self, voc_ids):
-        now = time.time()
-        processed_ids = set()
-        to_query = []
-
-        for vid in voc_ids:
-            v = str(vid)
-            if v in self._session_processed_ids:
-                processed_ids.add(v)
-                continue
-
-            cached = self._processed_cache.get(v)
-            if cached and (now - cached.get("ts", 0.0) <= self._processed_cache_ttl_seconds):
-                if cached.get("processed"):
-                    processed_ids.add(v)
-                continue
-
-            to_query.append(v)
-
-        if to_query:
-            fresh_processed = set(get_processed_ids_in_batch(to_query))
-            for v in to_query:
-                is_processed = v in fresh_processed
-                self._processed_cache[v] = {"processed": is_processed, "ts": now}
-                if is_processed:
-                    self._session_processed_ids.add(v)
-            processed_ids.update(fresh_processed)
-            self._prune_processed_cache()
-
-        return processed_ids
-
-    def _mark_processed_with_cache(self, voc_id, spelling):
-        now = time.time()
-        self._session_processed_ids.add(str(voc_id))
-        self._processed_cache[str(voc_id)] = {"processed": True, "ts": now}
-
-    def _recover_processed_from_local_notes(self, pending_words):
-        """对历史遗留数据做自愈：若本地已有笔记但缺少 processed 标记，则回填。"""
-        if not pending_words:
-            return set()
-
-        recovered = []
-        for w in pending_words:
-            vid = str(w.get("voc_id") or "")
-            if not vid:
-                continue
-
-            note = get_local_word_note(vid)
-            if not note:
-                continue
-
-            has_note_content = bool(
-                str(note.get("basic_meanings") or "").strip()
-                or str(note.get("raw_full_text") or "").strip()
-                or str(note.get("memory_aid") or "").strip()
-            )
-            if not has_note_content:
-                continue
-
-            spelling = str(note.get("spelling") or w.get("voc_spelling") or "")
-            recovered.append((vid, spelling, str(w.get("voc_spelling") or spelling or vid)))
-
-        if not recovered:
-            return set()
-
-        mark_processed_batch([(vid, spelling) for vid, spelling, _ in recovered])
-
-        now = time.time()
-        recovered_ids = set()
-        recovered_spells = []
-        for vid, _, spell_preview in recovered:
-            recovered_ids.add(vid)
-            self._session_processed_ids.add(vid)
-            self._processed_cache[vid] = {"processed": True, "ts": now}
-            recovered_spells.append(spell_preview)
-
-        self.logger.info(f"[去重] 自愈回填 processed 标记: {len(recovered_ids)} 词")
-        self.logger.info(f"[去重] 自愈回填单词: {self._format_words_preview(recovered_spells)}")
-
-        return recovered_ids
-
-    def _recover_processed_from_progress_history(self, pending_words):
-        """本地兜底：如果存在学习进度历史，也回填 processed 标记。"""
-        if not pending_words:
-            return set()
-
-        pending_ids = [str(w.get("voc_id") or "") for w in pending_words if w.get("voc_id")]
-        if not pending_ids:
-            return set()
-
-        tracked_ids = get_progress_tracked_ids_in_batch(pending_ids)
-        if not tracked_ids:
-            return set()
-
-        items = []
-        spell_preview = []
-        for w in pending_words:
-            vid = str(w.get("voc_id") or "")
-            if vid and vid in tracked_ids:
-                spell = str(w.get("voc_spelling") or "")
-                items.append((vid, spell))
-                spell_preview.append(spell or vid)
-
-        if not items:
-            return set()
-
-        mark_processed_batch(items)
-
-        now = time.time()
-        recovered_ids = set()
-        for vid, _ in items:
-            recovered_ids.add(vid)
-            self._session_processed_ids.add(vid)
-            self._processed_cache[vid] = {"processed": True, "ts": now}
-
-        self.logger.info(f"[去重] 进度历史回填 processed 标记: {len(recovered_ids)} 词")
-        self.logger.info(f"[去重] 进度历史回填单词: {self._format_words_preview(spell_preview)}")
-
-        return recovered_ids
 
     @staticmethod
     def _format_words_preview(words, limit=20):
         """将单词列表压缩为日志友好的预览字符串。"""
         if not words:
             return ""
-        #  defensive: ensure all items are strings
-        safe_words = [str(w) for w in words if w is not None]
+
+        safe_words = [str(word) for word in words if word is not None]
         if not safe_words:
             return "[empty]"
-            
+
         if len(safe_words) <= limit:
             return ", ".join(safe_words)
         return f"{', '.join(safe_words[:limit])} ... (+{len(safe_words) - limit})"
@@ -188,38 +52,81 @@ class StudyWorkflow:
         pending_sync_items = []
         dry_run_processed_items = []
 
-        for idx, w in enumerate(batch_words):
+        for idx, word in enumerate(batch_words):
             num = current_start + idx + 1
-            spell = w["voc_spelling"].lower()
-            vid = str(w["voc_id"])
+
+            if hasattr(word, "spelling"):
+                spell = word.spelling.lower()
+                voc_id = str(word.voc_id)
+                original_meanings = getattr(word, "meanings", None)
+                review_count = getattr(word, "review_count", None)
+                short_term_familiarity = getattr(word, "short_term_familiarity", None)
+            else:
+                spell = word["voc_spelling"].lower()
+                voc_id = str(word["voc_id"])
+                original_meanings = word.get("voc_meanings") or word.get("voc_meaning") or word.get("meanings")
+                review_count = word.get("review_count")
+                short_term_familiarity = word.get("short_term_familiarity")
 
             if spell not in ai_map:
                 self.logger.warning(f"{spell} 结果缺失")
+                self.logger.info(
+                    f"[RowStatus] {spell} 处理失败：结果缺失",
+                    extra={
+                        "event": "row_status",
+                        "data": {
+                            "rows": [
+                                {
+                                    "item_id": spell,
+                                    "status": "error",
+                                    "phase": "ai_result",
+                                    "error": "AI 返回缺失该单词结果",
+                                }
+                            ]
+                        },
+                    },
+                )
                 continue
 
             payload = ai_map[spell]
-            meta = {
+            self.logger.info(
+                f"[RowStatus] {spell} AI 处理完成",
+                extra={
+                    "event": "row_status",
+                    "data": {
+                        "rows": [
+                            {
+                                "item_id": spell,
+                                "status": "running",
+                                "phase": "ai_done",
+                            }
+                        ]
+                    },
+                },
+            )
+
+            metadata = {
                 "batch_id": batch_id,
-                "original_meanings": w.get("voc_meanings") or w.get("voc_meaning") or w.get("meanings"),
+                "original_meanings": original_meanings,
                 "content_origin": "ai_generated",
                 "content_source_db": None,
                 "content_source_scope": None,
                 "maimemo_context": {
-                    "review_count": w.get("review_count"),
-                    "short_term_familiarity": w.get("short_term_familiarity"),
+                    "review_count": review_count,
+                    "short_term_familiarity": short_term_familiarity,
                 },
             }
-            notes_to_save.append({"voc_id": vid, "payload": payload, "metadata": meta})
+            notes_to_save.append({"voc_id": voc_id, "payload": payload, "metadata": metadata})
 
             if DRY_RUN:
-                dry_run_processed_items.append((vid, spell))
+                dry_run_processed_items.append((voc_id, spell))
             else:
                 brief = clean_for_maimemo(payload.get("basic_meanings", ""))
                 pending_sync_items.append(
                     {
                         "num": num,
                         "total": total,
-                        "voc_id": vid,
+                        "voc_id": voc_id,
                         "spell": spell,
                         "brief": brief,
                         "tags": ["雅思"],
@@ -233,88 +140,209 @@ class StudyWorkflow:
                 self.logger.warning("⚠️ 批量落库入队失败（写队列可能已满）")
 
         if dry_run_processed_items:
-            marked_ok = mark_processed_batch(dry_run_processed_items)
+            from core.word_models import WordItem
+
+            dry_run_items = [WordItem(voc_id=voc_id, spelling=spell) for voc_id, spell in dry_run_processed_items]
+            marked_ok = self.word_service.mark_completed(dry_run_items, batch_id=batch_id)
             if not marked_ok:
                 self.logger.warning("⚠️ Dry-run 批量处理标记入队失败（写队列可能已满）")
-        
-        # 无论是否是 DRY_RUN，只要结果已生成并投递保存，立即更新内存缓存
-        # 这样在后续批次（或同一会话的重复请求）中可以立即跳过
-        now = time.time()
-        for data in notes_to_save:
-            vid = str(data["voc_id"])
-            self._session_processed_ids.add(vid)
-            self._processed_cache[vid] = {"processed": True, "ts": now}
 
         if pending_sync_items:
             if not saved_ok:
                 self.logger.warning("⚠️ 落库失败，取消本批次同步入队")
                 return
+
             for item in pending_sync_items:
                 self.sync_manager.queue_maimemo_sync(
                     item["voc_id"],
                     item["spell"],
                     item["brief"],
                     item["tags"],
-                    force_sync=True,  # 内存信任：刚生成结果直接同步，跳过写后即读
+                    force_sync=True,
                 )
-            
-            # 汇总打印同步入队信息，避免 200+ 词刷屏
-            sync_spells = [item["spell"] for item in pending_sync_items]
-            self.logger.info(
-                f"[Pipeline] {self._format_words_preview(sync_spells)} - 3. 已投递本地数据库及云端同步队列"
-            )
 
     def _run_ai_batch(self, batch_no, total_batches, batch_spells):
+        """执行单批 AI 处理。"""
         self.logger.info(
-            f"[Pipeline] {self._format_words_preview(batch_spells)} - 1. 开始请求 AI 助记 (批次 {batch_no}/{total_batches})"
+            f"[AI] 批次 {batch_no}/{total_batches} 开始调用 AI（{len(batch_spells)} 词）",
+            module="study_workflow",
         )
-        results, metadata = self.ai_client.generate_mnemonics(batch_spells)
-        return results, metadata
+        try:
+            results, metadata = self.ai_client.generate_mnemonics(batch_spells)
+            self.logger.info(
+                f"[AI] 批次 {batch_no}/{total_batches} 返回 {len(results or [])} 条结果",
+                module="study_workflow",
+            )
+            return results or [], metadata or {}
+        except Exception as exc:
+            self.logger.warning(f"⚠️ AI 批次 {batch_no}/{total_batches} 处理失败: {exc}")
+            return [], {}
 
     def process_word_list(self, word_list, name):
+        self.logger.info(f"[Pipeline] {name} 开始处理，原始列表 {len(word_list)} 词", module="study_workflow")
+
         if not word_list:
             self.logger.info(f"{name} 无需处理")
             return
 
-        # 预过滤：跳过 voc_id 或拼写缺失的脏数据
-        word_list = [w for w in word_list if w.get("voc_id") and w.get("voc_spelling")]
-        if not word_list:
-            self.logger.info(f"{name} 过滤后无可处理有效单词")
+
+        normalized_items, discarded_count = self.word_service.normalize_cloud_items(word_list)
+        if not normalized_items:
+            self.logger.info(f"{name} 过滤后无可处理有效单词 (丢弃 {discarded_count} 词)")
             return
 
-        all_voc_ids = [str(w.get("voc_id")) for w in word_list]
-        processed_ids = self._get_processed_ids_cached(all_voc_ids)
+        # 6.2: 记录进度快照以供薄弱词筛选使用
+        try:
+            from database.progress_repo import log_progress_snapshots
 
-        pending_words = [w for w in word_list if str(w.get("voc_id")) not in processed_ids]
-        skipped_words = [w for w in word_list if str(w.get("voc_id")) in processed_ids]
+            # 如果是 Warmup 任务或 review_count 全为 0，尝试回填 study_count
+            all_zero = all((item.review_count or 0) == 0 for item in normalized_items)
+            if all_zero:
+                try:
+                    from datetime import datetime
+                    import threading
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    # 查询今日已学记录（覆盖今日前后的窗口以防时区差异）
+                    # 用 daemon 线程 + join(timeout) 超时保护：API 不可用时最多等 10 秒
+                    self.logger.info(f"[Pipeline] {name} review_count 全为 0，正在回填 study_count...", module="study_workflow")
+                    _backfill_start = time.time()
+                    self.logger.info(f"[Pipeline] {name} 回填步骤 1/3: 调用墨墨 API query_study_records({today_str})...", module="study_workflow")
 
-        if pending_words:
-            recovered_ids = self._recover_processed_from_progress_history(pending_words)
-            if recovered_ids:
-                pending_words = [w for w in pending_words if str(w.get("voc_id")) not in recovered_ids]
-                skipped_words.extend([w for w in word_list if str(w.get("voc_id")) in recovered_ids])
+                    _api_result = [None]
+                    _api_error = [None]
 
-        if pending_words:
-            recovered_ids = self._recover_processed_from_local_notes(pending_words)
-            if recovered_ids:
-                pending_words = [w for w in pending_words if str(w.get("voc_id")) not in recovered_ids]
-                skipped_words.extend([w for w in word_list if str(w.get("voc_id")) in recovered_ids])
+                    def _call_api():
+                        try:
+                            _api_result[0] = self.momo.query_study_records(today_str, today_str)
+                        except Exception as exc:
+                            _api_error[0] = exc
+
+                    api_thread = threading.Thread(target=_call_api, daemon=True)
+                    api_thread.start()
+                    api_thread.join(timeout=10)
+
+                    if api_thread.is_alive():
+                        self.logger.warning(f"⚠️ query_study_records 超时(10s)，跳过 study_count 回填", module="study_workflow")
+                        records_res = None
+                    elif _api_error[0] is not None:
+                        raise _api_error[0]
+                    else:
+                        records_res = _api_result[0]
+                        self.logger.info(f"[Pipeline] {name} 回填步骤 1/3: API 返回，耗时 {int((time.time()-_backfill_start)*1000)}ms", module="study_workflow")
+
+                    if records_res and records_res.get("data", {}).get("records"):
+                        records = records_res["data"]["records"]
+                        self.logger.info(f"[Pipeline] {name} 回填步骤 2/3: API 返回 {len(records)} 条学习记录，开始构建 count_map...", module="study_workflow")
+                        count_map = {str(r.get("voc_id")): int(r.get("study_count", 0)) for r in records}
+                        matched = 0
+                        for item in normalized_items:
+                            if item.voc_id in count_map:
+                                item.review_count = count_map[item.voc_id]
+                                matched += 1
+                        self.logger.info(f"[Pipeline] {name} 回填步骤 3/3: 匹配到 {matched}/{len(normalized_items)} 个词的 study_count，耗时 {int((time.time()-_backfill_start)*1000)}ms", module="study_workflow")
+                    elif records_res:
+                        self.logger.warning(f"[Pipeline] {name} 回填: API 返回了数据但 records 为空", module="study_workflow")
+                    else:
+                        self.logger.warning(f"[Pipeline] {name} 回填: API 返回 None", module="study_workflow")
+                except Exception as enrichment_err:
+                    self.logger.warning(f"⚠️ 进度数据补全失败 (不影响主流程): {enrichment_err}")
+
+                _backfill_elapsed = int((time.time() - _backfill_start) * 1000)
+                self.logger.info(f"[Pipeline] {name} 回填 study_count 完成 ({_backfill_elapsed}ms)", module="study_workflow")
+
+            # 将 WordItem 转换为 log_progress_snapshots 预期的 dict 格式 (ProgressSnapshot)
+            snapshots = [
+                {
+                    "voc_id": item.voc_id,
+                    "short_term_familiarity": item.short_term_familiarity,
+                    "review_count": item.review_count,
+                }
+                for item in normalized_items
+            ]
+            count = log_progress_snapshots(snapshots)
+            if count > 0:
+                self.logger.info(f"✅ 成功记录 {count} 个单词的进度历史快照 (总计 {len(snapshots)} 词)")
+
+        except Exception as e:
+            self.logger.error(f"❌ 记录进度历史快照失败: {e}")
+
+        self.logger.info(f"[Pipeline] {name} 进度快照阶段完成，准备初始化任务...", module="study_workflow")
 
         self.logger.info(
-            f"[去重] {name}: 总计 {len(word_list)} 词，已处理跳过 {len(skipped_words)} 词，待处理 {len(pending_words)} 词"
+            f"[Pipeline] {name} 任务初始化，总计 {len(normalized_items)} 词（过滤脏数据 {discarded_count} 词）",
+            extra={
+                "event": "progress",
+                "data": {"total": len(normalized_items), "discarded": discarded_count, "phase": "initializing"},
+            },
         )
-        if skipped_words:
-            skipped_spells = [str(w.get("voc_spelling", "")) for w in skipped_words if w.get("voc_spelling")]
-            if skipped_spells:
-                self.logger.info(
-                    f"[去重] 本轮跳过单词: {self._format_words_preview(skipped_spells)}"
-                )
 
-        if not pending_words:
+
+
+        self.logger.info(f"[Pipeline] {name} 正在查询单词状态库...")
+        t_enrich_start = time.time()
+
+        self.logger.info(f"[Pipeline] {name} 调用 enrich_with_states 前 (items={len(normalized_items)})", module="study_workflow")
+        enriched = self.word_service.enrich_with_states(normalized_items, auto_backfill=True, db_path=self.db_path)
+        self.logger.info(f"[Pipeline] {name} enrich_with_states 返回 (enriched={len(enriched)})", module="study_workflow")
+        t_enrich_end = time.time()
+        self.logger.info(f"[Profiling] {name} 状态增强耗时: {int((t_enrich_end - t_enrich_start)*1000)}ms")
+
+        t_part_start = time.time()
+        pending_items, processed_items = self.word_service.partition_by_processability(enriched)
+        t_part_end = time.time()
+        self.logger.info(f"[Profiling] {name} 任务分组耗时: {int((t_part_end - t_part_start)*1000)}ms")
+
+
+        skipped_spells = [item.spelling for item in processed_items]
+        self.logger.info(
+            f"[去重] {name}: 总计 {len(normalized_items)} 词，已处理跳过 {len(processed_items)} 词，待处理 {len(pending_items)} 词"
+        )
+
+        if skipped_spells:
+            self.logger.info(f"[去重] 本轮跳过单词: {self._format_words_preview(skipped_spells)}")
+            # B1 优化：使用批量查询替代循环查询 (避免 N+1 问题)
+            processed_voc_ids = [item.voc_id for item in processed_items]
+            notes_map = self.word_service.get_notes_in_batch(processed_voc_ids, db_path=self.db_path)
+            
+            rows = []
+            for item in processed_items:
+                phase = "skipped"
+                status = "done"
+                reason = ""
+
+                try:
+                    note = notes_map.get(str(item.voc_id))
+                    sync_status = int((note or {}).get("sync_status", 0) or 0)
+                    if sync_status == 0:
+                        phase = "sync_pending"
+                        status = "pending"
+                        reason = "本地已生成，待上传同步"
+                    elif sync_status == 2:
+                        phase = "sync_conflict"
+                        status = "warning"
+                        reason = "云端释义冲突，待处理"
+                    elif sync_status == 5:
+                        phase = "sync_failed"
+                        status = "error"
+                        reason = (note or {}).get("match_reason") or "上传失败"
+                except Exception:
+                    pass
+
+                row = {"item_id": item.spelling, "status": status, "phase": phase}
+                if reason:
+                    row["error"] = reason
+                rows.append(row)
+
+            self.logger.info(
+                f"[RowStatus] 本轮跳过单词状态回填 ({len(rows)} 词)",
+                extra={"event": "row_status", "data": {"rows": rows}},
+            )
+
+        if not pending_items:
             self.logger.info("✨ 无需调用 AI。")
             return
 
-        total_pending = len(pending_words)
+        total_pending = len(pending_items)
         ai_workers = max(1, int(os.getenv("AI_PIPELINE_WORKERS", "2")))
         total_batches = (total_pending + BATCH_SIZE - 1) // BATCH_SIZE
 
@@ -322,56 +350,83 @@ class StudyWorkflow:
             f"[AI] {name} 开始处理：{total_pending} 词，批次大小 {BATCH_SIZE}，并发 {ai_workers}，共 {total_batches} 批"
         )
 
+        executor = ThreadPoolExecutor(max_workers=ai_workers)
         try:
-            with ThreadPoolExecutor(max_workers=ai_workers) as executor:
-                futures = []
-                start_pos = 0
-                for i in range(0, total_pending, BATCH_SIZE):
-                    batch = pending_words[i : i + BATCH_SIZE]
-                    batch_spells = [w["voc_spelling"] for w in batch]
-                    batch_no = (i // BATCH_SIZE) + 1
+            futures = []
+            start_pos = 0
+            for i in range(0, total_pending, BATCH_SIZE):
+                batch = pending_items[i : i + BATCH_SIZE]
+                batch_spells = [item.spelling for item in batch]
+                batch_no = (i // BATCH_SIZE) + 1
 
-                    fut = executor.submit(self._run_ai_batch, batch_no, total_batches, batch_spells)
-                    futures.append((fut, batch, start_pos, batch_no, batch_spells))
-                    start_pos += len(batch)
+                future = executor.submit(self._run_ai_batch, batch_no, total_batches, batch_spells)
+                futures.append((future, batch, start_pos, batch_no, batch_spells))
+                start_pos += len(batch)
 
-                self.logger.info(f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。")
+            self.logger.info(
+                f"[AI] {total_batches} 个 AI 处理批次已全部进入待处理队列。",
+                extra={
+                    "event": "batch_start",
+                    "progress": {"total": total_pending, "batches": total_batches},
+                },
+            )
 
-                for fut, batch, start_pos, batch_no, batch_spells in futures:
-                    results, metadata = fut.result()
-                    if not results:
-                        self.logger.warning(
-                            f"⚠️ AI 批次 {batch_no}/{total_batches} 返回空结果，已跳过: {self._format_words_preview(batch_spells)}"
-                        )
-                        continue
+            for future, batch, start_pos, batch_no, batch_spells in futures:
+                # 批次开始：发射 running 行状态，让前端知道当前处理哪个词
+                running_rows = [{"item_id": s, "status": "running", "phase": f"ai_batch {batch_no}/{total_batches}"} for s in batch_spells]
+                self.logger.info(
+                    f"[RowStatus] 批次 {batch_no}/{total_batches} 开始处理: {self._format_words_preview(batch_spells)}",
+                    extra={"event": "row_status", "data": {"rows": running_rows}},
+                )
 
-                    self.logger.info(
-                        f"[Pipeline] {self._format_words_preview(batch_spells)} - 2. AI 助记处理成功 (耗时: {metadata.get('total_latency_ms', 0)}ms，返回 {len(results)} 条)"
+                results, metadata = future.result()
+                if not results:
+                    self.logger.warning(
+                        f"⚠️ AI 批次 {batch_no}/{total_batches} 返回空结果，已跳过: {self._format_words_preview(batch_spells)}",
+                        extra={
+                            "event": "batch_error",
+                            "progress": {"batch_no": batch_no, "total_batches": total_batches},
+                        },
                     )
+                    continue
 
-                    bid = str(uuid.uuid4())
-                    ok = save_ai_batch(
-                        {
-                            "batch_id": bid,
-                            "request_id": metadata.get("request_id"),
-                            "ai_provider": AI_PROVIDER,
-                            "model_name": self.ai_client.model_name,
-                            "prompt_version": getattr(self.ai_client, "prompt_version", ""),
-                            "batch_size": len(batch),
-                            "total_latency_ms": metadata.get("total_latency_ms", 0),
-                            "total_tokens": metadata.get("total_tokens", 0),
-                            "finish_reason": metadata.get("finish_reason"),
-                        }
-                    )
-                    if not ok:
-                        self.logger.warning("⚠️ 批次元数据入队失败（写队列可能已满）")
+                self.logger.info(
+                    f"[Pipeline] {self._format_words_preview(batch_spells)} - 2. AI 助记处理成功 (耗时: {metadata.get('total_latency_ms', 0)}ms，返回 {len(results)} 条)",
+                    extra={
+                        "event": "batch_done",
+                        "progress": {
+                            "batch_no": batch_no,
+                            "total_batches": total_batches,
+                            "words": len(batch),
+                            "total": total_pending,
+                        },
+                    },
+                )
 
-                    self._process_results(batch, results, start_pos, total_pending, bid)
+                batch_id = str(uuid.uuid4())
+                ok = save_ai_batch(
+                    {
+                        "batch_id": batch_id,
+                        "request_id": metadata.get("request_id"),
+                        "ai_provider": AI_PROVIDER,
+                        "model_name": self.ai_client.model_name,
+                        "prompt_version": getattr(self.ai_client, "prompt_version", ""),
+                        "batch_size": len(batch),
+                        "total_latency_ms": metadata.get("total_latency_ms", 0),
+                        "total_tokens": metadata.get("total_tokens", 0),
+                        "finish_reason": metadata.get("finish_reason"),
+                    }
+                )
+                if not ok:
+                    self.logger.warning("⚠️ 批次元数据入队失败（写队列可能已满）")
+
+                self._process_results(batch, results, start_pos, total_pending, batch_id)
         except KeyboardInterrupt:
             self.logger.warning("检测到中断，正在取消所有待处理的 AI 任务...")
-            # 立即关闭线程池，不等待排队任务，由 Python 3.9+ 的 cancel_futures 确保
             executor.shutdown(wait=False, cancel_futures=True)
             raise
+        finally:
+            executor.shutdown(wait=True)
 
         self.sync_manager.flush_pending_syncs(name)
 

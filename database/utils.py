@@ -50,17 +50,6 @@ _MGMT_TOKEN_VALIDATE_TTL_SECONDS = int(os.getenv("MGMT_TOKEN_VALIDATE_TTL_SECOND
 _cloud_targets_cache: Dict[str, Any] = {"expire_at": 0.0, "targets": []}
 _mgmt_token_validation_cache: Dict[str, Any] = {"expire_at": 0.0, "valid": None, "reason": ""}
 
-_throttled_log_state: Dict[str, float] = {}
-_throttled_log_lock = None
-
-
-try:
-    import threading
-
-    _throttled_log_lock = threading.Lock()
-except Exception:
-    _throttled_log_lock = None
-
 
 def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG", module: str = "database.utils") -> None:
     elapsed = f" | Time: {int((time.time() - start_time) * 1000)}ms" if start_time else ""
@@ -82,30 +71,6 @@ def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG
             log_func(log_msg)
     except Exception:
         pass
-
-
-def _debug_log_throttled(
-    key: str,
-    msg: str,
-    interval_seconds: float = 30.0,
-    start_time: Optional[float] = None,
-    level: str = "DEBUG",
-    module: str = "database.utils",
-) -> None:
-    now = time.time()
-    should_log = False
-
-    if _throttled_log_lock is None:
-        should_log = True
-    else:
-        with _throttled_log_lock:
-            last_ts = float(_throttled_log_state.get(key, 0.0) or 0.0)
-            if now - last_ts >= float(interval_seconds):
-                _throttled_log_state[key] = now
-                should_log = True
-
-    if should_log:
-        _debug_log(msg, start_time=start_time, level=level, module=module)
 
 
 def _normalize_turso_url(hostname: str) -> str:
@@ -479,8 +444,34 @@ def _is_replica_metadata_missing_error(error: Exception) -> bool:
     )
 
 
+def _cleanup_stale_sidecars(db_abs_path: str) -> None:
+    """Remove libsql sidecar files (.db-info, .db-wal, .db-shm) for a missing/broken db.
+
+    After the .db file is moved away, stale sidecar files cause libsql to
+    believe the local replica is already at the correct version, skipping the
+    initial cloud pull and leaving an empty database.  Removing them lets
+    libsql re-initialise metadata on next connect.
+    """
+    for suffix in (".db-info", ".db-wal", ".db-shm"):
+        sidecar = db_abs_path + suffix[len(".db"):]  # e.g. "…/foo.db-info"
+        # legacy dotted form kept for safety
+        legacy = db_abs_path + suffix.replace(".db", ".db.", 1)  # "…/foo.db.info"
+        for candidate in (sidecar, legacy):
+            try:
+                if os.path.exists(candidate):
+                    os.remove(candidate)
+                    _debug_log(f"已清理过期 sidecar: {candidate}", level="INFO")
+            except Exception:
+                pass
+
+
 def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional[str]:
-    """Backup broken local db file and keep WAL sidecar files untouched."""
+    """Backup broken local db file and clean stale sidecar metadata.
+
+    Sidecar files (.db-info, .db-wal, .db-shm) must be removed together with
+    the .db file; otherwise libsql reads the old version metadata, skips the
+    cloud pull, and leaves an empty local database.
+    """
     try:
         abs_path = os.path.abspath(db_path)
         if not os.path.exists(abs_path):
@@ -531,9 +522,12 @@ def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional
                 _debug_log(f"备份损坏数据库失败: {copy_error}", level="WARNING")
                 return None
 
+        # .db 已移走，必须同时清理 sidecar——否则 libsql 读到旧元数据
+        # 会跳过云端 pull，导致重建的空 .db 被当作"已同步"。
+        _cleanup_stale_sidecars(abs_path)
+
         _debug_log(
-            f"{warning_message}: {backup_path}\n"
-            "注意：副本文件已备份，但相关 WAL 元数据未删除（避免多线程竞争导致损坏）",
+            f"{warning_message}: {backup_path}",
             level="WARNING",
         )
         return backup_path

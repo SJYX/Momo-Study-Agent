@@ -1,7 +1,7 @@
 # Makefile for Momo Study Agent
 # 快捷命令集合，提升开发体验
 
-.PHONY: help install dev-install format lint test test-cov clean run
+.PHONY: help install dev-install format lint test test-cov clean run web web-dev web-build web-install web-backend
 
 # 默认目标：显示帮助
 help:
@@ -15,8 +15,11 @@ help:
 	@echo "  make test         - 运行测试"
 	@echo "  make test-cov     - 运行测试并生成覆盖率报告"
 	@echo "  make clean        - 清理临时文件"
-	@echo "  make run          - 运行主程序"
+	@echo "  make run          - 运行主程序（CLI）"
 	@echo "  make run-dev      - 运行主程序（开发模式）"
+	@echo "  make web          - 一键启动 Web（生产模式）"
+	@echo "  make web-dev      - 一键启动 Web（开发模式）"
+	@echo "  make web-build    - 构建前端生产包"
 	@echo "  make docs-check   - 检查文档质量"
 
 # 安装生产依赖
@@ -82,6 +85,34 @@ docs-check:
 # 检查 API 状态
 api-check:
 	python tools/check_api_status.py
+
+# ============================================================================
+# Web UI 命令（一键启动）
+# ============================================================================
+
+# 一键启动 Web（生产模式：自动构建前端 → FastAPI 托管）
+# 用法：make web 或 make web USER=Asher
+web:
+	python scripts/start_web.py $(if $(USER),--user $(USER),)
+
+# 一键启动 Web（开发模式：后端 + 前端 dev server 并行）
+# 用法：make web-dev 或 make web-dev USER=Asher
+web-dev:
+	python scripts/start_web.py --dev $(if $(USER),--user $(USER),)
+
+# 构建前端生产包
+web-build:
+	cd web/frontend && npm run build
+	@echo "前端已构建到 web/frontend/dist/"
+
+# 安装 Web 前后端依赖
+web-install:
+	pip install -e ".[web]"
+	cd web/frontend && npm install
+
+# 直接启动后端（不含前端，高级用法）
+web-backend:
+	python -m web.backend
 
 # 数据库初始化
 init-hub:

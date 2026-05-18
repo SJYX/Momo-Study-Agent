@@ -18,11 +18,20 @@ Critical WalConflict rule:
 import os
 import queue
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from config import DB_PATH, HUB_DB_PATH, TURSO_HUB_AUTH_TOKEN, TURSO_HUB_DB_URL
+import config as _config
+HUB_DB_PATH = _config.HUB_DB_PATH  # Hub 是全局静态库，不随 switch_user 变化，可缓存
+TURSO_HUB_AUTH_TOKEN = _config.TURSO_HUB_AUTH_TOKEN
+TURSO_HUB_DB_URL = _config.TURSO_HUB_DB_URL
+
+# 注意：DB_PATH 不再缓存到本模块级。Phase 6.4 起 switch_user 不会反向 patch
+# 任何 database 子模块的全局；所有需要"当前用户 DB 路径"的位置都直接读
+# `_config.DB_PATH`（config 自己在 switch_user 时更新了模块级值）。
 
 try:
     import libsql
@@ -77,34 +86,19 @@ TURSO_TEST_AUTH_TOKEN = os.getenv("TURSO_TEST_AUTH_TOKEN")
 TURSO_TEST_DB_HOSTNAME = os.getenv("TURSO_TEST_DB_HOSTNAME")
 
 
-# Background write/sync system state
-_write_queue = queue.Queue(maxsize=10000)
-_writer_daemon_thread: Optional[threading.Thread] = None
-_writer_daemon_stop_event = threading.Event()
-_writer_daemon_lock = threading.Lock()
-
-_needs_sync = False
-_last_write_time = 0.0
-_sync_daemon_thread: Optional[threading.Thread] = None
-_sync_daemon_stop_event = threading.Event()
+# Background write/sync system state is now in database/execution_engine.py
 
 _main_write_conn_singleton: Any = None
+_main_write_conn_singleton_path: Optional[str] = None
+_main_write_conn_last_check: float = 0
 _main_write_conn_lock = threading.Lock()
-_main_write_conn_op_lock = threading.RLock()
+_main_write_conn_init_lock = threading.Lock()
+_main_write_conn_op_lock = threading.Lock()
 
 _hub_write_conn_singleton: Any = None
 _hub_write_conn_lock = threading.Lock()
-_hub_write_conn_op_lock = threading.RLock()
-
-_write_queue_stats = {
-    "total_queued": 0,
-    "total_written": 0,
-    "total_errors": 0,
-    "last_batch_size": 0,
-}
-
-_throttled_log_state: Dict[str, float] = {}
-_throttled_log_lock = threading.Lock()
+_hub_write_conn_init_lock = threading.Lock()
+_hub_write_conn_op_lock = threading.Lock()
 
 
 # Schema callback registry to avoid circular imports with database/schema.py
@@ -145,24 +139,6 @@ def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG
         pass
 
 
-def _debug_log_throttled(
-    key: str,
-    msg: str,
-    interval_seconds: float = 30.0,
-    start_time: Optional[float] = None,
-    level: str = "DEBUG",
-) -> None:
-    now = time.time()
-    should_log = False
-    with _throttled_log_lock:
-        last_ts = float(_throttled_log_state.get(key, 0.0) or 0.0)
-        if now - last_ts >= float(interval_seconds):
-            _throttled_log_state[key] = now
-            should_log = True
-    if should_log:
-        _debug_log(msg, start_time=start_time, level=level)
-
-
 def _normalize_turso_url(hostname: str) -> str:
     if not hostname:
         return ""
@@ -175,8 +151,8 @@ def _normalize_turso_url(hostname: str) -> str:
 
 
 def _is_main_db_path(db_path: Optional[str] = None) -> bool:
-    target = os.path.abspath(db_path or DB_PATH)
-    return target == os.path.abspath(DB_PATH)
+    target = os.path.abspath(db_path or _config.DB_PATH)
+    return target == os.path.abspath(_config.DB_PATH)
 
 
 def _is_hub_db_path(db_path: Optional[str] = None) -> bool:
@@ -192,9 +168,9 @@ def _is_replica_metadata_missing_error(error: Exception) -> bool:
 
 
 def _resolve_conn_context(db_path: Optional[str] = None) -> Dict[str, Any]:
-    path = db_path or DB_PATH
+    path = db_path or _config.DB_PATH
     target_abs = os.path.abspath(path)
-    main_abs = os.path.abspath(DB_PATH)
+    main_abs = os.path.abspath(_config.DB_PATH)
 
     url = os.getenv("TURSO_DB_URL")
     token = os.getenv("TURSO_AUTH_TOKEN")
@@ -224,29 +200,255 @@ def _resolve_conn_context(db_path: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def _query_turso_db_size(url: str) -> int:
+    """查询 Turso 数据库总大小（字节）。失败返回 0（降级为绝对大小显示）。"""
+    try:
+        import requests
+    except ImportError:
+        return 0
+
+    api_token = os.getenv("TURSO_API_TOKEN", "")
+    org = os.getenv("TURSO_ORGANIZATION", "")
+    if not api_token:
+        return 0
+
+    # 从 URL 解析 db name: libsql://db-name-org.region.turso.io
+    host = url.replace("libsql://", "").replace("https://", "")
+    subdomain = host.split(".")[0]  # e.g. "history-asher-ashershi"
+
+    if not org:
+        # 尝试从 subdomain 提取 org（最后一个 - 后面的部分）
+        parts = subdomain.rsplit("-", 1)
+        if len(parts) == 2:
+            org = parts[1]
+        else:
+            return 0
+
+    # db name = subdomain 减去 "-{org}" 后缀
+    if subdomain.endswith(f"-{org}"):
+        db_name = subdomain[: -(len(org) + 1)]
+    else:
+        db_name = subdomain
+
+    try:
+        _debug_log(f"[_connect_embedded_replica] 正在查询云端数据库大小 (org={org}, db={db_name})…", level="INFO")
+        resp = requests.get(
+            f"https://api.turso.tech/v1/organizations/{org}/databases/{db_name}",
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=10,
+        )
+        if not resp.ok:
+            _debug_log(f"[_connect_embedded_replica] Turso API 返回 {resp.status_code}，跳过大小查询", level="WARNING")
+            return 0
+
+        data = resp.json()
+        db_info = data.get("database", data)
+
+        # 灵活查找 size 相关字段
+        size = (
+            db_info.get("size")
+            or db_info.get("Size")
+            or db_info.get("size_bytes")
+            or db_info.get("db_size")
+            or 0
+        )
+        if not size:
+            usage = db_info.get("usage", db_info.get("Usage", {}))
+            if isinstance(usage, dict):
+                size = usage.get("storage_bytes") or usage.get("size") or 0
+
+        size = int(size)
+        if size > 0:
+            _debug_log(f"[_connect_embedded_replica] 云端数据库总大小: {size / 1024 / 1024:.1f} MB", level="INFO")
+        return size
+    except Exception as e:
+        _debug_log(f"[_connect_embedded_replica] 查询数据库大小失败（可忽略）: {e}", level="WARNING")
+        return 0
+
+
+def _start_pull_monitor(db_path: str, total_bytes: int) -> Optional[subprocess.Popen]:
+    """启动子进程监控初始 pull 下载进度。失败返回 None。"""
+    monitor_script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "_pull_monitor.py",
+    )
+    if not os.path.exists(monitor_script):
+        _debug_log("[_connect_embedded_replica] 监控脚本不存在，跳过进度显示", level="WARNING")
+        return None
+
+    try:
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        proc = subprocess.Popen(
+            [sys.executable, monitor_script, db_path, str(total_bytes), str(os.getpid())],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            env=env,
+        )
+        return proc
+    except Exception as e:
+        _debug_log(f"[_connect_embedded_replica] 启动监控子进程失败（可忽略）: {e}", level="WARNING")
+        return None
+
+
 def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool = False) -> Any:
+    """创建 Embedded Replica 连接。
+
+    如果本地 .db 文件不存在（例如自愈恢复后被删除），libsql.connect 会执行
+    初始 pull 从云端拉取完整数据，耗时取决于网络和库大小。
+    如果本地 .db 已存在且有对应 .db-info 元数据，则跳过初始 pull，连接瞬间完成。
+    """
     if not HAS_LIBSQL:
         raise RuntimeError("libsql is not available")
 
     final_url = url.replace("libsql://", "https://")
-    conn = libsql.connect(db_path, sync_url=final_url, auth_token=token)
+    _debug_log(f"[_connect_embedded_replica] db_path={db_path}, url={final_url[:50]}..., do_sync={do_sync}")
+
+    # 清理残留：如果 .db 不存在但 .db-info 残留，libsql 会报
+    # "db file exists but metadata file does not"。提前清理让 libsql 执行初始 pull。
+    has_existing_db = os.path.exists(db_path)
+    has_metadata = os.path.exists(db_path + "-info") if has_existing_db else False
+
+    if not has_existing_db:
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        from database.utils import _cleanup_stale_sidecars
+        _cleanup_stale_sidecars(os.path.abspath(db_path))
+    elif not has_metadata:
+        # .db 存在但 .db-info 不存在：libsql 无法识别此文件为有效副本，
+        # 会跳过初始 pull 或报 "metadata file does not"。
+        # 无论 .db 大小，删除它让 libsql 从零开始拉取云端数据。
+        from database.utils import _cleanup_stale_sidecars
+        try:
+            db_size = os.path.getsize(db_path)
+        except OSError:
+            db_size = 0
+        _debug_log(
+            f"[_connect_embedded_replica] .db 文件存在 ({db_size} 字节) 但无元数据，"
+            f"删除后重新拉取云端数据",
+            level="WARNING",
+        )
+        try:
+            os.remove(db_path)
+            has_existing_db = False
+        except OSError:
+            pass
+        _cleanup_stale_sidecars(os.path.abspath(db_path))
+
+    needs_initial_pull = not has_existing_db or not has_metadata
+    monitor_proc = None
+
+    # 标记数据库类型，方便日志区分主库 vs Hub
+    db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
+
+    if needs_initial_pull:
+        total_size = _query_turso_db_size(url)
+        if total_size > 0:
+            _debug_log(
+                f"[{db_label}] 本地无有效副本（db={'存在' if has_existing_db else '不存在'}, "
+                f"metadata={'存在' if has_metadata else '不存在'}），正在连接云端并执行初始 pull…",
+                level="INFO",
+            )
+        else:
+            _debug_log(
+                f"[{db_label}] 本地无有效副本（db={'存在' if has_existing_db else '不存在'}, "
+                f"metadata={'存在' if has_metadata else '不存在'}），正在连接云端并执行初始 pull…"
+                f"（未配置 TURSO_API_TOKEN，仅显示绝对大小）",
+                level="INFO",
+            )
+        monitor_proc = _start_pull_monitor(db_path, total_size)
+    else:
+        _debug_log(f"[{db_label}] 本地已有副本，正在连接…", level="INFO")
+
+    _t0 = time.time()
+    try:
+        if needs_initial_pull:
+            _debug_log(f"[{db_label}] 正在连接云端并执行初始 pull…", level="INFO")
+        # _check_same_thread=False 必需：单例连接由多个线程通过 op_lock 串行访问
+        # （warmup_sync 创建 → _warmup_async 读 → _sync_daemon sync 等）。
+        # 默认 True 会让 libsql C 层在跨线程使用时触发 access violation (0xC0000005)。
+        # 应用层已用 _main_write_conn_op_lock(RLock) / _hub_write_conn_op_lock 保护并发。
+        conn = libsql.connect(
+            db_path,
+            sync_url=final_url,
+            auth_token=token,
+            timeout=30.0,
+            _check_same_thread=False,
+        )
+    except Exception as e:
+        _debug_log(
+            f"[{db_label}] libsql.connect 失败: {type(e).__name__}: {e}",
+            level="ERROR",
+        )
+        raise
+    finally:
+        # 无论成功失败，都要停止监控子进程
+        if monitor_proc is not None:
+            try:
+                monitor_proc.terminate()
+                monitor_proc.wait(timeout=3)
+            except Exception:
+                try:
+                    monitor_proc.kill()
+                except Exception:
+                    pass
+    _elapsed = time.time() - _t0
 
     try:
-        conn.execute("PRAGMA busy_timeout=5000;")
+        final_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    except OSError:
+        final_size = 0
+
+    if needs_initial_pull:
+        _debug_log(
+            f"[{db_label}] 连接完成，本地 DB: {final_size / 1024 / 1024:.1f} MB (耗时 {_elapsed:.1f}s)",
+            level="INFO",
+        )
+    else:
+        _debug_log(f"[{db_label}] libsql.connect 返回成功 (耗时 {_elapsed:.1f}s)", level="INFO")
+
+    try:
+        conn.execute("PRAGMA busy_timeout=30000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
     except Exception as e:
         _debug_log(f"Embedded Replica PRAGMA 配置失败（可忽略）: {e}", level="WARNING")
 
+    # 初始 pull 后的连接稳定化：WAL_CHECKPOINT(TRUNCATE) 将所有 WAL 条目
+    # 写入主数据库文件，确保 libsql C 层内部状态一致。
+    # Windows 上 libsql 0.1.11 在初始 pull 后不执行 checkpoint 会导致
+    # 后续并发访问时 access violation (0xC0000005)。
+    if needs_initial_pull:
+        try:
+            _debug_log(f"[{db_label}] 初始 pull 后执行 WAL CHECKPOINT 稳定化…", level="INFO")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            _debug_log(f"[{db_label}] WAL CHECKPOINT 完成，连接已稳定", level="INFO")
+        except Exception as e:
+            _debug_log(f"[{db_label}] WAL CHECKPOINT 失败（可忽略）: {e}", level="WARNING")
+
     if do_sync and hasattr(conn, "sync"):
-        conn.sync()
+        try:
+            from database.execution_engine import set_db_syncing, clear_db_syncing
+            set_db_syncing(phase="initial_sync")
+        except ImportError:
+            pass
+        _debug_log("[_connect_embedded_replica] 执行 conn.sync()...")
+        _t1 = time.time()
+        try:
+            conn.sync()
+        finally:
+            _sync_elapsed = time.time() - _t1
+            _debug_log(f"[_connect_embedded_replica] conn.sync() 完成 (耗时 {_sync_elapsed:.1f}s)", level="INFO")
+            try:
+                clear_db_syncing()
+            except ImportError:
+                pass
     return conn
 
 
 def _close_main_write_conn_singleton() -> None:
-    global _main_write_conn_singleton
+    global _main_write_conn_singleton, _main_write_conn_singleton_path
     with _main_write_conn_lock:
         conn = _main_write_conn_singleton
         _main_write_conn_singleton = None
+        _main_write_conn_singleton_path = None
 
     if conn is None:
         return
@@ -292,8 +494,31 @@ def _get_singleton_conn_op_lock(conn: Any):
     return None
 
 
+def _get_local_read_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
+    """打开一个轻量级只读 sqlite3 连接。
+
+    用于 Embedded Replica 模式下的读操作隔离，避免读请求被 _main_write_conn_op_lock
+    阻塞。WAL 模式天然支持 '一写多读' 并行，此连接仅做 SELECT，不会与写单例冲突。
+
+    与 _get_local_conn 的区别：
+    - 设置 PRAGMA query_only=ON 防止意外写入
+    - 不做损坏恢复（读失败时由 with_read_session 装饰器兜底降级）
+    - 更短的 busy_timeout（读操作不应等太久）
+    """
+    path = db_path or _config.DB_PATH
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    conn = sqlite3.connect(path, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = lambda b: b.decode("utf-8", "replace")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=2000;")
+    conn.execute("PRAGMA query_only=ON;")
+    return conn
+
+
 def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
-    path = db_path or DB_PATH
+    path = db_path or _config.DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 
     def _open_local_connection() -> sqlite3.Connection:
@@ -383,53 +608,81 @@ def _get_main_write_conn_singleton(
     max_retries: int = 3,
     retry_delay: float = 1.0,
 ) -> Any:
-    global _main_write_conn_singleton
+    global _main_write_conn_singleton, _main_write_conn_singleton_path, _main_write_conn_last_check
 
-    ctx = _resolve_conn_context(DB_PATH)
-    if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
-        return _get_local_conn(DB_PATH)
-
+    # 1. 第一阶段：快速获取当前单例引用并执行路径校验
     with _main_write_conn_lock:
-        if _main_write_conn_singleton is not None:
-            try:
-                with _main_write_conn_op_lock:
-                    _main_write_conn_singleton.execute("SELECT 1")
-                    if do_sync and hasattr(_main_write_conn_singleton, "sync"):
-                        _main_write_conn_singleton.sync()
-                return _main_write_conn_singleton
-            except BaseException as health_error:
-                _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
-                try:
-                    _main_write_conn_singleton.close()
-                except Exception:
-                    pass
-                _main_write_conn_singleton = None
-
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            conn = _connect_embedded_replica(DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
-            with _main_write_conn_lock:
-                if _main_write_conn_singleton is None:
-                    _main_write_conn_singleton = conn
-                    _debug_log("主库 Embedded Replica 写连接单例已创建", level="INFO")
-                    return _main_write_conn_singleton
-
+        conn = _main_write_conn_singleton
+        if conn is not None:
+            current_path = os.path.abspath(_config.DB_PATH)
+            if _main_write_conn_singleton_path and os.path.abspath(_main_write_conn_singleton_path) != current_path:
+                _debug_log(f"主库单例路径切换: {_main_write_conn_singleton_path} -> {current_path}", level="INFO")
                 try:
                     conn.close()
                 except Exception:
                     pass
-                return _main_write_conn_singleton
-        except Exception as e:
-            last_error = e
-            if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                _backup_broken_database_file(DB_PATH, "主库副本状态损坏，已备份后重试")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            break
+                _main_write_conn_singleton = None
+                _main_write_conn_singleton_path = None
+                conn = None
 
-    raise last_error or RuntimeError("无法创建主库 Embedded Replica 写连接单例")
+    # 2. 第二阶段：如果已有单例，在【锁外】进行健康检查（仅持操作锁）
+    if conn is not None:
+        try:
+            with _main_write_conn_op_lock:
+                now = time.time()
+                if now - _main_write_conn_last_check > 1.0:
+                    conn.execute("SELECT 1")
+                    _main_write_conn_last_check = now
+                if do_sync and hasattr(conn, "sync"):
+                    conn.sync()
+        except BaseException as health_error:
+            _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
+            with _main_write_conn_lock:
+                if _main_write_conn_singleton is conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    _main_write_conn_singleton = None
+                    _main_write_conn_singleton_path = None
+            conn = None
+
+    # 3. 第三阶段：如果不存在，进入初始化串行锁进行双重检查创建
+    if conn is None:
+        with _main_write_conn_init_lock:
+            # 双重检查
+            with _main_write_conn_lock:
+                conn = _main_write_conn_singleton
+            
+            if conn is None:
+                ctx = _resolve_conn_context(_config.DB_PATH)
+                if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
+                    return _get_local_conn(_config.DB_PATH)
+
+                last_error = None
+                for attempt in range(max_retries):
+                    if attempt > 0:
+                        _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
+                    try:
+                        conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+                        with _main_write_conn_lock:
+                            _main_write_conn_singleton = conn
+                            _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
+                            _debug_log(f"主库 Embedded Replica 写连接单例已创建 ({_main_write_conn_singleton_path})", level="INFO")
+                        break
+                    except Exception as e:
+                        last_error = e
+                        if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                            _backup_broken_database_file(_config.DB_PATH, "主库副本状态损坏，已备份后重试")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        break
+                
+                if conn is None:
+                    raise last_error or RuntimeError("无法创建主库 Embedded Replica 写连接单例")
+
+    return conn
 
 
 def _get_hub_write_conn_singleton(
@@ -442,55 +695,68 @@ def _get_hub_write_conn_singleton(
     if not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL):
         return _get_hub_local_conn()
 
+    # 1. 第一阶段：获取当前 Hub 单例引用
     with _hub_write_conn_lock:
-        if _hub_write_conn_singleton is not None:
-            try:
-                with _hub_write_conn_op_lock:
-                    _hub_write_conn_singleton.execute("SELECT 1")
-                    if do_sync and hasattr(_hub_write_conn_singleton, "sync"):
-                        _hub_write_conn_singleton.sync()
-                return _hub_write_conn_singleton
-            except BaseException as health_error:
-                _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
-                try:
-                    _hub_write_conn_singleton.close()
-                except Exception:
-                    pass
-                _hub_write_conn_singleton = None
+        conn = _hub_write_conn_singleton
 
-    last_error = None
-    for attempt in range(max_retries):
+    # 2. 第二阶段：健康检查（锁外进行，仅持操作锁）
+    if conn is not None:
         try:
-            conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+            with _hub_write_conn_op_lock:
+                conn.execute("SELECT 1")
+                if do_sync and hasattr(conn, "sync"):
+                    conn.sync()
+        except BaseException as health_error:
+            _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _hub_write_conn_lock:
-                if _hub_write_conn_singleton is None:
-                    _hub_write_conn_singleton = conn
-                    _debug_log("Hub Embedded Replica 写连接单例已创建", level="INFO")
-                    return _hub_write_conn_singleton
+                if _hub_write_conn_singleton is conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    _hub_write_conn_singleton = None
+            conn = None
 
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                return _hub_write_conn_singleton
-        except Exception as e:
-            last_error = e
-            if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                _backup_broken_database_file(HUB_DB_PATH, "Hub 副本状态损坏，已备份后重试")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            break
+    # 3. 第三阶段：如果不存在，进入初始化串行锁进行双重检查创建
+    if conn is None:
+        with _hub_write_conn_init_lock:
+            # 双重检查
+            with _hub_write_conn_lock:
+                conn = _hub_write_conn_singleton
 
-    raise last_error or RuntimeError("无法创建 Hub Embedded Replica 写连接单例")
+            if conn is None:
+                last_error = None
+                for attempt in range(max_retries):
+                    try:
+                        _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
+                        conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+                        _debug_log("[_get_hub_write_conn_singleton] _connect_embedded_replica 返回成功")
+                        with _hub_write_conn_lock:
+                            _hub_write_conn_singleton = conn
+                            _debug_log("Hub Embedded Replica 写连接单例已创建", level="INFO")
+                        break
+                    except Exception as e:
+                        last_error = e
+                        _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1} 失败: {e}", level="WARNING")
+                        if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                            _backup_broken_database_file(HUB_DB_PATH, "Hub 副本状态损坏，已备份后重试")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        break
+                
+                if conn is None:
+                    raise last_error or RuntimeError("无法创建 Hub Embedded Replica 写连接单例")
+
+    return conn
 
 
 def _should_use_local_only_connection(db_path: Optional[str] = None, conn: Any = None) -> bool:
     if conn is not None:
         return True
 
-    path = db_path or DB_PATH
-    if os.path.abspath(path) != os.path.abspath(DB_PATH):
+    path = db_path or _config.DB_PATH
+    if os.path.abspath(path) != os.path.abspath(_config.DB_PATH):
         return True
 
     ctx = _resolve_conn_context(path)
@@ -508,7 +774,7 @@ def _get_read_conn(
     allow_local_fallback: bool = True,
 ) -> Any:
     return _get_read_conn_impl(
-        db_path or DB_PATH,
+        db_path or _config.DB_PATH,
         max_retries=max_retries,
         retry_delay=retry_delay,
         allow_local_fallback=allow_local_fallback,
@@ -523,9 +789,12 @@ def _get_read_conn_impl(
 ) -> Any:
     """Resolve read connection.
 
-    CRITICAL WalConflict fix:
-    - Embedded Replica mode must return main write singleton directly.
-    - Never open extra local libsql read connections.
+    Phase B 读写隔离：
+    - Embedded Replica 模式下，读操作优先走独立的 sqlite3 只读连接，
+      避免被 _main_write_conn_op_lock 阻塞。
+    - 仅当独立连接失败时才回退到写单例。
+    - 永远不开额外的 libsql 读连接（WalConflict 约束仍然成立）。
+    - 可通过 ISOLATED_READ_CONN_ENABLED=False 回退到旧行为。
     """
     ctx = _resolve_conn_context(db_path)
     db_path = ctx["db_path"]
@@ -535,6 +804,9 @@ def _get_read_conn_impl(
         return _wrap_and_track_connection(db_path, conn, True)
 
     if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and HAS_LIBSQL:
+        # CRITICAL WalConflict fix: 
+        # In LibSQL mode, we MUST reuse the singleton connection to avoid deadlocks
+        # during background sync, especially on Windows/OneDrive.
         last_error = None
         for attempt in range(max_retries):
             try:
@@ -545,16 +817,13 @@ def _get_read_conn_impl(
                 if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
                     _backup_broken_database_file(db_path, "Embedded Replica 本地状态损坏，已备份并重试")
                 if attempt < max_retries - 1:
-                    _debug_log(
-                        f"Embedded Replica 读连接失败 (尝试 {attempt + 1})，{retry_delay} 秒后重试: {e}",
-                        level="WARNING",
-                    )
                     time.sleep(retry_delay)
-                else:
-                    _debug_log(f"Embedded Replica 读连接失败 (已尝试 {max_retries} 次): {e}", level="WARNING")
+                    continue
+                break
 
         if ctx["force_cloud_mode"]:
             raise RuntimeError(f"强制云端模式读连接失败 (已尝试 {max_retries} 次): {last_error}")
+
 
     if allow_local_fallback and (not ctx["force_cloud_mode"] or ctx["is_test"]):
         conn = _get_local_conn(db_path)
@@ -608,7 +877,7 @@ def _get_cloud_conn(url: str, token: str, db_path: str = None, max_retries: int 
     if not url or not token:
         raise ValueError("Turso URL and token are required")
 
-    local_path = db_path or DB_PATH
+    local_path = db_path or _config.DB_PATH
 
     if _is_main_db_path(local_path):
         return _get_main_write_conn_singleton(do_sync=False)
@@ -641,16 +910,21 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         raise RuntimeError("强制云端模式已启用，但 libsql 不可用")
 
     if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL:
+        _debug_log("[_get_hub_conn] 检测到云端 Hub 配置，尝试连接...")
         last_error = None
         for attempt in range(max_retries):
             try:
-                return _get_hub_write_conn_singleton(
+                _debug_log(f"[_get_hub_conn] 尝试 {attempt+1}/{max_retries}，调用 _get_hub_write_conn_singleton...")
+                result = _get_hub_write_conn_singleton(
                     do_sync=False,
                     max_retries=max_retries,
                     retry_delay=retry_delay,
                 )
+                _debug_log("[_get_hub_conn] 云端 Hub 连接成功")
+                return result
             except Exception as e:
                 last_error = e
+                _debug_log(f"[_get_hub_conn] 尝试 {attempt+1} 失败: {e}", level="WARNING")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                 else:
@@ -658,6 +932,7 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         if get_force_cloud_mode():
             raise RuntimeError(f"强制云端模式连接 Hub 失败 (已尝试 {max_retries} 次): {last_error}")
 
+    _debug_log("[_get_hub_conn] 无云端配置，使用本地 Hub 连接")
     if not get_force_cloud_mode():
         return _get_hub_local_conn()
 
@@ -667,285 +942,6 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
 def _get_dedicated_write_conn(db_path: Optional[str] = None) -> Any:
     _ = db_path
     return _get_main_write_conn_singleton(do_sync=False)
-
-
-def _execute_batch_writes_unlocked(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
-    cur = write_conn.cursor()
-    try:
-        # 【关键修复】使用具名游标执行，绝不能用 write_conn.execute
-        cur.execute("BEGIN IMMEDIATE")
-        for item in batch:
-            op_type = item.get("op_type", "insert")
-            if op_type == "insert_or_replace":
-                sql = item.get("sql")
-                args = item.get("args", ())
-                cur.execute(sql, args)
-            elif op_type == "executemany":
-                sql = item.get("sql")
-                args_list = item.get("args_list", [])
-                if args_list:
-                    cur.executemany(sql, args_list)
-        write_conn.commit()
-    except Exception:
-        # 【关键修复】如果发生任何异常，强行回滚，防止事务卡死
-        try:
-            write_conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        cur.close()
-
-
-def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
-    if not batch:
-        return
-
-    max_retries = 3
-    retry_count = 0
-    last_error = None
-    conn_lock = _get_singleton_conn_op_lock(write_conn)
-
-    while retry_count < max_retries:
-        try:
-            if conn_lock is None:
-                _execute_batch_writes_unlocked(write_conn, batch)
-            else:
-                with conn_lock:
-                    _execute_batch_writes_unlocked(write_conn, batch)
-            return
-        except Exception as e:
-            # Catch ALL exceptions here to check for libsql WalConflicts
-            error_msg = str(e).lower()
-            is_wal_conflict = (
-                "wal" in error_msg
-                or "database is locked" in error_msg
-                or "frame insert conflict" in error_msg
-                or "walconflict" in error_msg
-            )
-            if is_wal_conflict and retry_count < max_retries - 1:
-                retry_count += 1
-                wait_time = 0.1 * (2 ** (retry_count - 1))
-                _debug_log(
-                    f"批量写入 WAL 冲突，等待 {wait_time*1000:.0f}ms 后重试 ({retry_count}/{max_retries}): {e}",
-                    level="WARNING",
-                )
-                time.sleep(wait_time)
-                try:
-                    write_conn.rollback()
-                except Exception:
-                    pass
-                last_error = e
-                continue
-
-            # If it's not a wal conflict, or we ran out of retries
-            try:
-                write_conn.rollback()
-            except Exception:
-                pass
-            raise
-
-    if last_error:
-        raise last_error
-
-
-def _writer_daemon() -> None:
-    global _needs_sync, _last_write_time
-
-    batch_threshold = 50
-    timeout_seconds = 1.0
-
-    pending_batch: List[Dict[str, Any]] = []
-    last_commit_time = time.time()
-
-    try:
-        _debug_log("后台写线程启动", level="INFO")
-
-        while True:
-            if _writer_daemon_stop_event.is_set() and _write_queue.empty() and not pending_batch:
-                break
-
-            try:
-                try:
-                    item = _write_queue.get(timeout=0.1)
-                    pending_batch.append(item)
-                    _write_queue_stats["total_queued"] += 1
-                except queue.Empty:
-                    pass
-
-                now = time.time()
-                should_commit = (
-                    len(pending_batch) >= batch_threshold
-                    or (pending_batch and (now - last_commit_time) >= timeout_seconds)
-                    or (_writer_daemon_stop_event.is_set() and pending_batch)
-                )
-
-                if should_commit and pending_batch:
-                    try:
-                        write_conn = _get_dedicated_write_conn(DB_PATH)
-                        _execute_batch_writes(write_conn, pending_batch)
-                        _write_queue_stats["total_written"] += len(pending_batch)
-                        _write_queue_stats["last_batch_size"] = len(pending_batch)
-                        pending_batch = []
-                        last_commit_time = now
-                        _needs_sync = True
-                        _last_write_time = time.time()
-                    except Exception as e:
-                        _write_queue_stats["total_errors"] += 1
-                        err_msg = str(e).lower()
-                        
-                        # 【核弹级自愈机制】增加了 Turso 的 stream not found 和 hrana 断连捕获
-                        is_broken_conn = any(k in err_msg for k in [
-                            "invalid state", "txn", "poison", "wal", "stream not found", "hrana"
-                        ])
-                        
-                        if is_broken_conn:
-                            _debug_log("检测到 Turso 云端连接休眠或底层状态失效，正在静默重建单例并重试...", level="INFO")
-                            _close_main_write_conn_singleton()
-                            time.sleep(0.5)
-                            continue  # 直接 continue，保留 pending_batch，下一次循环会自动用新连接把刚才没写进去的数据补写进去！
-                        else:
-                            _debug_log(f"后台写线程批量操作出错: {e}", level="ERROR")
-                            # 非断连错误，清空 batch 防止毒药数据死循环
-                            pending_batch = []
-                            
-                        time.sleep(0.1)
-            except Exception as e:
-                _write_queue_stats["total_errors"] += 1
-                _debug_log(f"后台写线程外层捕获出错: {e}", level="ERROR")
-                time.sleep(0.1)
-
-        # 关机前的最后一次 Flush
-        if pending_batch:
-            try:
-                write_conn = _get_dedicated_write_conn(DB_PATH)
-                _execute_batch_writes(write_conn, pending_batch)
-                _write_queue_stats["total_written"] += len(pending_batch)
-                _needs_sync = True
-                _last_write_time = time.time()
-            except Exception as e:
-                _write_queue_stats["total_errors"] += 1
-                _debug_log(f"后台写线程关机批量操作出错: {e}", level="ERROR")
-
-    except BaseException as e:
-        _debug_log(f"后台写线程崩溃: {e}", level="CRITICAL")
-    finally:
-        _debug_log("后台写线程停止", level="INFO")
-
-
-def _sync_daemon() -> None:
-    global _needs_sync, _last_write_time
-
-    while not _sync_daemon_stop_event.is_set():
-        time.sleep(2.0)
-
-        if not _needs_sync:
-            continue
-        if (time.time() - _last_write_time) <= 5.0:
-            continue
-
-        try:
-            conn = _get_main_write_conn_singleton(do_sync=False)
-            if not hasattr(conn, "sync"):
-                continue
-            with _main_write_conn_op_lock:
-                conn.sync()
-            _needs_sync = False
-            _debug_log("闲时后台自动同步完成", level="INFO")
-        except BaseException as e:
-            _debug_log(f"闲时后台自动同步失败: {e}", level="WARNING")
-
-
-def _start_writer_daemon() -> None:
-    global _writer_daemon_thread
-    with _writer_daemon_lock:
-        if _writer_daemon_thread is None or not _writer_daemon_thread.is_alive():
-            _writer_daemon_stop_event.clear()
-            _writer_daemon_thread = threading.Thread(target=_writer_daemon, daemon=True, name="MomoDBWriter")
-            _writer_daemon_thread.start()
-            _debug_log("后台写守护线程已启动", level="INFO")
-
-
-def _start_sync_daemon() -> None:
-    global _sync_daemon_thread
-    with _writer_daemon_lock:
-        if _sync_daemon_thread is None or not _sync_daemon_thread.is_alive():
-            _sync_daemon_stop_event.clear()
-            _sync_daemon_thread = threading.Thread(target=_sync_daemon, daemon=True, name="MomoDBSync")
-            _sync_daemon_thread.start()
-            _debug_log("后台同步守护线程已启动", level="INFO")
-
-
-def _stop_writer_daemon(timeout_seconds: float = 2.0) -> None:
-    global _writer_daemon_thread
-    _writer_daemon_stop_event.set()
-    if _writer_daemon_thread and _writer_daemon_thread.is_alive():
-        _writer_daemon_thread.join(timeout=timeout_seconds)
-
-
-def _stop_sync_daemon(timeout_seconds: float = 2.0) -> None:
-    global _sync_daemon_thread
-    _sync_daemon_stop_event.set()
-    if _sync_daemon_thread and _sync_daemon_thread.is_alive():
-        _sync_daemon_thread.join(timeout=timeout_seconds)
-
-
-def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace") -> bool:
-    _start_writer_daemon()
-    item = {"op_type": op_type, "sql": sql, "args": args}
-    try:
-        _write_queue.put(item, timeout=2.0)
-        return True
-    except queue.Full:
-        _debug_log(f"写队列满，丢弃操作: {sql[:100]}", level="WARNING")
-        return False
-
-
-def _queue_batch_write_operation(sql: str, args_list: List[Tuple]) -> bool:
-    if not args_list:
-        return True
-    _start_writer_daemon()
-    item = {"op_type": "executemany", "sql": sql, "args_list": args_list}
-    try:
-        _write_queue.put(item, timeout=2.0)
-        return True
-    except queue.Full:
-        _debug_log(f"写队列满，丢弃批量操作: {sql[:100]} | size={len(args_list)}", level="WARNING")
-        return False
-
-
-def init_concurrent_system() -> None:
-    _start_writer_daemon()
-    _start_sync_daemon()
-    _debug_log("并发系统初始化完成", level="INFO")
-
-
-def cleanup_concurrent_system() -> None:
-    _stop_writer_daemon(timeout_seconds=5.0)
-    _stop_sync_daemon(timeout_seconds=2.0)
-    _close_main_write_conn_singleton()
-    _close_hub_write_conn_singleton()
-    _debug_log("并发系统清理完成", level="INFO")
-
-
-def _release_db_file_handles_for_recovery(db_path: str) -> None:
-    abs_path = os.path.abspath(db_path or DB_PATH)
-    try:
-        _stop_sync_daemon(timeout_seconds=1.5)
-    except Exception:
-        pass
-    try:
-        _stop_writer_daemon(timeout_seconds=1.5)
-    except Exception:
-        pass
-
-    try:
-        if abs_path == os.path.abspath(DB_PATH):
-            _close_main_write_conn_singleton()
-        if abs_path == os.path.abspath(HUB_DB_PATH):
-            _close_hub_write_conn_singleton()
-    except Exception as singleton_error:
-        _debug_log(f"恢复前释放写连接单例失败: {singleton_error}", level="WARNING")
 
 
 def _run_with_managed_connection(
@@ -1036,10 +1032,10 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
         return _row_to_dict(cur, row) if row else None
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
-            _debug_log_throttled(
+            get_logger().warning_throttled(
                 "hub_fetch_one_dict_corruption",
                 f"_hub_fetch_one_dict 数据损坏异常: {e}",
-                level="WARNING",
+                module="database.connection",
             )
             return None
         _debug_log(f"_hub_fetch_one_dict 异常: {e}", level="WARNING")
@@ -1086,77 +1082,14 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
         return [_row_to_dict(cur, row) for row in rows]
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
-            _debug_log_throttled(
+            get_logger().warning_throttled(
                 "hub_fetch_all_dicts_corruption",
                 f"_hub_fetch_all_dicts 数据损坏异常: {e}",
-                level="WARNING",
+                module="database.connection",
             )
             return []
         _debug_log(f"_hub_fetch_all_dicts 异常: {e}", level="WARNING")
         return []
-
-
-def _mark_main_db_needs_sync(db_path: Optional[str] = None, conn: Any = None) -> None:
-    global _needs_sync, _last_write_time
-
-    if conn is not None:
-        if not _is_main_write_singleton_conn(conn):
-            return
-    elif not _is_main_db_path(db_path):
-        return
-
-    _needs_sync = True
-    _last_write_time = time.time()
-
-
-def _execute_write_sql_sync(sql: str, params: tuple = (), db_path: Optional[str] = None, conn: Any = None) -> None:
-    owned = conn is None
-    target_conn = conn or _get_local_conn(db_path or DB_PATH)
-    try:
-        cur = target_conn.cursor()
-        try:
-            cur.execute(sql, params)
-        finally:
-            cur.close()  # 【关键修复】释放单条写入的游标
-        target_conn.commit()
-        _mark_main_db_needs_sync(db_path=db_path, conn=target_conn)
-    finally:
-        if owned:
-            try:
-                target_conn.close()
-            except Exception:
-                pass
-
-
-def _execute_batch_write_sql_sync(
-    sql: str,
-    args_list: List[Tuple],
-    db_path: Optional[str] = None,
-    conn: Any = None,
-) -> None:
-    if not args_list:
-        return
-
-    owned = conn is None
-    target_conn = conn or _get_local_conn(db_path or DB_PATH)
-    try:
-        cur = target_conn.cursor()
-        try:
-            cur.executemany(sql, args_list)
-        finally:
-            cur.close()  # 【关键修复】释放批量写入的游标
-        target_conn.commit()
-        _mark_main_db_needs_sync(db_path=db_path, conn=target_conn)
-    finally:
-        if owned:
-            try:
-                target_conn.close()
-            except Exception:
-                pass
-
-
-def get_write_queue_stats() -> Dict[str, int]:
-    return dict(_write_queue_stats)
 
 
 def set_runtime_cloud_credentials(url: Optional[str], token: Optional[str], hostname: Optional[str] = None) -> None:
@@ -1165,3 +1098,30 @@ def set_runtime_cloud_credentials(url: Optional[str], token: Optional[str], host
     TURSO_DB_URL = (url or "").strip() or None
     TURSO_AUTH_TOKEN = (token or "").strip() or None
     TURSO_DB_HOSTNAME = (hostname or "").strip() or None
+
+# Imported from execution engine to maintain backward compatibility
+from database.execution_engine import (
+    _write_queue,
+    _writer_daemon_stop_event,
+    _write_queue_stats,
+    _execute_batch_writes_unlocked,
+    _execute_batch_writes,
+    _writer_daemon,
+    _sync_daemon,
+    _start_writer_daemon,
+    _start_sync_daemon,
+    _stop_writer_daemon,
+    _stop_sync_daemon,
+    _queue_write_operation,
+    _queue_batch_write_operation,
+    init_concurrent_system,
+    cleanup_concurrent_system,
+    _release_db_file_handles_for_recovery,
+    _mark_main_db_needs_sync,
+    _execute_write_sql_sync,
+    _execute_batch_write_sql_sync,
+    get_write_queue_stats,
+    get_db_sync_status,
+    set_db_syncing,
+    clear_db_syncing,
+)
