@@ -250,21 +250,24 @@ V002 迁移执行前，自动创建预迁移快照：
 
 ```python
 # database/migrations/V002_add_is_customized.py
-import shutil, os, time
+import os, time
 
-_PRE_MIGRATION_MARKER = "pre_V002_snapshot"
+def _snapshot_before_migration(conn) -> str:
+    """使用 SQLite 原生 VACUUM INTO 创建在线快照。
 
-def _snapshot_before_migration(db_path: str) -> str:
-    backup_dir = os.path.join(os.path.dirname(db_path), "backups")
+    VACUUM INTO 在运行时自动处理 WAL/SHM 合流，产出一致的物理快照，
+    不锁表、不影响正在运行的读写操作。
+    """
+    db_dir = os.path.dirname(os.path.abspath(conn.execute("PRAGMA database_list").fetchone()[2]))
+    backup_dir = os.path.join(db_dir, "backups")
     os.makedirs(backup_dir, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
-    dst = os.path.join(backup_dir, f"{os.path.basename(db_path)}_pre_V002_{ts}.db")
-    if not os.path.exists(dst):
-        shutil.copy2(db_path, dst)
-    return dst
+    backup_path = os.path.join(backup_dir, f"history_pre_V002_{ts}.db")
+    conn.execute(f"VACUUM INTO '{backup_path}'")
+    return backup_path
 ```
 
-同时备份 `.db-wal` 和 `.db-shm`（如有）。
+使用 `VACUUM INTO`（SQLite 3.27+）而非 `shutil.copy2`，保证 WAL 未提交事务也被正确合流。
 
 ### 7.2 Schema 无痛升级
 
@@ -293,7 +296,7 @@ def _snapshot_before_migration(db_path: str) -> str:
 | V002 ADD COLUMN | `UPDATE ai_word_notes SET is_customized=0`（V002 downgrade 函数） |
 | V003 种子数据 | `DELETE FROM ai_cache WHERE cache_key LIKE '...'`（按 seed 标记删除） |
 | Level 2 合流写入 | 从预迁移快照恢复 `.db` 文件 |
-| fire-and-forget 缓存 | `TRUNCATE TABLE ai_cache`（Global_Cache_DB 是纯缓存，清空不影响用户数据） |
+| fire-and-forget 缓存 | `DELETE FROM ai_cache`（Global_Cache_DB 是纯缓存，清空不影响用户数据。SQLite 无 TRUNCATE 关键字，DELETE 不带 WHERE 时自动触发 Truncate 优化） |
 
 ### 7.6 代码层回滚
 
