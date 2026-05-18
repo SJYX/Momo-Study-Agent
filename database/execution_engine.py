@@ -307,41 +307,15 @@ def _sync_daemon() -> None:
             sync_started_at = time.time()
             set_db_syncing(phase="idle_sync")
 
-            # Phase D：在持锁窗口内限时执行 conn.sync()
-            # 使用独立线程 + Event 实现软超时，避免 sync() 长时间阻塞锁
-            sync_done = threading.Event()
-            sync_error = [None]  # 用列表包装以支持闭包写入
-
-            def _do_sync():
-                try:
-                    conn.sync()
-                except Exception as e:
-                    sync_error[0] = e
-                finally:
-                    sync_done.set()
-
+            # 直接在 daemon 线程中持锁执行 conn.sync()。
+            # 必须在持锁窗口内同步执行，不能放到单独线程 — 否则 RLock/Lock
+            # 无法阻止其他线程通过 DBSession 持同一把锁并发访问 libsql C 层，
+            # 触发 access violation (0xC0000005)。
             if conn_lock is not None:
                 with conn_lock:
-                    sync_thread = threading.Thread(target=_do_sync, daemon=True, name="MomoSyncOp")
-                    sync_thread.start()
-                    # 限时等待：超时后释放锁（with 块结束），sync 线程仍在后台完成
-                    sync_done.wait(timeout=_SYNC_TIMEOUT_S)
+                    conn.sync()
             else:
-                sync_thread = threading.Thread(target=_do_sync, daemon=True, name="MomoSyncOp")
-                sync_thread.start()
-                sync_done.wait(timeout=_SYNC_TIMEOUT_S)
-
-            timed_out = not sync_done.is_set()
-            if timed_out:
-                _debug_log(
-                    f"conn.sync() 超时 ({_SYNC_TIMEOUT_S}s)，已释放锁，sync 线程仍在后台完成",
-                    level="WARNING",
-                )
-                # 等待 sync 线程自然结束（不设上限，但此时锁已释放不阻塞其他线程）
-                sync_thread.join(timeout=30.0)
-
-            if sync_error[0] is not None:
-                raise sync_error[0]
+                conn.sync()
 
             _needs_sync = False
             clear_db_syncing()
@@ -350,8 +324,6 @@ def _sync_daemon() -> None:
             try:
                 logger = get_logger()
                 msg = f"idle_sync done | duration_ms={sync_duration_ms}"
-                if timed_out:
-                    msg += " | lock_released_early=true"
                 kwargs = dict(
                     module="database.execution_engine",
                     duration_ms=sync_duration_ms,

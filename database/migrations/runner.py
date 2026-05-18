@@ -221,5 +221,23 @@ def apply_migrations(
 
     if lock is not None:
         with lock:
-            return _do()
-    return _do()
+            try:
+                return _do()
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                # libsql 强约束（database/README.md §5）：sync 前必须 gc.collect()
+                # 销毁僵尸游标对象，否则下一次同 conn 上的 SELECT 可能撞 C 层 access violation。
+                import gc
+                gc.collect()
+    try:
+        return _do()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        import gc
+        gc.collect()

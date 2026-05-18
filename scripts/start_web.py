@@ -17,6 +17,7 @@ scripts/start_web.py: 一键启动 Web UI（开发 / 生产模式）。
 from __future__ import annotations
 
 import argparse
+import ctypes as _ctypes
 import os
 import platform
 import signal
@@ -81,16 +82,42 @@ def _pick_available_port(host: str, preferred_port: int, max_tries: int = 20) ->
     raise RuntimeError(f"无法找到可用端口（起始 {preferred_port}）")
 
 
+_CREATE_NO_WINDOW = 0x08000000 if platform.system() == "Windows" else 0
+_KERNEL32 = _ctypes.windll.kernel32 if platform.system() == "Windows" else None
+
+
+def _get_console_title() -> str:
+    """获取 Windows 控制台标题。"""
+    if _KERNEL32:
+        buf = _ctypes.create_unicode_buffer(512)
+        _KERNEL32.GetConsoleTitleW(buf, 512)
+        return buf.value
+    return ""
+
+
+def _set_console_title(title: str) -> None:
+    """设置 Windows 控制台标题。"""
+    if _KERNEL32:
+        _KERNEL32.SetConsoleTitleW(title)
+
+
 def _find_npm() -> str:
-    """查找 npm 可执行文件（Windows 下可能是 npm.cmd）。"""
+    """查找 npm 可执行文件（Windows 下可能是 npm.cmd）。
+
+    Windows 关键修复：npm.cmd / node.exe 会在运行时改变 console 标题，
+    导致 Windows 向进程组误发 CTRL_C_EVENT (SIGINT)。
+    这里保存并还原 console 标题来消除副作用。
+    """
     if platform.system() == "Windows":
-        # 优先 npm.cmd，否则 npm
+        saved_title = _get_console_title()
         for cmd in ("npm.cmd", "npm"):
             try:
                 subprocess.run([cmd, "--version"], capture_output=True, check=True)
+                _set_console_title(saved_title)  # 还原标题
                 return cmd
             except (FileNotFoundError, subprocess.CalledProcessError):
                 continue
+        _set_console_title(saved_title)
     return "npm"
 
 
@@ -123,7 +150,9 @@ def _need_build() -> bool:
 def _build_frontend(npm: str) -> None:
     """构建前端生产包。"""
     print("📦 构建前端...")
+    saved_title = _get_console_title()
     subprocess.run([npm, "run", "build"], cwd=str(FRONTEND_DIR), check=True)
+    _set_console_title(saved_title)
     print("✅ 前端已构建到 web/frontend/dist/")
 
 
@@ -146,9 +175,16 @@ def _run_production(args: argparse.Namespace) -> None:
     if args.open:
         cmd.append("--open-browser")
 
-    proc = subprocess.Popen(cmd, cwd=str(ROOT))
+    env = os.environ.copy()
+    env["RUST_BACKTRACE"] = "1"
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env)
+
+    _cleanup_done = [False]  # mutable guard for reentrancy
 
     def _cleanup(*_):
+        if _cleanup_done[0]:
+            return
+        _cleanup_done[0] = True
         print("\n\n🛑 正在关闭后端服务...")
         try:
             if platform.system() == "Windows":
@@ -175,9 +211,13 @@ def _run_production(args: argparse.Namespace) -> None:
         while True:
             ret = proc.poll()
             if ret is not None:
-                # 子进程自己退出，向上透传退出码
+                if ret != 0:
+                    print(f"\n⚠️ 子进程异常退出 (exit code={ret})")
+                    print("   可能原因: libsql C/Rust 层崩溃")
+                    print("   请检查 Windows 事件查看器 → Windows 日志 → 应用程序 → python.exe")
+                    print(f"   pid={proc.pid}, ret={ret}")
                 sys.exit(ret)
-            time.sleep(0.5)
+            time.sleep(1.0)
     except KeyboardInterrupt:
         _cleanup()
 

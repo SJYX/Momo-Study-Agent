@@ -98,20 +98,27 @@ def _run_libsql_sync_pipeline(
 
             def _do_sync():
                 try:
-                    sync_result_box[0] = conn.sync()
+                    # 锁必须由本线程持有：外层只持有锁等 sync_done，
+                    # 超时后释放锁会让 sync 与其他线程并发碰 libsql C 层（access violation）。
+                    if conn_op_lock is not None:
+                        with conn_op_lock:
+                            sync_result_box[0] = conn.sync()
+                    else:
+                        sync_result_box[0] = conn.sync()
                 except Exception as e:
                     sync_err_box[0] = e
                 finally:
                     sync_done_evt.set()
 
-            with conn_op_lock:
-                t = _threading.Thread(target=_do_sync, daemon=True, name="SvcSyncOp")
-                t.start()
-                sync_done_evt.wait(timeout=_sync_timeout)
+            t = _threading.Thread(target=_do_sync, daemon=True, name="SvcSyncOp")
+            t.start()
+            # 软超时：超时后 daemon 路径继续；子线程仍持锁完成 sync()，
+            # 其他读线程会安全等待——而不是与 sync() 并发崩溃。
+            sync_done_evt.wait(timeout=_sync_timeout)
 
             if not sync_done_evt.is_set():
                 _debug_log(
-                    f"sync_service conn.sync() 超时 ({_sync_timeout}s)，已释放锁",
+                    f"sync_service conn.sync() 超时 ({_sync_timeout}s)，sync 线程仍持锁在后台完成",
                     level="WARNING",
                     module="database.sync_service",
                 )

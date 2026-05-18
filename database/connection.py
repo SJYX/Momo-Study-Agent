@@ -92,11 +92,13 @@ _main_write_conn_singleton: Any = None
 _main_write_conn_singleton_path: Optional[str] = None
 _main_write_conn_last_check: float = 0
 _main_write_conn_lock = threading.Lock()
-_main_write_conn_op_lock = threading.RLock()
+_main_write_conn_init_lock = threading.Lock()
+_main_write_conn_op_lock = threading.Lock()
 
 _hub_write_conn_singleton: Any = None
 _hub_write_conn_lock = threading.Lock()
-_hub_write_conn_op_lock = threading.RLock()
+_hub_write_conn_init_lock = threading.Lock()
+_hub_write_conn_op_lock = threading.Lock()
 
 
 # Schema callback registry to avoid circular imports with database/schema.py
@@ -360,7 +362,17 @@ def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool 
     try:
         if needs_initial_pull:
             _debug_log(f"[{db_label}] 正在连接云端并执行初始 pull…", level="INFO")
-        conn = libsql.connect(db_path, sync_url=final_url, auth_token=token, timeout=30.0)
+        # _check_same_thread=False 必需：单例连接由多个线程通过 op_lock 串行访问
+        # （warmup_sync 创建 → _warmup_async 读 → _sync_daemon sync 等）。
+        # 默认 True 会让 libsql C 层在跨线程使用时触发 access violation (0xC0000005)。
+        # 应用层已用 _main_write_conn_op_lock(RLock) / _hub_write_conn_op_lock 保护并发。
+        conn = libsql.connect(
+            db_path,
+            sync_url=final_url,
+            auth_token=token,
+            timeout=30.0,
+            _check_same_thread=False,
+        )
     except Exception as e:
         _debug_log(
             f"[{db_label}] libsql.connect 失败: {type(e).__name__}: {e}",
@@ -398,6 +410,18 @@ def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool 
         conn.execute("PRAGMA synchronous=NORMAL;")
     except Exception as e:
         _debug_log(f"Embedded Replica PRAGMA 配置失败（可忽略）: {e}", level="WARNING")
+
+    # 初始 pull 后的连接稳定化：WAL_CHECKPOINT(TRUNCATE) 将所有 WAL 条目
+    # 写入主数据库文件，确保 libsql C 层内部状态一致。
+    # Windows 上 libsql 0.1.11 在初始 pull 后不执行 checkpoint 会导致
+    # 后续并发访问时 access violation (0xC0000005)。
+    if needs_initial_pull:
+        try:
+            _debug_log(f"[{db_label}] 初始 pull 后执行 WAL CHECKPOINT 稳定化…", level="INFO")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            _debug_log(f"[{db_label}] WAL CHECKPOINT 完成，连接已稳定", level="INFO")
+        except Exception as e:
+            _debug_log(f"[{db_label}] WAL CHECKPOINT 失败（可忽略）: {e}", level="WARNING")
 
     if do_sync and hasattr(conn, "sync"):
         try:
@@ -586,11 +610,7 @@ def _get_main_write_conn_singleton(
 ) -> Any:
     global _main_write_conn_singleton, _main_write_conn_singleton_path, _main_write_conn_last_check
 
-    ctx = _resolve_conn_context(_config.DB_PATH)
-    if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
-        return _get_local_conn(_config.DB_PATH)
-
-    # 第一阶段：获取当前单例引用并执行路径校验
+    # 1. 第一阶段：快速获取当前单例引用并执行路径校验
     with _main_write_conn_lock:
         conn = _main_write_conn_singleton
         if conn is not None:
@@ -605,7 +625,7 @@ def _get_main_write_conn_singleton(
                 _main_write_conn_singleton_path = None
                 conn = None
 
-    # 第二阶段：如果已有单例，在【锁外】进行健康检查（仅持操作锁）
+    # 2. 第二阶段：如果已有单例，在【锁外】进行健康检查（仅持操作锁）
     if conn is not None:
         try:
             with _main_write_conn_op_lock:
@@ -615,7 +635,6 @@ def _get_main_write_conn_singleton(
                     _main_write_conn_last_check = now
                 if do_sync and hasattr(conn, "sync"):
                     conn.sync()
-            return conn
         except BaseException as health_error:
             _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _main_write_conn_lock:
@@ -626,36 +645,44 @@ def _get_main_write_conn_singleton(
                         pass
                     _main_write_conn_singleton = None
                     _main_write_conn_singleton_path = None
-            # 继续往下执行创建逻辑
+            conn = None
 
-    last_error = None
-    for attempt in range(max_retries):
-        if attempt > 0:
-            _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
-        try:
-            conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+    # 3. 第三阶段：如果不存在，进入初始化串行锁进行双重检查创建
+    if conn is None:
+        with _main_write_conn_init_lock:
+            # 双重检查
             with _main_write_conn_lock:
-                if _main_write_conn_singleton is None:
-                    _main_write_conn_singleton = conn
-                    _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
-                    _debug_log(f"主库 Embedded Replica 写连接单例已创建 ({_main_write_conn_singleton_path})", level="INFO")
-                    return _main_write_conn_singleton
+                conn = _main_write_conn_singleton
+            
+            if conn is None:
+                ctx = _resolve_conn_context(_config.DB_PATH)
+                if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
+                    return _get_local_conn(_config.DB_PATH)
 
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                return _main_write_conn_singleton
-        except Exception as e:
-            last_error = e
-            if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                _backup_broken_database_file(_config.DB_PATH, "主库副本状态损坏，已备份后重试")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            break
+                last_error = None
+                for attempt in range(max_retries):
+                    if attempt > 0:
+                        _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
+                    try:
+                        conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+                        with _main_write_conn_lock:
+                            _main_write_conn_singleton = conn
+                            _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
+                            _debug_log(f"主库 Embedded Replica 写连接单例已创建 ({_main_write_conn_singleton_path})", level="INFO")
+                        break
+                    except Exception as e:
+                        last_error = e
+                        if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                            _backup_broken_database_file(_config.DB_PATH, "主库副本状态损坏，已备份后重试")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        break
+                
+                if conn is None:
+                    raise last_error or RuntimeError("无法创建主库 Embedded Replica 写连接单例")
 
-    raise last_error or RuntimeError("无法创建主库 Embedded Replica 写连接单例")
+    return conn
 
 
 def _get_hub_write_conn_singleton(
@@ -668,18 +695,17 @@ def _get_hub_write_conn_singleton(
     if not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL):
         return _get_hub_local_conn()
 
-    # 第一阶段：获取当前 Hub 单例引用
+    # 1. 第一阶段：获取当前 Hub 单例引用
     with _hub_write_conn_lock:
         conn = _hub_write_conn_singleton
 
-    # 第二阶段：健康检查（锁外进行，仅持操作锁）
+    # 2. 第二阶段：健康检查（锁外进行，仅持操作锁）
     if conn is not None:
         try:
             with _hub_write_conn_op_lock:
                 conn.execute("SELECT 1")
                 if do_sync and hasattr(conn, "sync"):
                     conn.sync()
-            return conn
         except BaseException as health_error:
             _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _hub_write_conn_lock:
@@ -689,36 +715,40 @@ def _get_hub_write_conn_singleton(
                     except Exception:
                         pass
                     _hub_write_conn_singleton = None
-            # 继续往下执行创建逻辑
+            conn = None
 
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
-            conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
-            _debug_log("[_get_hub_write_conn_singleton] _connect_embedded_replica 返回成功")
+    # 3. 第三阶段：如果不存在，进入初始化串行锁进行双重检查创建
+    if conn is None:
+        with _hub_write_conn_init_lock:
+            # 双重检查
             with _hub_write_conn_lock:
-                if _hub_write_conn_singleton is None:
-                    _hub_write_conn_singleton = conn
-                    _debug_log("Hub Embedded Replica 写连接单例已创建", level="INFO")
-                    return _hub_write_conn_singleton
+                conn = _hub_write_conn_singleton
 
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                return _hub_write_conn_singleton
-        except Exception as e:
-            last_error = e
-            _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1} 失败: {e}", level="WARNING")
-            if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                _backup_broken_database_file(HUB_DB_PATH, "Hub 副本状态损坏，已备份后重试")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            break
+            if conn is None:
+                last_error = None
+                for attempt in range(max_retries):
+                    try:
+                        _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
+                        conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+                        _debug_log("[_get_hub_write_conn_singleton] _connect_embedded_replica 返回成功")
+                        with _hub_write_conn_lock:
+                            _hub_write_conn_singleton = conn
+                            _debug_log("Hub Embedded Replica 写连接单例已创建", level="INFO")
+                        break
+                    except Exception as e:
+                        last_error = e
+                        _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1} 失败: {e}", level="WARNING")
+                        if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                            _backup_broken_database_file(HUB_DB_PATH, "Hub 副本状态损坏，已备份后重试")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        break
+                
+                if conn is None:
+                    raise last_error or RuntimeError("无法创建 Hub Embedded Replica 写连接单例")
 
-    raise last_error or RuntimeError("无法创建 Hub Embedded Replica 写连接单例")
+    return conn
 
 
 def _should_use_local_only_connection(db_path: Optional[str] = None, conn: Any = None) -> bool:

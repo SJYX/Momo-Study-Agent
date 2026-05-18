@@ -47,6 +47,14 @@ class DBSession:
         """
         if self.lock is None:
             return False
+            
+        # 对于主库/Hub库单例连接，读写复用同一连接对象，并发执行会导致 C 层 crash 或 SQL 事务损坏。
+        # 我们必须死等/阻塞直至锁被释放，绝不能降级为无锁读取。
+        is_singleton = connection._is_main_write_singleton_conn(self.conn) or connection._is_hub_write_singleton_conn(self.conn)
+        if is_singleton:
+            self.lock.acquire()  # 阻塞死等，防止并发冲突
+            return True
+
         acquired = self.lock.acquire(timeout=self.lock_timeout)
         if not acquired:
             _debug_log(

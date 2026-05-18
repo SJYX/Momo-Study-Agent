@@ -13,8 +13,36 @@ Output (to stdout, every 2 seconds):
 from __future__ import annotations
 
 import os
+import platform
 import sys
 import time
+
+
+def _is_parent_alive(parent_pid: int) -> bool:
+    """Check if parent process is alive, safely on all platforms.
+
+    On Windows, os.kill(pid, 0) can raise SystemError (CPython bug) with
+    certain process states (WinError 87). Use ctypes OpenProcess instead.
+    """
+    if platform.system() != "Windows":
+        try:
+            os.kill(parent_pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    # Windows: use OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid)
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, parent_pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def main() -> None:
@@ -31,10 +59,7 @@ def main() -> None:
 
     while True:
         # Check parent process is alive
-        try:
-            os.kill(parent_pid, 0)
-        except (OSError, ProcessLookupError):
-            # Parent exited
+        if not _is_parent_alive(parent_pid):
             break
 
         time.sleep(2)
