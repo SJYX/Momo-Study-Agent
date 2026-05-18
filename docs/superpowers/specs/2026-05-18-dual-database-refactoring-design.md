@@ -265,3 +265,102 @@ CACHE_TIMEOUT_S = float(os.getenv("CACHE_TIMEOUT_S", "3.0"))
 | 缓存命中但本地有 custom | 命中+custom | 跳过 | 跳过 | 返回 local_customized |
 | LLM 失败 | miss | miss | raise | APIError → pending |
 | 缓存写入失败 | — | — | 异步 | 日志告警，不影响返回 |
+
+## 9. 增量开发策略
+
+### 9.1 Feature Flag 控制
+
+复用现有 Phase 6.1 Kill Switch 框架（`core/feature_flags.py`）。
+
+**新增 flag**：`GLOBAL_CACHE_ENABLED`
+
+- 注册到 `_KNOWN_FLAGS` 集合
+- 添加到 `core/settings.py` 的 Settings 模型
+- `.env` 中默认 `GLOBAL_CACHE_ENABLED=false`（安全默认值）
+- 为 `true` 时走 `WordLookup` 3 级查找，为 `false` 时走现有老逻辑
+
+```python
+# core/feature_flags.py — _KNOWN_FLAGS 新增
+"GLOBAL_CACHE_ENABLED",
+```
+
+```python
+# core/settings.py — Settings 模型新增
+GLOBAL_CACHE_ENABLED: bool = False
+```
+
+### 9.2 开发阶段保证日常可用
+
+| 阶段 | 做什么 | 系统是否可用 | Flag 状态 |
+| ---- | ------ | ----------- | --------- |
+| P0 | 新建 `database/cache_client.py` + 单测 | 是（不接入主流程） | false |
+| P1 | 新建 `core/word_lookup.py` + 单测 | 是（不接入主流程） | false |
+| P2 | `database/migrations/V002_add_is_customized.py` | 是（幂等 ALTER） | false |
+| P3 | 修改 `study_workflow.py` 加 flag 分支 | 是（flag=false 走老逻辑） | false |
+| P4 | 修改 `notes_repo.py` 加 `is_customized=1` | 是（不影响读取） | false |
+| P5 | 端到端测试：设 flag=true，验证 3 级查找 | 是（可随时关回） | true/false 切换 |
+| P6 | 种子数据回填 `V003_seed_global_cache.py` | 是 | true |
+| P7 | 清理：移除老逻辑分支（可选，最后一个 PR） | 是 | 移除 flag |
+
+**核心原则**：每个阶段完成后 `main.py` 和 Web 都能正常启动。Flag=false 时行为与重构前 100% 一致。
+
+### 9.3 Flag 分支代码示例
+
+```python
+# core/study_workflow.py
+from core.feature_flags import is_enabled
+
+def process_batch(self, batch_words, ...):
+    if is_enabled("GLOBAL_CACHE_ENABLED"):
+        return self._process_batch_with_lookup(batch_words, ...)
+    else:
+        return self._process_batch_legacy(batch_words, ...)  # 现有逻辑不变
+```
+
+## 10. Turso Global_Cache_DB 建库指南
+
+### 10.1 使用 Turso CLI 创建数据库
+
+```bash
+# 1. 安装 Turso CLI（如未安装）
+# Windows: winget install tursodatabase.turso-cli
+# 或: iwr https://get.tur.so/install.ps1 -useb | iex
+
+# 2. 登录
+turso auth login
+
+# 3. 创建缓存数据库
+turso db create history-asher-cache --group default
+
+# 4. 获取连接信息
+turso db show history-asher-cache --url
+# 输出类似: libsql://history-asher-cache-ashershi.turso.io
+
+# 5. 获取 auth token
+turso db tokens create history-asher-cache
+# 输出一个 JWT token
+
+# 6. 在 .env 中配置
+# TURSO_CACHE_DB_URL=libsql://history-asher-cache-ashershi.turso.io
+# TURSO_CACHE_AUTH_TOKEN=eyJhbGciOi...
+# GLOBAL_CACHE_ENABLED=false
+```
+
+### 10.2 使用 Turso Management API（可选脚本）
+
+如果已配置 `TURSO_MGMT_TOKEN` 和 `TURSO_ORG_SLUG`（项目已有），可自动化建库：
+
+```python
+# scripts/create_cache_db.py
+import os, requests
+
+org = os.getenv("TURSO_ORG_SLUG")
+token = os.getenv("TURSO_MGMT_TOKEN")
+resp = requests.post(
+    f"https://api.tur.so/v1/organizations/{org}/databases",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"name": "history-asher-cache", "group": "default"},
+    timeout=30,
+)
+print(resp.json())
+```
