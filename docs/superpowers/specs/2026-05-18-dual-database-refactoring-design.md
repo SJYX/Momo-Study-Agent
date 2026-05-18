@@ -242,13 +242,76 @@ CACHE_TIMEOUT_S = float(os.getenv("CACHE_TIMEOUT_S", "3.0"))
 | `config.py` | 修改 | 低 | 新增缓存配置项 |
 | `core/ui_manager.py` | 修改 | 低 | 显示 source 标签 |
 
-## 7. 数据安全保证
+## 7. 数据安全保证（6 道防线）
 
-- User_Sync_DB 所有表**零 DROP**，只做 ADD COLUMN（DEFAULT 0）
-- Global_Cache_DB 是新建库，不存在数据丢失
-- Asher 的 1223 条记录完整保留在 User_Sync_DB
-- CacheNetworkError 不影响 User_Sync_DB 的读写
-- 回滚：`git revert` 即可，数据库层无破坏性变更
+### 7.1 数据热备份
+
+V002 迁移执行前，自动创建预迁移快照：
+
+```python
+# database/migrations/V002_add_is_customized.py
+import shutil, os, time
+
+_PRE_MIGRATION_MARKER = "pre_V002_snapshot"
+
+def _snapshot_before_migration(db_path: str) -> str:
+    backup_dir = os.path.join(os.path.dirname(db_path), "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    dst = os.path.join(backup_dir, f"{os.path.basename(db_path)}_pre_V002_{ts}.db")
+    if not os.path.exists(dst):
+        shutil.copy2(db_path, dst)
+    return dst
+```
+
+同时备份 `.db-wal` 和 `.db-shm`（如有）。
+
+### 7.2 Schema 无痛升级
+
+- `ALTER TABLE ai_word_notes ADD COLUMN is_customized INTEGER DEFAULT 0`
+- SQLite ADD COLUMN + DEFAULT 是原子操作，不锁表、不重写数据页
+- 现有 1223 条记录自动获得 `is_customized=0`，无需手动回填
+- 迁移框架（`database/migrations/runner.py`）在事务内执行，失败自动 rollback
+
+### 7.3 影子测试 / 沙箱验证
+
+- `GLOBAL_CACHE_ENABLED=false`（默认值）：新代码路径完全不执行
+- 老逻辑（`community_lookup` + AI 直连）100% 保留，行为与重构前完全一致
+- 可在不影响日常使用的前提下开发、编译、部署新模块
+
+### 7.4 一键热切换
+
+- `.env` 中改 `GLOBAL_CACHE_ENABLED=true/false`
+- `core/feature_flags.py::is_enabled()` 在每个 batch 处理时检查
+- **无需重启**：下次 batch 自动切换到新/老逻辑
+- 支持部分回滚：打开开关 → 发现问题 → 关闭开关 → 恢复老逻辑
+
+### 7.5 数据层回滚
+
+| 操作 | 回滚方式 |
+|------|---------|
+| V002 ADD COLUMN | `UPDATE ai_word_notes SET is_customized=0`（V002 downgrade 函数） |
+| V003 种子数据 | `DELETE FROM ai_cache WHERE cache_key LIKE '...'`（按 seed 标记删除） |
+| Level 2 合流写入 | 从预迁移快照恢复 `.db` 文件 |
+| fire-and-forget 缓存 | `TRUNCATE TABLE ai_cache`（Global_Cache_DB 是纯缓存，清空不影响用户数据） |
+
+### 7.6 代码层回滚
+
+- `git revert` 回退到重构前代码
+- 新建文件（`word_lookup.py`、`cache_client.py`）直接删除，无副作用
+- 修改文件（`study_workflow.py`、`notes_repo.py`）通过 revert 恢复原状
+
+### 7.7 安全清单
+
+| 写操作 | 目标库 | 保护措施 |
+| ------ | ------ | ------- |
+| V002: ADD COLUMN | User_Sync_DB | 预快照 + 原子 DDL + 写队列 |
+| V003: INSERT INTO ai_cache | Global_Cache_DB | 全新库，零风险 |
+| `_upsert_local()` 缓存合流 | User_Sync_DB | 参数化 SQL + 写队列 + is_customized 保护 |
+| `UPDATE is_customized=1` | User_Sync_DB | 参数化 SQL + 写队列 |
+| fire-and-forget 缓存回写 | Global_Cache_DB | 异步 + 异常吞掉，不影响主库 |
+
+**铁律**：全程零 DROP TABLE / DROP COLUMN / DELETE FROM User_Sync_DB。
 
 ## 8. 离线 / 异常场景矩阵
 
