@@ -90,3 +90,6 @@ node_modules/
 package-lock.json
 web/frontend/dist/
 web/frontend/.vite/
+
+# Test artifacts
+MagicMock/
