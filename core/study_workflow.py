@@ -205,6 +205,8 @@ class StudyWorkflow:
                     # 查询今日已学记录（覆盖今日前后的窗口以防时区差异）
                     # 用 daemon 线程 + join(timeout) 超时保护：API 不可用时最多等 10 秒
                     self.logger.info(f"[Pipeline] {name} review_count 全为 0，正在回填 study_count...", module="study_workflow")
+                    _backfill_start = time.time()
+                    self.logger.info(f"[Pipeline] {name} 回填步骤 1/3: 调用墨墨 API query_study_records({today_str})...", module="study_workflow")
 
                     _api_result = [None]
                     _api_error = [None]
@@ -226,15 +228,27 @@ class StudyWorkflow:
                         raise _api_error[0]
                     else:
                         records_res = _api_result[0]
+                        self.logger.info(f"[Pipeline] {name} 回填步骤 1/3: API 返回，耗时 {int((time.time()-_backfill_start)*1000)}ms", module="study_workflow")
 
                     if records_res and records_res.get("data", {}).get("records"):
                         records = records_res["data"]["records"]
+                        self.logger.info(f"[Pipeline] {name} 回填步骤 2/3: API 返回 {len(records)} 条学习记录，开始构建 count_map...", module="study_workflow")
                         count_map = {str(r.get("voc_id")): int(r.get("study_count", 0)) for r in records}
+                        matched = 0
                         for item in normalized_items:
                             if item.voc_id in count_map:
                                 item.review_count = count_map[item.voc_id]
+                                matched += 1
+                        self.logger.info(f"[Pipeline] {name} 回填步骤 3/3: 匹配到 {matched}/{len(normalized_items)} 个词的 study_count，耗时 {int((time.time()-_backfill_start)*1000)}ms", module="study_workflow")
+                    elif records_res:
+                        self.logger.warning(f"[Pipeline] {name} 回填: API 返回了数据但 records 为空", module="study_workflow")
+                    else:
+                        self.logger.warning(f"[Pipeline] {name} 回填: API 返回 None", module="study_workflow")
                 except Exception as enrichment_err:
                     self.logger.warning(f"⚠️ 进度数据补全失败 (不影响主流程): {enrichment_err}")
+
+                _backfill_elapsed = int((time.time() - _backfill_start) * 1000)
+                self.logger.info(f"[Pipeline] {name} 回填 study_count 完成 ({_backfill_elapsed}ms)", module="study_workflow")
 
             # 将 WordItem 转换为 log_progress_snapshots 预期的 dict 格式 (ProgressSnapshot)
             snapshots = [

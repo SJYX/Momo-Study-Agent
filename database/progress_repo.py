@@ -139,13 +139,16 @@ def log_progress_snapshots(
     vids = [str(_get(w, "voc_id")) for w in words]
     ph = ",".join(["?"] * len(vids))
 
+    t0 = time.time()
     itm_rows = session.fetchall(f"SELECT voc_id, it_level FROM ai_word_notes WHERE voc_id IN ({ph})", vids)
     itm = {str(row_value(r, 0, "voc_id")): row_value(r, 1, "it_level") for r in itm_rows}
+    t1 = time.time()
 
     lh_rows = session.fetchall(
         f"SELECT voc_id, familiarity_short, review_count FROM word_progress_history WHERE voc_id IN ({ph}) ORDER BY created_at DESC",
         vids,
     )
+    t2 = time.time()
     lh: Dict[str, Tuple[Any, Any]] = {}
     for r in lh_rows:
         v = str(row_value(r, 0, "voc_id"))
@@ -160,6 +163,7 @@ def log_progress_snapshots(
         l = lh.get(v)
         if not l or abs(l[0] - float(nf)) > 0.01 or l[1] != int(nr):
             ins.append((v, nf, _get(w, "long_term_familiarity", 0), nr, itm.get(v, 0)))
+    t3 = time.time()
 
     if ins:
         ok = dispatch_batch_write(
@@ -170,8 +174,13 @@ def log_progress_snapshots(
         )
         if not ok:
             return 0
+    t4 = time.time()
 
-    _debug_log(f"进度同步 ({len(ins)} 条)", start_time=started, module=_LOG_MOD)
+    _debug_log(
+        f"progress_snapshots timing: read_ai_notes={int((t1-t0)*1000)}ms read_progress={int((t2-t1)*1000)}ms diff={int((t3-t2)*1000)}ms write_queue={int((t4-t3)*1000)}ms total={int((t4-started)*1000)}ms ({len(ins)}/{len(words)} changed)",
+        level="INFO",
+        module=_LOG_MOD,
+    )
     return len(ins)
 
 
