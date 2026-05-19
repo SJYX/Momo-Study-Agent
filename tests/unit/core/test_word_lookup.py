@@ -1,7 +1,7 @@
 """tests/unit/core/test_word_lookup.py: 3-level lookup orchestrator."""
 import pytest
 from unittest.mock import MagicMock, patch
-from core.word_lookup import WordLookup, LookupResult
+from core.word_lookup import WordLookup, LookupResult, MAX_LLM_RETRIES
 from database.cache_client import CacheNetworkError
 
 
@@ -100,3 +100,40 @@ class TestCircuitBreaker:
                 with pytest.raises(Exception) as exc_info:
                     lookup.lookup("newword", "v1", "mimo")
                 assert "API error" in str(exc_info.value)
+
+
+class TestRetryLimit:
+    def test_llm_fail_increments_count(self, lookup):
+        lookup.ai_client.generate_mnemonics.side_effect = Exception("API down")
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                for i in range(3):
+                    with pytest.raises(Exception):
+                        lookup.lookup("failword", "v1", "mimo")
+                assert lookup._llm_fail_counts.get("failword") == 3
+
+    def test_llm_retry_limit_raises_api_error(self, lookup):
+        from core.exceptions import APIError
+        lookup._llm_fail_counts["failword"] = 3  # Already failed 3 times
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                with pytest.raises(APIError, match="retry limit"):
+                    lookup.lookup("failword", "v1", "mimo")
+
+    def test_llm_success_resets_count(self, lookup):
+        lookup._llm_fail_counts["newword"] = 2  # Failed twice before
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                with patch.object(lookup, "_save_local"):
+                    with patch.object(lookup, "_write_cache_async"):
+                        result = lookup.lookup("newword", "v1", "mimo")
+                        assert result.source == "ai"
+                        assert "newword" not in lookup._llm_fail_counts
+
+    def test_write_cache_uses_worker(self, lookup):
+        """When cache_write_worker is set, _write_cache_async uses it."""
+        mock_worker = MagicMock()
+        lookup.cache_write_worker = mock_worker
+        note = {"spelling": "test"}
+        lookup._write_cache_async(note, "v1", "mimo")
+        mock_worker.submit.assert_called_once_with(note, "v1", "mimo")
