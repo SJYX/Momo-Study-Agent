@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
+import queue
+import threading
+from queue import Queue
 from typing import Any, Dict, Optional
 
 import requests
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger()
 
 
 class CacheNetworkError(Exception):
@@ -41,7 +45,7 @@ class GlobalCacheClient:
     def _pipeline_request(self, sql: str, args: Optional[list] = None) -> Optional[Dict[str, Any]]:
         """Execute a SQL statement via Turso /v2/pipeline API.
 
-        Returns parsed response dict, or None on non-200.
+        Returns parsed response dict, or None on non-200 or SQL error.
         Raises CacheNetworkError on timeout/connection errors.
         """
         stmts = [{"sql": sql, "args": args or []}]
@@ -61,10 +65,19 @@ class GlobalCacheClient:
             return None
 
         try:
-            return resp.json()
+            body = resp.json()
         except (ValueError, json.JSONDecodeError) as e:
             logger.warning(f"Cache JSON parse error: {e}")
             return None
+
+        # HTTP 200 does NOT mean SQL succeeded — check results[].type
+        for result in body.get("results", []):
+            if result.get("type") == "error":
+                error_msg = result.get("error", {}).get("message", "unknown")
+                logger.warning(f"Cache SQL error: {error_msg}")
+                return None
+
+        return body
 
     def find(self, spelling: str, prompt_version: str, ai_provider: str) -> Optional[Dict[str, Any]]:
         """Query cache for a word note. Returns note dict or None.
@@ -73,21 +86,25 @@ class GlobalCacheClient:
         """
         key = self.cache_key(spelling, prompt_version, ai_provider)
         sql = "SELECT ai_output_json FROM ai_cache WHERE cache_key = ?"
-        result = self._pipeline_request(sql, [key])
+        body = self._pipeline_request(sql, [key])
 
-        if result is None:
+        if body is None:
             return None
 
         try:
-            rows = result.get("result", [{}])
-            if not rows:
+            results = body.get("results", [])
+            if not results:
                 return None
-            first_result = rows[0]
-            inner = first_result.get("response", {})
-            data_rows = inner.get("result", [])
-            if not data_rows or not data_rows[0]:
+            first = results[0]
+            if first.get("type") != "ok":
                 return None
-            json_str = data_rows[0][0].get("value", "")
+            response = first.get("response", {})
+            result_obj = response.get("result", {})
+            rows = result_obj.get("rows", [])
+            if not rows or not rows[0]:
+                return None
+            cell = rows[0][0]
+            json_str = cell.get("value", "") if isinstance(cell, dict) else str(cell)
             if not json_str:
                 return None
             return json.loads(json_str)
@@ -131,3 +148,48 @@ class GlobalCacheClient:
             logger.warning("Cache table init failed (non-fatal)")
         except Exception as e:
             logger.warning(f"Cache table init unexpected error: {e}")
+
+
+class CacheWriteWorker:
+    """Dedicated daemon thread consuming write queue for async cache writes.
+
+    - daemon=True: auto-cleanup on process exit
+    - Queue(maxsize=256): backpressure control
+    - put_nowait + queue.Full: cache writes are best-effort
+    """
+
+    def __init__(self, client: GlobalCacheClient):
+        self.client = client
+        self._queue: Queue = Queue(maxsize=256)
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="cache-writer"
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0):
+        """Signal the worker to drain remaining items and exit."""
+        self._stop_event.set()
+        self._thread.join(timeout=timeout)
+
+    def submit(self, note: Dict[str, Any], prompt_version: str, ai_provider: str):
+        """Non-blocking submit. Silently drops when queue is full (best-effort)."""
+        try:
+            self._queue.put_nowait((note, prompt_version, ai_provider))
+        except queue.Full:
+            logger.warning("Cache write queue full, dropping background write.")
+        except Exception as e:
+            logger.error(f"Unexpected error queuing cache write: {e}")
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                note, pv, provider = self._queue.get(timeout=0.5)
+            except Exception:
+                continue  # timeout, check stop_event again
+            try:
+                self.client.write(note, pv, provider)
+            except Exception:
+                pass  # write() already logs internally
+            finally:
+                self._queue.task_done()
