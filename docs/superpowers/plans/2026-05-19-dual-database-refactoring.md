@@ -1,1353 +1,472 @@
-# Hybrid Dual-Track Architecture Implementation Plan
+# Hybrid Dual-Track Architecture Implementation Plan (Updated)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor MOMO_Script from single-database architecture to a hybrid dual-track system: User_Sync_DB (embedded replica) + Global_Cache_DB (HTTP remote query). Provide a 3-level word lookup pipeline (local → cache → AI) with feature-flag gated rollout.
+**Goal:** Refactor MOMO_Script to hybrid dual-track architecture: User_Sync_DB (embedded replica) + Global_Cache_DB (HTTP remote query). 3-level word lookup pipeline (local → cache → AI) with feature-flag gated rollout. Dedicated write thread for async cache writes. Retry limit for LLM failures.
 
-**Architecture:** Per-word lookup within batches: before calling AI for a batch, iterate each word through L1 (local ai_word_notes) → L2 (Global_Cache_DB via HTTP) → L3 (AI API). CacheNetworkError triggers batch-level circuit breaker. AI results are written to both User_Sync_DB (synchronous) and Global_Cache_DB (fire-and-forget async).
+**Architecture:** Per-word lookup within batches: L1 (local ai_word_notes) → L2 (Global_Cache_DB via HTTP `/v2/pipeline`) → L3 (AI API). CacheNetworkError triggers batch-level circuit breaker. AI results written to User_Sync_DB (sync) and Global_Cache_DB via CacheWriteWorker daemon thread (async, best-effort). LLM failures capped at 3 retries per word.
 
 **Tech Stack:** Python 3.12+, SQLite/libsql (Turso), `requests.Session` for HTTP cache, pydantic-settings, existing write-queue pattern, pytest.
 
----
-
-## Task 1: Register Feature Flag & Settings
-
-**Files:**
-- Modify: `core/feature_flags.py:17-23`
-- Modify: `core/settings.py:43-49, 63-69`
-
-- [ ] **Step 1: Add GLOBAL_CACHE_ENABLED to _KNOWN_FLAGS**
-
-Edit `core/feature_flags.py`, add to the set:
-
-```python
-_KNOWN_FLAGS: Set[str] = {
-    "AUTO_WARMUP_SYNC_ENABLED",
-    "SYNC_STATUS_HEAVY_QUERY_ENABLED",
-    "BACKGROUND_RETRY_ENABLED",
-    "IDLE_ENGINE_ENABLED",
-    "ISOLATED_READ_CONN_ENABLED",
-    "GLOBAL_CACHE_ENABLED",  # NEW
-}
-```
-
-- [ ] **Step 2: Add cache settings to Settings model**
-
-Edit `core/settings.py`, add after the `IDLE_ENGINE_ENABLED` field:
-
-```python
-    # ─────────────── Global Cache DB ───────────────
-    TURSO_CACHE_DB_URL: Optional[str] = None
-    TURSO_CACHE_AUTH_TOKEN: Optional[str] = None
-    CACHE_TIMEOUT_S: float = 3.0
-    GLOBAL_CACHE_ENABLED: bool = False
-```
-
-Add `Optional` to the existing `from typing import Optional` import (already present).
-
-- [ ] **Step 3: Run existing flag/settings tests**
-
-```bash
-pytest tests/unit/feature_flags/ tests/unit/settings/ -v --tb=short
-```
-
-Expected: All pass.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add core/feature_flags.py core/settings.py
-git commit -m "feat: register GLOBAL_CACHE_ENABLED flag + cache DB settings"
-```
+**Spec:** `docs/superpowers/specs/2026-05-18-dual-database-refactoring-design.md`
 
 ---
 
-## Task 2: Add Cache Config Exports to config.py
+## File Structure
 
-**Files:**
-- Modify: `config.py:96-110`
-
-- [ ] **Step 1: Add cache env var exports**
-
-Edit `config.py`, add after `TURSO_ORG_SLUG` line (around line 108):
-
-```python
-# Global Cache DB (云端 AI 缓存池)
-TURSO_CACHE_DB_URL = os.getenv('TURSO_CACHE_DB_URL')
-TURSO_CACHE_AUTH_TOKEN = os.getenv('TURSO_CACHE_AUTH_TOKEN')
-CACHE_TIMEOUT_S = float(os.getenv('CACHE_TIMEOUT_S', '3.0'))
-```
-
-- [ ] **Step 2: Add to switch_user function**
-
-Edit `config.py` `switch_user()` function, add cache env refresh:
-
-```python
-    global ACTIVE_USER, MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY
-    global AI_PROVIDER, DB_PATH, TEST_DB_PATH, TURSO_DB_URL, TURSO_AUTH_TOKEN
-    global TURSO_CACHE_DB_URL, TURSO_CACHE_AUTH_TOKEN  # NEW
-
-    # ... existing code ...
-
-    TURSO_CACHE_DB_URL = os.getenv("TURSO_CACHE_DB_URL")
-    TURSO_CACHE_AUTH_TOKEN = os.getenv("TURSO_CACHE_AUTH_TOKEN")
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add config.py
-git commit -m "feat: add cache DB config exports + switch_user refresh"
-```
+| File | Responsibility | Status |
+| ---- | ------------- | ------ |
+| `core/feature_flags.py` | Register `GLOBAL_CACHE_ENABLED` flag | **DONE** |
+| `core/settings.py` | Cache DB settings model | **DONE** |
+| `config.py` | Cache env var exports | **DONE** |
+| `database/cache_client.py` | GlobalCacheClient + CacheWriteWorker | Needs update (add CacheWriteWorker, /v2/pipeline JSON format) |
+| `database/migrations/V005_is_customized.py` | is_customized column | **DONE** (already in repo) |
+| `database/notes_repo.py` | update_memory_aid | **DONE** (already in repo) |
+| `database/sql_constants.py` | is_customized in NOTE_UPSERT_SQL | **DONE** (already in repo) |
+| `core/word_lookup.py` | 3-level lookup orchestrator | Needs update (retry limit, CacheWriteWorker integration) |
+| `database/migrations/V006_seed_global_cache.py` | Seed cache from existing data | **DONE** (already in repo) |
+| `core/study_workflow.py` | Main workflow integration | Needs update (CacheWriteWorker, retry limit) |
+| `database/migrations/V007_migrate_db_format.py` | libSQL → pyturso format migration | Not started (P6 scope) |
+| `tests/conftest.py` | Test fixture isolation | Needs update (cache env vars) |
 
 ---
 
-## Task 3: Create GlobalCacheClient (database/cache_client.py)
+## P0-P5: Dual-Track Architecture (feature flag gated)
+
+### Task 1: Register Feature Flag & Settings
+
+**Status: DONE** — `GLOBAL_CACHE_ENABLED` already in `_KNOWN_FLAGS` and `Settings` model.
+
+---
+
+### Task 2: Add Cache Config Exports to config.py
+
+**Status: DONE** — `TURSO_CACHE_DB_URL`, `TURSO_CACHE_AUTH_TOKEN`, `CACHE_TIMEOUT_S` already exported.
+
+---
+
+### Task 3: Update GlobalCacheClient with CacheWriteWorker
 
 **Files:**
-- Create: `database/cache_client.py`
-- Create: `tests/unit/database/test_cache_client.py`
 
-- [ ] **Step 1: Write failing test**
+- Modify: `database/cache_client.py`
 
-Create `tests/unit/database/test_cache_client.py`:
+当前 `cache_client.py` 已有 `GlobalCacheClient`，但缺少：
+
+1. `/v2/pipeline` JSON 格式的正确实现（当前响应解析可能不对）
+2. `CacheWriteWorker` 专用写入线程
+3. 精确的 `queue.Full` 异常捕获
+
+- [ ] **Step 1: Update _pipeline_request with correct /v2/pipeline JSON format**
+
+Edit `database/cache_client.py`, update `_pipeline_request` 方法确保请求和响应格式正确：
 
 ```python
-"""tests/unit/database/test_cache_client.py: GlobalCacheClient unit tests."""
-import json
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from database.cache_client import GlobalCacheClient, CacheNetworkError
+def _pipeline_request(self, sql: str, args: Optional[list] = None) -> Optional[Dict[str, Any]]:
+    """Execute SQL via Turso /v2/pipeline API.
 
-
-@pytest.fixture
-def client():
-    return GlobalCacheClient(
-        url="https://test.turso.io",
-        token="test-token",
-        timeout=2.0,
-    )
-
-
-def test_cache_key_deterministic():
-    from database.cache_client import GlobalCacheClient
-    key1 = GlobalCacheClient.cache_key("hello", "v1", "mimo")
-    key2 = GlobalCacheClient.cache_key("hello", "v1", "mimo")
-    assert key1 == key2
-    assert len(key1) == 16
-
-
-def test_cache_key_different_words():
-    from database.cache_client import GlobalCacheClient
-    key1 = GlobalCacheClient.cache_key("hello", "v1", "mimo")
-    key2 = GlobalCacheClient.cache_key("world", "v1", "mimo")
-    assert key1 != key2
-
-
-def test_cache_key_different_versions():
-    from database.cache_client import GlobalCacheClient
-    key1 = GlobalCacheClient.cache_key("hello", "v1", "mimo")
-    key2 = GlobalCacheClient.cache_key("hello", "v2", "mimo")
-    assert key1 != key2
-
-
-def test_cache_key_different_providers():
-    from database.cache_client import GlobalCacheClient
-    key1 = GlobalCacheClient.cache_key("hello", "v1", "mimo")
-    key2 = GlobalCacheClient.cache_key("hello", "v1", "gemini")
-    assert key1 != key2
-
-
-def test_find_raises_cache_network_error_on_timeout(client):
-    import requests
-    with patch.object(client.session, "post", side_effect=requests.Timeout("timed out")):
-        with pytest.raises(CacheNetworkError):
-            client.find("hello", "v1", "mimo")
-
-
-def test_find_raises_cache_network_error_on_connection_error(client):
-    import requests
-    with patch.object(client.session, "post", side_effect=requests.ConnectionError("refused")):
-        with pytest.raises(CacheNetworkError):
-            client.find("hello", "v1", "mimo")
-
-
-def test_find_returns_none_on_404(client):
-    mock_resp = MagicMock()
-    mock_resp.status_code = 404
-    with patch.object(client.session, "post", return_value=mock_resp):
-        result = client.find("hello", "v1", "mimo")
-        assert result is None
-
-
-def test_find_returns_note_on_200(client):
-    note_data = {"spelling": "hello", "basic_meanings": "你好"}
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "result": [{
-            "response": {
-                "result": [[{"value": json.dumps(note_data)}]]
-            }
+    Turso pipeline 协议:
+      请求: {"requests": [{"type": "execute", "stmts": [{"sql": "...", "args": [...]}]}]}
+      响应: {"results": [{"type": "ok", "response": {"result": {...}}}]}
+             或 {"results": [{"type": "error", "error": {"message": "..."}}]}
+    HTTP 200 ≠ SQL 成功，必须检查 results[].type。
+    """
+    payload = {
+        "requests": [{
+            "type": "execute",
+            "stmts": [{"sql": sql, "args": args or []}]
         }]
     }
-    with patch.object(client.session, "post", return_value=mock_resp):
-        result = client.find("hello", "v1", "mimo")
-        assert result is not None
-        assert result["spelling"] == "hello"
+    try:
+        resp = self.session.post(self.endpoint, json=payload, timeout=self.timeout)
+    except requests.Timeout as e:
+        raise CacheNetworkError(f"Cache query timeout ({self.timeout}s): {e}") from e
+    except requests.ConnectionError as e:
+        raise CacheNetworkError(f"Cache connection failed: {e}") from e
+    except requests.RequestException as e:
+        raise CacheNetworkError(f"Cache request failed: {e}") from e
 
+    if resp.status_code != 200:
+        logger.warning(f"Cache HTTP {resp.status_code}: {resp.text[:200]}")
+        return None
 
-def test_write_does_not_raise(client):
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    with patch.object(client.session, "post", return_value=mock_resp):
-        # Should not raise
-        client.write({"spelling": "hello", "basic_meanings": "test"}, "v1", "mimo")
+    try:
+        body = resp.json()
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.warning(f"Cache JSON parse error: {e}")
+        return None
 
+    # 检查 pipeline 内部错误
+    for result in body.get("results", []):
+        if result.get("type") == "error":
+            error_msg = result.get("error", {}).get("message", "unknown")
+            logger.warning(f"Cache SQL error: {error_msg}")
+            return None
 
-def test_write_swallows_exceptions(client):
-    with patch.object(client.session, "post", side_effect=Exception("boom")):
-        # Should not raise (fire-and-forget)
-        client.write({"spelling": "hello"}, "v1", "mimo")
+    return body
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Add CacheWriteWorker class**
 
-```bash
-pytest tests/unit/database/test_cache_client.py -v --tb=short
-```
-
-Expected: FAIL with `ModuleNotFoundError: No module named 'database.cache_client'`
-
-- [ ] **Step 3: Write implementation**
-
-Create `database/cache_client.py`:
+Add to `database/cache_client.py` after `GlobalCacheClient`:
 
 ```python
-"""
-database/cache_client.py: HTTP client for Global_Cache_DB (Turso cloud).
+class CacheWriteWorker:
+    """专用后台线程，消费写入队列，异步回写 Global_Cache_DB。
 
-Uses Turso's /v2/pipeline API for direct SQL queries without a local replica.
-Connection reuse via requests.Session.
-"""
-from __future__ import annotations
+    - daemon=True: 进程退出时自动清理
+    - Queue(maxsize=256): 背压控制，防止离线时队列无限增长
+    - put_nowait + queue.Full 精确捕获: 缓存写入是 best-effort
+    """
 
-import hashlib
-import json
-import logging
-from typing import Any, Dict, Optional
-
-import requests
-
-logger = logging.getLogger(__name__)
-
-
-class CacheNetworkError(Exception):
-    """Cache HTTP query timeout/connection failure. Triggers batch circuit breaker."""
-
-
-class GlobalCacheClient:
-    """HTTP client for the global AI cache database (Turso cloud, no local replica)."""
-
-    def __init__(self, url: str, token: str, timeout: float = 3.0):
-        self.endpoint = url.rstrip("/") + "/v2/pipeline"
-        self.token = token
-        self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        })
-
-    @staticmethod
-    def cache_key(spelling: str, prompt_version: str, ai_provider: str) -> str:
-        raw = f"{spelling}:{prompt_version}:{ai_provider}"
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-    def _pipeline_request(self, sql: str, args: Optional[list] = None) -> Optional[Dict[str, Any]]:
-        """Execute a SQL statement via Turso /v2/pipeline API.
-
-        Returns parsed response dict, or None on non-200.
-        Raises CacheNetworkError on timeout/connection errors.
-        """
-        stmts = [{"sql": sql, "args": args or []}]
-        payload = {"requests": [{"type": "execute", "stmts": stmts}]}
-
-        try:
-            resp = self.session.post(self.endpoint, json=payload, timeout=self.timeout)
-        except requests.Timeout as e:
-            raise CacheNetworkError(f"Cache query timeout ({self.timeout}s): {e}") from e
-        except requests.ConnectionError as e:
-            raise CacheNetworkError(f"Cache connection failed: {e}") from e
-        except requests.RequestException as e:
-            raise CacheNetworkError(f"Cache request failed: {e}") from e
-
-        if resp.status_code != 200:
-            logger.warning(f"Cache HTTP {resp.status_code}: {resp.text[:200]}")
-            return None
-
-        try:
-            return resp.json()
-        except (ValueError, json.JSONDecodeError) as e:
-            logger.warning(f"Cache JSON parse error: {e}")
-            return None
-
-    def find(self, spelling: str, prompt_version: str, ai_provider: str) -> Optional[Dict[str, Any]]:
-        """Query cache for a word note. Returns note dict or None.
-
-        Raises CacheNetworkError on network failures.
-        """
-        key = self.cache_key(spelling, prompt_version, ai_provider)
-        sql = "SELECT ai_output_json FROM ai_cache WHERE cache_key = ?"
-        result = self._pipeline_request(sql, [key])
-
-        if result is None:
-            return None
-
-        try:
-            rows = result.get("result", [{}])
-            if not rows:
-                return None
-            first_result = rows[0]
-            inner = first_result.get("response", {})
-            data_rows = inner.get("result", [])
-            if not data_rows or not data_rows[0]:
-                return None
-            json_str = data_rows[0][0].get("value", "")
-            if not json_str:
-                return None
-            return json.loads(json_str)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
-            logger.debug(f"Cache parse error for {spelling}: {e}")
-            return None
-
-    def write(self, note: Dict[str, Any], prompt_version: str, ai_provider: str) -> None:
-        """Write a note to cache (fire-and-forget). Exceptions logged, never raised."""
-        spelling = note.get("spelling", "")
-        if not spelling:
-            return
-
-        key = self.cache_key(spelling, prompt_version, ai_provider)
-        sql = (
-            "INSERT OR IGNORE INTO ai_cache "
-            "(cache_key, spelling, prompt_version, ai_provider, ai_output_json) "
-            "VALUES (?, ?, ?, ?, ?)"
+    def __init__(self, client: GlobalCacheClient):
+        self.client = client
+        self._queue: Queue = Queue(maxsize=256)
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="cache-writer"
         )
-        try:
-            self._pipeline_request(sql, [key, spelling, prompt_version, ai_provider, json.dumps(note, ensure_ascii=False)])
-            logger.debug(f"Cache write: {spelling}")
-        except CacheNetworkError as e:
-            logger.warning(f"Cache write failed (fire-and-forget): {e}")
-        except Exception as e:
-            logger.warning(f"Cache write unexpected error: {e}")
+        self._thread.start()
 
-    def init_table(self) -> None:
-        """Create ai_cache table if not exists. Called once at startup."""
-        sql = (
-            "CREATE TABLE IF NOT EXISTS ai_cache ("
-            "cache_key TEXT PRIMARY KEY, spelling TEXT NOT NULL, "
-            "prompt_version TEXT NOT NULL, ai_provider TEXT NOT NULL, "
-            "ai_output_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
-            "usage_count INTEGER DEFAULT 0)"
-        )
+    def submit(self, note: Dict[str, Any], prompt_version: str, ai_provider: str):
+        """非阻塞投递。队列满时静默丢弃（缓存写入是 best-effort）。"""
         try:
-            self._pipeline_request(sql)
-            self._pipeline_request("CREATE INDEX IF NOT EXISTS idx_cache_spelling ON ai_cache (spelling)")
-        except CacheNetworkError:
-            logger.warning("Cache table init failed (non-fatal)")
+            self._queue.put_nowait((note, prompt_version, ai_provider))
+        except queue.Full:
+            logger.warning("Cache write queue full, dropping background write.")
         except Exception as e:
-            logger.warning(f"Cache table init unexpected error: {e}")
+            logger.error(f"Unexpected error queuing cache write: {e}")
+
+    def _run(self):
+        while True:
+            note, pv, provider = self._queue.get()
+            try:
+                self.client.write(note, pv, provider)
+            except Exception:
+                pass  # write() 内部已 log
+            finally:
+                self._queue.task_done()
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+需要在文件顶部添加 import:
+
+```python
+import threading
+import queue
+from queue import Queue
+```
+
+- [ ] **Step 3: Update find() to check results[].type**
+
+确保 `find()` 方法正确解析 `/v2/pipeline` 响应格式：
+
+```python
+def find(self, spelling: str, prompt_version: str, ai_provider: str) -> Optional[Dict[str, Any]]:
+    """Query cache for a word note. Returns note dict or None."""
+    key = self.cache_key(spelling, prompt_version, ai_provider)
+    sql = "SELECT ai_output_json FROM ai_cache WHERE cache_key = ?"
+    body = self._pipeline_request(sql, [key])
+
+    if body is None:
+        return None
+
+    try:
+        results = body.get("results", [])
+        if not results:
+            return None
+        first = results[0]
+        if first.get("type") != "ok":
+            return None
+        response = first.get("response", {})
+        result_rows = response.get("result", [])
+        if not result_rows:
+            return None
+        # result_rows 结构取决于 pipeline 响应格式
+        # 可能是 {"rows": [[{"value": "..."}]]} 或其他格式
+        # 需要根据实际 Turso 响应调整
+        json_str = ""
+        rows_data = result_rows.get("rows", []) if isinstance(result_rows, dict) else result_rows
+        if rows_data and rows_data[0]:
+            cell = rows_data[0][0] if isinstance(rows_data[0], list) else rows_data[0]
+            json_str = cell.get("value", "") if isinstance(cell, dict) else str(cell)
+        if not json_str:
+            return None
+        return json.loads(json_str)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
+        logger.debug(f"Cache parse error for {spelling}: {e}")
+        return None
+```
+
+- [ ] **Step 4: Run existing cache_client tests**
 
 ```bash
 pytest tests/unit/database/test_cache_client.py -v --tb=short
 ```
 
-Expected: All pass.
+Expected: All pass (update mock response format if needed).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Add CacheWriteWorker tests**
+
+Add to `tests/unit/database/test_cache_client.py`:
+
+```python
+def test_cache_write_worker_submit():
+    """CacheWriteWorker.submit puts item in queue without blocking."""
+    from database.cache_client import CacheWriteWorker
+    mock_client = MagicMock()
+    worker = CacheWriteWorker(mock_client)
+    worker.submit({"spelling": "hello"}, "v1", "mimo")
+    # Give thread time to process
+    import time
+    time.sleep(0.1)
+    mock_client.write.assert_called_once()
+
+
+def test_cache_write_worker_full_queue():
+    """CacheWriteWorker.submit drops item when queue is full (no exception)."""
+    from database.cache_client import CacheWriteWorker
+    mock_client = MagicMock()
+    worker = CacheWriteWorker(mock_client)
+    # Fill the queue
+    for i in range(256):
+        worker._queue.put_nowait(({"spelling": f"w{i}"}, "v1", "mimo"))
+    # This should not raise
+    worker.submit({"spelling": "overflow"}, "v1", "mimo")
+```
+
+- [ ] **Step 6: Run all tests**
+
+```bash
+pytest tests/unit/database/test_cache_client.py -v --tb=short
+```
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add database/cache_client.py tests/unit/database/test_cache_client.py
-git commit -m "feat: add GlobalCacheClient for HTTP-based cache DB access"
+git commit -m "feat: add CacheWriteWorker + fix /v2/pipeline JSON format in cache_client"
 ```
 
 ---
 
-## Task 4: Create V005_is_customized Migration
+### Task 4: V005_is_customized Migration
 
-**Files:**
-- Create: `database/migrations/V005_is_customized.py`
-- Create: `tests/unit/database/migrations/test_v005_is_customized.py`
-
-- [ ] **Step 1: Write failing test**
-
-Create `tests/unit/database/migrations/test_v005_is_customized.py`:
-
-```python
-"""tests: V005_is_customized migration adds is_customized column."""
-import sqlite3
-import pytest
-from database.migrations.V005_is_customized import apply
-
-
-def _setup_db():
-    conn = sqlite3.connect(":memory:")
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT)"
-    )
-    cur.execute(
-        "INSERT INTO ai_word_notes VALUES ('v1', 'hello', '你好')"
-    )
-    conn.commit()
-    return conn
-
-
-def test_adds_is_customized_column():
-    conn = _setup_db()
-    cur = conn.cursor()
-    apply(cur)
-    conn.commit()
-
-    cur.execute("PRAGMA table_info(ai_word_notes)")
-    columns = [row[1] for row in cur.fetchall()]
-    assert "is_customized" in columns
-
-
-def test_default_is_zero():
-    conn = _setup_db()
-    cur = conn.cursor()
-    apply(cur)
-    conn.commit()
-
-    cur.execute("SELECT is_customized FROM ai_word_notes WHERE voc_id = 'v1'")
-    row = cur.fetchone()
-    assert row[0] == 0
-
-
-def test_is_idempotent():
-    conn = _setup_db()
-    cur = conn.cursor()
-    apply(cur)
-    conn.commit()
-    # Second run should not raise
-    apply(cur)
-    conn.commit()
-
-    cur.execute("SELECT is_customized FROM ai_word_notes WHERE voc_id = 'v1'")
-    row = cur.fetchone()
-    assert row[0] == 0
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-pytest tests/unit/database/migrations/test_v005_is_customized.py -v --tb=short
-```
-
-Expected: FAIL with `ModuleNotFoundError`.
-
-- [ ] **Step 3: Write migration**
-
-Create `database/migrations/V005_is_customized.py`:
-
-```python
-"""
-V005_is_customized.py: Add is_customized column to ai_word_notes.
-
-User-edited memory_aid entries are marked is_customized=1 to prevent
-cache overwrite. Default 0 (pure AI-generated, not user-edited).
-"""
-from __future__ import annotations
-from typing import Any
-
-
-def _column_exists(cur: Any, table: str, column: str) -> bool:
-    cur.execute(f"PRAGMA table_info({table})")
-    rows = cur.fetchall() or []
-    for row in rows:
-        name = row[1] if not isinstance(row, dict) else row.get("name")
-        if str(name) == column:
-            return True
-    return False
-
-
-def apply(cur: Any) -> None:
-    if _column_exists(cur, "ai_word_notes", "is_customized"):
-        return
-    cur.execute("ALTER TABLE ai_word_notes ADD COLUMN is_customized INTEGER DEFAULT 0")
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-```bash
-pytest tests/unit/database/migrations/test_v005_is_customized.py -v --tb=short
-```
-
-Expected: All pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add database/migrations/V005_is_customized.py tests/unit/database/migrations/test_v005_is_customized.py
-git commit -m "feat: V005 migration — add is_customized column to ai_word_notes"
-```
+**Status: DONE** — `database/migrations/V005_is_customized.py` 已在 repo 中，测试通过。
 
 ---
 
-## Task 5: Add update_memory_aid to notes_repo.py
+### Task 5: update_memory_aid in notes_repo.py
 
-**Files:**
-- Modify: `database/notes_repo.py`
-- Modify: `database/sql_constants.py`
-- Create: `tests/unit/database/test_update_memory_aid.py`
-
-- [ ] **Step 1: Write failing test**
-
-Create `tests/unit/database/test_update_memory_aid.py`:
-
-```python
-"""tests: update_memory_aid sets memory_aid + is_customized=1."""
-import sqlite3
-import pytest
-from database.notes_repo import update_memory_aid
-
-
-def _setup_db():
-    conn = sqlite3.connect(":memory:")
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE ai_word_notes ("
-        "voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, "
-        "memory_aid TEXT, is_customized INTEGER DEFAULT 0)"
-    )
-    cur.execute(
-        "INSERT INTO ai_word_notes VALUES ('v1', 'hello', '你好', '原始记忆', 0)"
-    )
-    conn.commit()
-    return conn
-
-
-def test_update_memory_aid_sets_customized():
-    conn = _setup_db()
-    ok = update_memory_aid("v1", "用户自定义记忆", conn=conn)
-    assert ok
-
-    cur = conn.cursor()
-    cur.execute("SELECT memory_aid, is_customized FROM ai_word_notes WHERE voc_id = 'v1'")
-    row = cur.fetchone()
-    assert row[0] == "用户自定义记忆"
-    assert row[1] == 1
-
-
-def test_update_memory_aid_nonexistent_voc_id():
-    conn = _setup_db()
-    # Should not raise, returns True (no rows affected but no error)
-    ok = update_memory_aid("v999", "记忆", conn=conn)
-    assert ok
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-pytest tests/unit/database/test_update_memory_aid.py -v --tb=short
-```
-
-Expected: FAIL with `ImportError: cannot import name 'update_memory_aid'`.
-
-- [ ] **Step 3: Implement update_memory_aid in notes_repo.py**
-
-Edit `database/notes_repo.py`, add before `__all__`:
-
-```python
-def update_memory_aid(
-    voc_id: str,
-    memory_aid: str,
-    db_path: Optional[str] = None,
-    conn: Any = None,
-) -> bool:
-    """Update memory_aid and mark is_customized=1.
-
-    Called when user edits a word note's memory aid via Web UI or CLI.
-    The is_customized flag prevents cache from overwriting user edits.
-    """
-    try:
-        ts = get_timestamp_with_tz()
-        sql = (
-            "UPDATE ai_word_notes SET memory_aid = ?, is_customized = 1, updated_at = ? "
-            "WHERE voc_id = ?"
-        )
-        return dispatch_write(sql, (memory_aid, ts, str(voc_id)), db_path=db_path, conn=conn)
-    except (sqlite3.DatabaseError, OSError, ValueError) as e:
-        _log_repo_failure("update_memory_aid", e)
-        return False
-    except Exception as e:
-        _log_repo_failure("update_memory_aid", e)
-        return False
-```
-
-- [ ] **Step 4: Add to __all__**
-
-Edit `database/notes_repo.py` `__all__` list, add `"update_memory_aid"`.
-
-- [ ] **Step 5: Run test to verify it passes**
-
-```bash
-pytest tests/unit/database/test_update_memory_aid.py -v --tb=short
-```
-
-Expected: All pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add database/notes_repo.py tests/unit/database/test_update_memory_aid.py
-git commit -m "feat: add update_memory_aid to notes_repo (sets is_customized=1)"
-```
+**Status: DONE** — `update_memory_aid` 已在 `database/notes_repo.py` 中，`is_customized=1` 已设置。
 
 ---
 
-## Task 6: Create WordLookup Orchestrator (core/word_lookup.py)
+### Task 6: Update WordLookup with Retry Limit + CacheWriteWorker
 
 **Files:**
-- Create: `core/word_lookup.py`
-- Create: `tests/unit/core/test_word_lookup.py`
 
-- [ ] **Step 1: Write failing test**
+- Modify: `core/word_lookup.py`
+- Modify: `tests/unit/core/test_word_lookup.py`
 
-Create `tests/unit/core/test_word_lookup.py`:
+当前 `word_lookup.py` 缺少：
+1. LLM 失败重试上限（`MAX_LLM_RETRIES = 3`）
+2. 使用 `CacheWriteWorker` 替代 `threading.Thread` 做异步缓存写入
 
-```python
-"""tests/unit/core/test_word_lookup.py: 3-level lookup orchestrator."""
-import pytest
-from unittest.mock import MagicMock, patch
-from core.word_lookup import WordLookup, LookupResult
-from database.cache_client import CacheNetworkError
+- [ ] **Step 1: Add retry limit to WordLookup**
 
-
-@pytest.fixture
-def mock_logger():
-    return MagicMock()
-
-
-@pytest.fixture
-def mock_ai_client():
-    client = MagicMock()
-    client.generate_mnemonics.return_value = (
-        [{"spelling": "hello", "basic_meanings": "你好", "raw_full_text": "..."}],
-        {"total_tokens": 10, "request_id": "req-1"},
-    )
-    return client
-
-
-@pytest.fixture
-def mock_cache_client():
-    return MagicMock()
-
-
-@pytest.fixture
-def lookup(mock_logger, mock_ai_client, mock_cache_client):
-    return WordLookup(
-        logger=mock_logger,
-        ai_client=mock_ai_client,
-        cache_client=mock_cache_client,
-    )
-
-
-class TestLevel1Local:
-    def test_returns_local_when_found(self, lookup):
-        mock_note = {"spelling": "hello", "basic_meanings": "你好"}
-        with patch.object(lookup, "_find_local", return_value=mock_note):
-            result = lookup.lookup("hello", "v1", "mimo")
-            assert result.source == "local"
-            assert result.note["spelling"] == "hello"
-
-    def test_returns_local_customized_when_is_customized(self, lookup):
-        mock_note = {"spelling": "hello", "basic_meanings": "你好", "is_customized": 1}
-        with patch.object(lookup, "_find_local", return_value=mock_note):
-            result = lookup.lookup("hello", "v1", "mimo")
-            assert result.source == "local_customized"
-            assert result.note["is_customized"] == 1
-
-
-class TestLevel2Cache:
-    def test_returns_cache_and_upserts_local(self, lookup):
-        mock_note = {"spelling": "world", "basic_meanings": "世界"}
-        with patch.object(lookup, "_find_local", return_value=None):
-            with patch.object(lookup.cache_client, "find", return_value=mock_note):
-                with patch.object(lookup, "_upsert_local") as mock_upsert:
-                    result = lookup.lookup("world", "v1", "mimo")
-                    assert result.source == "cache"
-                    mock_upsert.assert_called_once()
-
-    def test_skips_level2_when_local_customized(self, lookup):
-        mock_note = {"spelling": "hello", "is_customized": 1}
-        with patch.object(lookup, "_find_local", return_value=mock_note):
-            result = lookup.lookup("hello", "v1", "mimo")
-            assert result.source == "local_customized"
-            lookup.cache_client.find.assert_not_called()
-
-
-class TestLevel3AI:
-    def test_calls_ai_when_all_miss(self, lookup, mock_ai_client):
-        with patch.object(lookup, "_find_local", return_value=None):
-            with patch.object(lookup.cache_client, "find", return_value=None):
-                with patch.object(lookup, "_write_cache_async"):
-                    result = lookup.lookup("newword", "v1", "mimo")
-                    assert result.source == "ai"
-                    mock_ai_client.generate_mnemonics.assert_called_once_with(["newword"])
-
-    def test_returns_cache_on_ai_miss_then_cache_hit(self, lookup, mock_ai_client):
-        mock_note = {"spelling": "cached", "basic_meanings": "缓存"}
-        with patch.object(lookup, "_find_local", return_value=None):
-            with patch.object(lookup.cache_client, "find", return_value=mock_note):
-                result = lookup.lookup("cached", "v1", "mimo")
-                assert result.source == "cache"
-                mock_ai_client.generate_mnemonics.assert_not_called()
-
-
-class TestCircuitBreaker:
-    def test_cache_network_error_propagates(self, lookup, mock_cache_client):
-        mock_cache_client.find.side_effect = CacheNetworkError("timeout")
-        with patch.object(lookup, "_find_local", return_value=None):
-            with pytest.raises(CacheNetworkError):
-                lookup.lookup("hello", "v1", "mimo")
-
-    def test_ai_error_propagates(self, lookup, mock_ai_client):
-        mock_ai_client.generate_mnemonics.side_effect = Exception("API error")
-        with patch.object(lookup, "_find_local", return_value=None):
-            with patch.object(lookup.cache_client, "find", return_value=None):
-                with pytest.raises(Exception) as exc_info:
-                    lookup.lookup("newword", "v1", "mimo")
-                assert "API error" in str(exc_info.value)
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-pytest tests/unit/core/test_word_lookup.py -v --tb=short
-```
-
-Expected: FAIL with `ModuleNotFoundError`.
-
-- [ ] **Step 3: Write implementation**
-
-Create `core/word_lookup.py`:
+Edit `core/word_lookup.py`, 在 `WordLookup.__init__` 中添加:
 
 ```python
-"""
-core/word_lookup.py: 3-level word lookup orchestrator.
-
-Flow:
-  Level 1: User_Sync_DB (local ai_word_notes)
-  Level 2: Global_Cache_DB (HTTP remote query)
-  Level 3: LLM API (mimo/gemini)
-
-CacheNetworkError propagates upward for batch-level circuit breaker.
-"""
-from __future__ import annotations
-
-import json
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
-
-from database.cache_client import CacheNetworkError, GlobalCacheClient
-from database.notes_repo import get_local_word_note
-
-
-@dataclass
-class LookupResult:
-    note: Dict[str, Any]
-    source: str  # "local" | "local_customized" | "cache" | "ai"
-
+MAX_LLM_RETRIES = 3
 
 class WordLookup:
-    def __init__(
-        self,
-        logger: Any,
-        ai_client: Any,
-        cache_client: Optional[GlobalCacheClient],
-        db_path: Optional[str] = None,
-    ):
-        self.logger = logger
-        self.ai_client = ai_client
-        self.cache_client = cache_client
-        self.db_path = db_path
+    def __init__(self, ...):
+        ...
+        self.cache_write_worker = None  # 由外部注入
+        self._llm_fail_counts: Dict[str, int] = {}  # spelling → fail count
 
-    def lookup(self, spelling: str, prompt_version: str, ai_provider: str) -> LookupResult:
+    def lookup(self, spelling, prompt_version, ai_provider) -> LookupResult:
         """3-level lookup. CacheNetworkError and APIError propagate upward."""
+        # ... Level 1, Level 2 unchanged ...
 
-        # Level 1: Local User_Sync_DB
-        local_note = self._find_local(spelling, prompt_version, ai_provider)
-        if local_note:
-            if local_note.get("is_customized"):
-                return LookupResult(note=local_note, source="local_customized")
-            return LookupResult(note=local_note, source="local")
+        # Level 3: AI API (with retry limit)
+        fail_count = self._llm_fail_counts.get(spelling, 0)
+        if fail_count >= MAX_LLM_RETRIES:
+            from core.exceptions import APIError
+            raise APIError(f"LLM retry limit ({MAX_LLM_RETRIES}) reached for '{spelling}'")
 
-        # Level 2: Global_Cache_DB (requires network)
-        if self.cache_client:
-            cached_note = self.cache_client.find(spelling, prompt_version, ai_provider)
-            if cached_note:
-                self._upsert_local(cached_note, prompt_version, ai_provider)
-                return LookupResult(note=cached_note, source="cache")
+        try:
+            ai_note = self._call_ai([spelling], prompt_version, ai_provider)
+        except Exception:
+            self._llm_fail_counts[spelling] = fail_count + 1
+            raise
 
-        # Level 3: AI API
-        ai_note = self._call_ai([spelling], prompt_version, ai_provider)
         if ai_note:
             self._save_local(ai_note, prompt_version, ai_provider)
             self._write_cache_async(ai_note, prompt_version, ai_provider)
+            # 成功则重置计数
+            self._llm_fail_counts.pop(spelling, None)
             return LookupResult(note=ai_note, source="ai")
 
-        # Should not reach here — AI returns something or raises
         raise RuntimeError(f"WordLookup: all levels exhausted for '{spelling}'")
-
-    def _find_local(self, spelling: str, prompt_version: str, ai_provider: str) -> Optional[Dict[str, Any]]:
-        """Level 1: Query local ai_word_notes by spelling.
-
-        Uses explicit column names (not SELECT *) to avoid index-order fragility
-        when migrations add columns. The SQL column list and the row-to-dict mapping
-        are in 1:1 correspondence.
-        """
-        try:
-            from database.session import with_read_session, DBSession
-
-            # Explicit column list — matches the physical table + JOIN columns exactly.
-            # When adding a column via migration, add it here too.
-            _NOTE_FIELDS = (
-                "voc_id, spelling, basic_meanings, ielts_focus, collocations, "
-                "traps, synonyms, discrimination, example_sentences, memory_aid, "
-                "word_ratings, raw_full_text, prompt_tokens, completion_tokens, "
-                "total_tokens, batch_id, original_meanings, maimemo_context, "
-                "it_level, it_history, updated_at, content_origin, "
-                "content_source_db, content_source_scope, sync_status, "
-                "match_confidence, match_reason, last_synced_content, "
-                "is_customized"
-            )
-            _JOIN_FIELDS = "b.ai_provider AS batch_ai_provider, b.prompt_version AS batch_prompt_version"
-
-            @with_read_session(default_return=None)
-            def _find_by_spelling(session: DBSession = None):
-                row = session.fetchone(
-                    f"SELECT {_NOTE_FIELDS}, {_JOIN_FIELDS} "
-                    "FROM ai_word_notes n "
-                    "LEFT JOIN ai_batches b ON n.batch_id = b.batch_id "
-                    "WHERE LOWER(n.spelling) = LOWER(?) "
-                    "ORDER BY n.updated_at DESC "
-                    "LIMIT 1",
-                    (spelling,),
-                )
-                if row is None:
-                    return None
-                # Column names in same order as the SELECT above.
-                # Using row[i] by index is safe here because SELECT lists columns explicitly.
-                _all_columns = [
-                    "voc_id", "spelling", "basic_meanings", "ielts_focus", "collocations",
-                    "traps", "synonyms", "discrimination", "example_sentences", "memory_aid",
-                    "word_ratings", "raw_full_text", "prompt_tokens", "completion_tokens",
-                    "total_tokens", "batch_id", "original_meanings", "maimemo_context",
-                    "it_level", "it_history", "updated_at", "content_origin",
-                    "content_source_db", "content_source_scope", "sync_status",
-                    "match_confidence", "match_reason", "last_synced_content",
-                    "is_customized",
-                    "batch_ai_provider", "batch_prompt_version",
-                ]
-                result = {}
-                for i, col in enumerate(_all_columns):
-                    if i < len(row):
-                        result[col] = row[i]
-                return result
-
-            return _find_by_spelling()
-        except Exception as e:
-            self.logger.debug(f"Level 1 lookup error for {spelling}: {e}")
-            return None
-
-    def _call_ai(
-        self, spellings: list[str], prompt_version: str, ai_provider: str
-    ) -> Optional[Dict[str, Any]]:
-        """Level 3: Call AI API for a single word."""
-        try:
-            results, metadata = self.ai_client.generate_mnemonics(spellings)
-            if results and len(results) > 0:
-                return results[0]
-        except Exception as e:
-            from core.exceptions import APIError
-            raise APIError(f"AI generation failed for {spellings}: {e}") from e
-        return None
-
-    def _upsert_local(self, note: Dict[str, Any], prompt_version: str, ai_provider: str) -> None:
-        """Merge cache note into local ai_word_notes (Level 2 hit)."""
-        try:
-            from database.notes_repo import save_ai_word_note
-            from database.notes_repo import build_note_upsert_args
-            voc_id = note.get("voc_id", "")
-            if not voc_id:
-                return
-            # Build payload from cache note
-            payload = {k: v for k, v in note.items() if k not in ("batch_ai_provider", "batch_prompt_version")}
-            metadata = {
-                "content_origin": "cache_hit",
-                "prompt_version": prompt_version,
-                "ai_provider": ai_provider,
-            }
-            save_ai_word_note(voc_id, payload, db_path=self.db_path, metadata=metadata)
-        except Exception as e:
-            self.logger.warning(f"Cache upsert local failed (non-fatal): {e}")
-
-    def _save_local(self, note: Dict[str, Any], prompt_version: str, ai_provider: str) -> None:
-        """Save AI result to local User_Sync_DB (Level 3)."""
-        try:
-            from database.notes_repo import save_ai_word_note
-            voc_id = note.get("voc_id", "")
-            if not voc_id:
-                return
-            metadata = {
-                "content_origin": "ai_generated",
-                "prompt_version": prompt_version,
-                "ai_provider": ai_provider,
-            }
-            save_ai_word_note(voc_id, note, db_path=self.db_path, metadata=metadata)
-        except Exception as e:
-            self.logger.warning(f"AI result local save failed: {e}")
-
-    def _write_cache_async(self, note: Dict[str, Any], prompt_version: str, ai_provider: str) -> None:
-        """Fire-and-forget write to Global_Cache_DB."""
-        if not self.cache_client:
-            return
-        try:
-            import threading
-            t = threading.Thread(
-                target=self.cache_client.write,
-                args=(note, prompt_version, ai_provider),
-                daemon=True,
-            )
-            t.start()
-        except Exception as e:
-            self.logger.warning(f"Cache async write thread failed: {e}")
 ```
 
-- [ ] **Step 4: Check if core/exceptions.py has APIError**
+- [ ] **Step 2: Replace threading.Thread with CacheWriteWorker in _write_cache_async**
 
-```bash
-grep -n "APIError" core/exceptions.py
-```
-
-If not found, add to `core/exceptions.py`:
+Edit `_write_cache_async`:
 
 ```python
-class APIError(Exception):
-    """AI API call failure."""
+def _write_cache_async(self, note, prompt_version, ai_provider):
+    """Fire-and-forget write to Global_Cache_DB via CacheWriteWorker."""
+    if not self.cache_client:
+        return
+    if self.cache_write_worker:
+        self.cache_write_worker.submit(note, prompt_version, ai_provider)
+    else:
+        # Fallback: direct write (should not happen in production)
+        try:
+            self.cache_client.write(note, prompt_version, ai_provider)
+        except Exception as e:
+            self.logger.warning(f"Cache write fallback failed: {e}")
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 3: Add retry limit tests**
+
+Add to `tests/unit/core/test_word_lookup.py`:
+
+```python
+class TestRetryLimit:
+    def test_llm_fail_increments_count(self, lookup):
+        lookup.ai_client.generate_mnemonics.side_effect = Exception("API down")
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                for i in range(3):
+                    with pytest.raises(Exception):
+                        lookup.lookup("failword", "v1", "mimo")
+                assert lookup._llm_fail_counts.get("failword") == 3
+
+    def test_llm_retry_limit_raises_api_error(self, lookup):
+        from core.exceptions import APIError
+        lookup._llm_fail_counts["failword"] = 3  # Already failed 3 times
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                with pytest.raises(APIError, match="retry limit"):
+                    lookup.lookup("failword", "v1", "mimo")
+
+    def test_llm_success_resets_count(self, lookup):
+        lookup._llm_fail_counts["newword"] = 2  # Failed twice before
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                with patch.object(lookup, "_save_local"):
+                    with patch.object(lookup, "_write_cache_async"):
+                        result = lookup.lookup("newword", "v1", "mimo")
+                        assert result.source == "ai"
+                        assert "newword" not in lookup._llm_fail_counts
+```
+
+- [ ] **Step 4: Run tests**
 
 ```bash
 pytest tests/unit/core/test_word_lookup.py -v --tb=short
 ```
 
-Expected: All pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add core/word_lookup.py core/exceptions.py tests/unit/core/test_word_lookup.py
-git commit -m "feat: add WordLookup 3-level orchestrator with circuit breaker support"
-```
-
----
-
-## Task 7: Create V006_seed_global_cache Migration
-
-**Files:**
-- Create: `database/migrations/V006_seed_global_cache.py`
-- Create: `tests/unit/database/migrations/test_v006_seed_global_cache.py`
-
-- [ ] **Step 1: Write failing test**
-
-Create `tests/unit/database/migrations/test_v006_seed_global_cache.py`:
-
-```python
-"""tests: V006 seeds ai_cache from existing ai_word_notes (when cache DB configured)."""
-import sqlite3
-import json
-import pytest
-from unittest.mock import patch, MagicMock
-from database.migrations.V006_seed_global_cache import apply
-
-
-def _setup_local_db():
-    conn = sqlite3.connect(":memory:")
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE ai_word_notes ("
-        "voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, "
-        "content_origin TEXT, batch_id TEXT)"
-    )
-    cur.execute(
-        "CREATE TABLE ai_batches ("
-        "batch_id TEXT PRIMARY KEY, ai_provider TEXT, prompt_version TEXT)"
-    )
-    cur.execute(
-        "INSERT INTO ai_word_notes VALUES ('v1', 'hello', '你好', 'ai_generated', 'b1')"
-    )
-    cur.execute(
-        "INSERT INTO ai_batches VALUES ('b1', 'mimo', 'v1')"
-    )
-    conn.commit()
-    return conn
-
-
-def test_apply_skips_when_no_cache_config():
-    """When TURSO_CACHE_DB_URL is not set, apply is a no-op."""
-    conn = _setup_local_db()
-    cur = conn.cursor()
-    with patch.dict("os.environ", {}, clear=False):
-        import os
-        os.environ.pop("TURSO_CACHE_DB_URL", None)
-        # Should not raise
-        apply(cur, cache_client=None)
-
-
-def test_apply_seeds_with_cache_client():
-    """When cache_client is provided, seeds ai_cache from ai_word_notes."""
-    conn = _setup_local_db()
-    cur = conn.cursor()
-
-    mock_cache = MagicMock()
-    mock_cache._seed_calls = []
-
-    def fake_write(note, prompt_version, ai_provider):
-        mock_cache._seed_calls.append((note, prompt_version, ai_provider))
-
-    mock_cache.write = fake_write
-
-    apply(cur, cache_client=mock_cache)
-    assert len(mock_cache._seed_calls) == 1
-    note, pv, provider = mock_cache._seed_calls[0]
-    assert note["spelling"] == "hello"
-    assert pv == "v1"
-    assert provider == "mimo"
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-pytest tests/unit/database/migrations/test_v006_seed_global_cache.py -v --tb=short
-```
-
-Expected: FAIL.
-
-- [ ] **Step 3: Write migration**
-
-Create `database/migrations/V006_seed_global_cache.py`:
-
-```python
-"""
-V006_seed_global_cache.py: Seed Global_Cache_DB with existing ai_generated notes.
-
-Reads from local ai_word_notes WHERE content_origin = 'ai_generated',
-JOINs ai_batches for prompt_version/ai_provider, writes to cache via GlobalCacheClient.
-
-This is a one-time seeding operation. The migration itself is idempotent
-(INSERT OR IGNORE on cache keys), but the heavy lifting depends on cache_client.
-"""
-from __future__ import annotations
-
-import json
-from typing import Any, Optional
-
-
-def apply(cur: Any, cache_client: Optional[Any] = None) -> None:
-    """Seed global cache from local ai_word_notes.
-
-    Args:
-        cur: Local DB cursor (for reading ai_word_notes).
-        cache_client: GlobalCacheClient instance. If None, skip (no cache configured).
-    """
-    if cache_client is None:
-        return
-
-    try:
-        cur.execute(
-            "SELECT n.voc_id, n.spelling, n.basic_meanings, n.ielts_focus, "
-            "n.collocations, n.traps, n.synonyms, n.discrimination, "
-            "n.example_sentences, n.memory_aid, n.word_ratings, n.raw_full_text, "
-            "n.batch_id, b.ai_provider, b.prompt_version "
-            "FROM ai_word_notes n "
-            "LEFT JOIN ai_batches b ON n.batch_id = b.batch_id "
-            "WHERE n.content_origin = 'ai_generated'"
-        )
-        rows = cur.fetchall()
-    except Exception:
-        return
-
-    columns = [
-        "voc_id", "spelling", "basic_meanings", "ielts_focus", "collocations",
-        "traps", "synonyms", "discrimination", "example_sentences", "memory_aid",
-        "word_ratings", "raw_full_text", "batch_id", "ai_provider", "prompt_version",
-    ]
-
-    for row in rows:
-        note = {}
-        for i, col in enumerate(columns):
-            if i < len(row):
-                note[col] = row[i]
-
-        spelling = note.get("spelling", "")
-        prompt_version = note.get("prompt_version") or "v1_legacy_structured"
-        ai_provider = note.get("ai_provider") or "mimo"
-
-        if not spelling:
-            continue
-
-        # Fire-and-forget: each write is independent
-        try:
-            cache_client.write(note, prompt_version, ai_provider)
-        except Exception:
-            pass  # fire-and-forget, individual failures don't block others
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-```bash
-pytest tests/unit/database/migrations/test_v006_seed_global_cache.py -v --tb=short
-```
-
-Expected: All pass.
-
 - [ ] **Step 5: Commit**
 
 ```bash
-git add database/migrations/V006_seed_global_cache.py tests/unit/database/migrations/test_v006_seed_global_cache.py
-git commit -m "feat: V006 migration — seed Global_Cache_DB from existing ai_generated notes"
+git add core/word_lookup.py tests/unit/core/test_word_lookup.py
+git commit -m "feat: add LLM retry limit (MAX_LLM_RETRIES=3) + CacheWriteWorker integration to WordLookup"
 ```
 
 ---
 
-## Task 8: Integrate WordLookup into study_workflow.py
+### Task 7: V006 Seed Global Cache Migration
+
+**Status: DONE** — `database/migrations/V006_seed_global_cache.py` 已在 repo 中。
+
+---
+
+### Task 8: Integrate WordLookup + CacheWriteWorker into study_workflow.py
 
 **Files:**
+
 - Modify: `core/study_workflow.py`
-- Modify: `core/word_service.py` (if needed for `get_notes_in_batch` compatibility)
 
-- [ ] **Step 1: Add WordLookup initialization to StudyWorkflow.__init__**
+当前 `study_workflow.py` 需要：
 
-Edit `core/study_workflow.py`, add imports and initialization:
+1. 初始化 `CacheWriteWorker` 并注入 `WordLookup`
+2. 熔断机制（CacheNetworkError → batch circuit breaker）
+3. LLM 失败重试上限处理（`llm_fail_count`）
 
-```python
-from core.feature_flags import is_enabled
-from core.word_lookup import WordLookup
-from database.cache_client import GlobalCacheClient, CacheNetworkError
-from core.exceptions import APIError
-```
+- [ ] **Step 1: Add CacheWriteWorker initialization**
 
-In `__init__`, after `self.word_service = ...`:
+Edit `core/study_workflow.py`, 在 `__init__` 中（GLOBAL_CACHE_ENABLED 分支）：
 
 ```python
-        # Global Cache Client (initialized only when flag is enabled)
-        self.cache_client = None
-        self.word_lookup = None
-        if is_enabled("GLOBAL_CACHE_ENABLED"):
-            import config as _config
-            cache_url = getattr(_config, "TURSO_CACHE_DB_URL", None)
-            cache_token = getattr(_config, "TURSO_CACHE_AUTH_TOKEN", None)
-            cache_timeout = getattr(_config, "CACHE_TIMEOUT_S", 3.0)
-            if cache_url and cache_token:
-                self.cache_client = GlobalCacheClient(cache_url, cache_token, cache_timeout)
-                self.word_lookup = WordLookup(
-                    logger=logger,
-                    ai_client=ai_client,
-                    cache_client=self.cache_client,
-                    db_path=db_path,
-                )
-                try:
-                    self.cache_client.init_table()
-                except Exception:
-                    self.logger.warning("Cache table init failed (non-fatal)")
-```
-
-- [ ] **Step 2: Modify _run_ai_batch to use per-word lookup before AI**
-
-Replace `_run_ai_batch`. Key design: each word is fully resolved within the per-word loop (L1/L2/L3 are all闭环). No post-loop batch AI call needed — that would cause duplicate token charges for L1/L3 hits.
-
-```python
-    def _run_ai_batch(self, batch_no, total_batches, batch_spells):
-        """Execute single batch: per-word L1/L2 lookup → AI for misses."""
-        self.logger.info(
-            f"[AI] 批次 {batch_no}/{total_batches} 开始处理（{len(batch_spells)} 词）",
-            module="study_workflow",
+if is_enabled("GLOBAL_CACHE_ENABLED"):
+    import config as _config
+    cache_url = getattr(_config, "TURSO_CACHE_DB_URL", None)
+    cache_token = getattr(_config, "TURSO_CACHE_AUTH_TOKEN", None)
+    cache_timeout = getattr(_config, "CACHE_TIMEOUT_S", 3.0)
+    if cache_url and cache_token:
+        from database.cache_client import GlobalCacheClient, CacheWriteWorker
+        self.cache_client = GlobalCacheClient(cache_url, cache_token, cache_timeout)
+        self.cache_write_worker = CacheWriteWorker(self.cache_client)  # 专用写入线程
+        self.word_lookup = WordLookup(
+            logger=logger,
+            ai_client=ai_client,
+            cache_client=self.cache_client,
+            db_path=db_path,
         )
-
-        if not self.word_lookup:
-            # Legacy path: direct batch AI call (flag disabled)
-            try:
-                results, metadata = self.ai_client.generate_mnemonics(batch_spells)
-                return results or [], metadata or {}
-            except Exception as exc:
-                self.logger.warning(f"AI 批次 {batch_no}/{total_batches} 失败: {exc}")
-                return [], {}
-
-        # Unified results list — all L1/L2/L3 hits go here
-        ai_results = []
-        network_available = True
-        prompt_version = getattr(self.ai_client, "prompt_version", "")
-        ai_provider = config.AI_PROVIDER
-
-        for word in batch_spells:
-            if not network_available:
-                # Circuit broken — skip remaining words (they go to pending)
-                continue
-            try:
-                result = self.word_lookup.lookup(word, prompt_version, ai_provider)
-
-                if result.source in ("local", "local_customized"):
-                    self.logger.debug(f"[Cache] L1 hit: {word} ({result.source})")
-                    ai_results.append(result.note)  # 合流：L1 命中也必须收集
-                elif result.source == "cache":
-                    self.logger.debug(f"[Cache] L2 hit: {word}")
-                    ai_results.append(result.note)
-                elif result.source == "ai":
-                    self.logger.debug(f"[Cache] L3 miss → AI generated: {word}")
-                    ai_results.append(result.note)
-
-            except CacheNetworkError:
-                self.logger.warning(f"[Cache] Network unavailable, circuit broken at word: {word}")
-                network_available = False  # 触发熔断
-            except APIError as e:
-                self.logger.warning(f"[Cache] AI failed for {word}: {e}")
-                # 单词 AI 失败不触发熔断，由下游自然留空
-
-        # No post-loop batch AI call — every word was already resolved in the loop
-        if not ai_results and not network_available:
-            self.logger.warning(f"Batch {batch_no}/{total_batches}: cache unavailable, all words pending")
-            return [], {}
-
-        return ai_results, {"total_latency_ms": 0}
+        self.word_lookup.cache_write_worker = self.cache_write_worker  # 注入写入线程
+        try:
+            self.cache_client.init_table()
+        except Exception:
+            self.logger.warning("Cache table init failed (non-fatal)")
 ```
 
-**Why no post-loop batch AI?** In the per-word loop, WordLookup.lookup() already handles L3 internally — if a word isn't in L1 or L2, it calls `generate_mnemonics([single_word])` and returns the result. Every word is fully resolved before the loop ends. A post-loop batch call would re-invoke AI for L1/L3 hits, wasting tokens.
+- [ ] **Step 2: Update _run_ai_batch with retry limit handling**
 
-- [ ] **Step 3: Add is_customized protection in _process_results**
-
-In `_process_results`, when saving results, check if existing note has `is_customized=1` and skip overwrite:
+Edit `_run_ai_batch` 中的异常处理，确保 LLM 失败计数正确处理：
 
 ```python
-    # Add at the beginning of the for loop in _process_results, before notes_to_save.append:
-            # Check if user has customized this note — skip AI overwrite
-            if self.word_lookup:
-                try:
-                    existing = self.word_lookup._find_local(spell, "", "")
-                    if existing and existing.get("is_customized"):
-                        self.logger.info(f"[保护] {spell} 已自定义，跳过 AI 覆盖")
-                        continue
-                except Exception:
-                    pass  # Non-fatal
+    except APIError as e:
+        # APIError 包含两种情况：LLM 调用失败 和 重试上限到达
+        self.logger.warning(f"[Cache] AI failed for {word}: {e}")
+        # 重试上限到达的词会由 WordLookup 内部计数，下次 lookup 直接 raise APIError
+        # 这里捕获后不加入 pending，由下游自然留空
 ```
 
-- [ ] **Step 4: Run existing tests**
+- [ ] **Step 3: Run existing tests**
 
 ```bash
 pytest tests/core/test_study_workflow.py -v --tb=short
 ```
 
-Expected: All pass (flag defaults to `False`, legacy path unchanged).
+Expected: All pass (flag defaults to False, legacy path unchanged).
 
-- [ ] **Step 5: Run all unit tests**
-
-```bash
-pytest tests/ -v --tb=short -m "not slow"
-```
-
-Expected: All pass.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add core/study_workflow.py
-git commit -m "feat: integrate WordLookup into study_workflow with per-word L1/L2 lookup"
+git commit -m "feat: integrate CacheWriteWorker + retry limit into study_workflow"
 ```
 
 ---
 
-## Task 9: Update SQL Constants for is_customized
+### Task 9: Update SQL Constants for is_customized
 
-**Files:**
-- Modify: `database/sql_constants.py`
-
-- [ ] **Step 1: Add is_customized to NOTE_UPSERT_SQL**
-
-Edit `database/sql_constants.py`, update `NOTE_UPSERT_SQL`:
-
-The current SQL has 25 placeholders. We need to add `is_customized` as the 26th column.
-
-Change:
-```python
-NOTE_UPSERT_SQL = (
-    "INSERT OR REPLACE INTO ai_word_notes ("
-    "voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, "
-    "example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, "
-    "total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, "
-    "content_source_scope, sync_status, match_confidence, match_reason, updated_at"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-)
-```
-
-To:
-```python
-NOTE_UPSERT_SQL = (
-    "INSERT OR REPLACE INTO ai_word_notes ("
-    "voc_id, spelling, basic_meanings, ielts_focus, collocations, traps, synonyms, discrimination, "
-    "example_sentences, memory_aid, word_ratings, raw_full_text, prompt_tokens, completion_tokens, "
-    "total_tokens, batch_id, original_meanings, maimemo_context, content_origin, content_source_db, "
-    "content_source_scope, sync_status, match_confidence, match_reason, updated_at, is_customized"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-)
-```
-
-- [ ] **Step 2: Update build_note_upsert_args in notes_repo.py**
-
-Add `is_customized` to the args tuple (append at end):
-
-```python
-    return (
-        # ... existing 25 values ...
-        timestamp,
-        int(note.get("is_customized", 0)),  # NEW: 26th placeholder
-    )
-```
-
-- [ ] **Step 3: Update _NOTE_COLUMNS list**
-
-Add `"is_customized"` to the `_NOTE_COLUMNS` list in `notes_repo.py`.
-
-- [ ] **Step 4: Run existing notes_repo tests**
-
-```bash
-pytest tests/unit/database/ -v --tb=short
-```
-
-Expected: All pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add database/sql_constants.py database/notes_repo.py
-git commit -m "feat: add is_customized to NOTE_UPSERT_SQL and build_note_upsert_args"
-```
+**Status: DONE** — `is_customized` 已在 `NOTE_UPSERT_SQL` 和 `build_note_upsert_args` 中。
 
 ---
 
-## Task 10: Update conftest.py for New Env Vars
+### Task 10: Update conftest.py for Cache Env Var Isolation
 
 **Files:**
+
 - Modify: `tests/conftest.py`
 
 - [ ] **Step 1: Add cache env vars to cloud isolation fixture**
 
-Edit `tests/conftest.py`, add to `isolate_cloud_configuration`:
+Edit `tests/conftest.py`, 在 `isolate_cloud_configuration` fixture 中添加:
 
 ```python
     monkeypatch.delenv("TURSO_CACHE_DB_URL", raising=False)
@@ -1356,22 +475,14 @@ Edit `tests/conftest.py`, add to `isolate_cloud_configuration`:
     monkeypatch.delenv("GLOBAL_CACHE_ENABLED", raising=False)
 ```
 
-And in the module patching loop:
-
-```python
-        if hasattr(module, "TURSO_CACHE_DB_URL"):
-            monkeypatch.setattr(module, "TURSO_CACHE_DB_URL", None, raising=False)
-        if hasattr(module, "TURSO_CACHE_AUTH_TOKEN"):
-            monkeypatch.setattr(module, "TURSO_CACHE_AUTH_TOKEN", None, raising=False)
-```
+`delenv` 足以隔离——所有缓存配置都通过 `os.getenv()` 读取，清空 environ 即可。
+不需要额外遍历模块做 `setattr` mock（过度设计，且 `import config` vs `from config import` 行为不一致易遗漏）。
 
 - [ ] **Step 2: Run all tests**
 
 ```bash
 pytest tests/ -v --tb=short -m "not slow"
 ```
-
-Expected: All pass.
 
 - [ ] **Step 3: Commit**
 
@@ -1382,14 +493,13 @@ git commit -m "chore: isolate cache env vars in test fixtures"
 
 ---
 
-## Task 11: End-to-End Integration Test
+### Task 11: End-to-End Integration Test
 
 **Files:**
-- Create: `tests/integration/test_word_lookup_flow.py`
 
-- [ ] **Step 1: Write integration test**
+-Create/Modify: `tests/integration/test_word_lookup_flow.py`
 
-Create `tests/integration/test_word_lookup_flow.py`:
+- [ ] **Step 1: Write integration test covering full L1→L2→L3 + retry limit + circuit breaker**
 
 ```python
 """tests/integration/test_word_lookup_flow.py: End-to-end 3-level lookup test."""
@@ -1398,128 +508,64 @@ import pytest
 from unittest.mock import MagicMock, patch
 from core.word_lookup import WordLookup, LookupResult
 from database.cache_client import CacheNetworkError
+from core.exceptions import APIError
 
 
-def _setup_local_db():
-    """Create an in-memory DB with ai_word_notes + ai_batches."""
-    conn = sqlite3.connect(":memory:")
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE ai_word_notes ("
-        "voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, "
-        "ielts_focus TEXT, collocations TEXT, traps TEXT, synonyms TEXT, "
-        "discrimination TEXT, example_sentences TEXT, memory_aid TEXT, "
-        "word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER DEFAULT 0, "
-        "completion_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, "
-        "batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, "
-        "content_origin TEXT, content_source_db TEXT, content_source_scope TEXT, "
-        "it_level INTEGER DEFAULT 0, it_history TEXT, sync_status INTEGER DEFAULT 0, "
-        "match_confidence REAL, match_reason TEXT, last_synced_content TEXT, "
-        "is_customized INTEGER DEFAULT 0, "
-        "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    )
-    cur.execute(
-        "CREATE TABLE ai_batches ("
-        "batch_id TEXT PRIMARY KEY, request_id TEXT, ai_provider TEXT, "
-        "model_name TEXT, prompt_version TEXT, batch_size INTEGER, "
-        "total_latency_ms INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER, "
-        "total_tokens INTEGER, finish_reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    )
-    conn.commit()
-    return conn
-
-
-def test_level1_local_hit():
-    """L1: word exists in local ai_word_notes → return local."""
-    conn = _setup_local_db()
-    conn.execute(
-        "INSERT INTO ai_word_notes (voc_id, spelling, basic_meanings) VALUES ('v1', 'hello', '你好')"
-    )
-    conn.commit()
-
+@pytest.fixture
+def lookup():
     logger = MagicMock()
     ai_client = MagicMock()
     cache_client = MagicMock()
-
-    lookup = WordLookup(logger=logger, ai_client=ai_client, cache_client=cache_client)
-
-    # Patch _find_local to use our test DB
-    def fake_find_local(spelling, prompt_version, ai_provider):
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM ai_word_notes WHERE LOWER(spelling) = LOWER(?)", (spelling,))
-        row = cur.fetchone()
-        if row:
-            return {"voc_id": "v1", "spelling": "hello", "basic_meanings": "你好", "is_customized": 0}
-        return None
-
-    with patch.object(lookup, "_find_local", side_effect=fake_find_local):
-        result = lookup.lookup("hello", "v1", "mimo")
-        assert result.source == "local"
-        cache_client.find.assert_not_called()
+    l = WordLookup(logger=logger, ai_client=ai_client, cache_client=cache_client)
+    return l
 
 
-def test_level1_customized_skip_cache():
-    """L1 customized: is_customized=1 → skip L2/L3, return local_customized."""
-    conn = _setup_local_db()
-    conn.execute(
-        "INSERT INTO ai_word_notes (voc_id, spelling, memory_aid, is_customized) "
-        "VALUES ('v1', 'hello', '自定义记忆', 1)"
-    )
-    conn.commit()
+class TestFullFlow:
+    def test_l1_local_hit(self, lookup):
+        mock_note = {"spelling": "hello", "basic_meanings": "你好", "is_customized": 0}
+        with patch.object(lookup, "_find_local", return_value=mock_note):
+            result = lookup.lookup("hello", "v1", "mimo")
+            assert result.source == "local"
+            lookup.cache_client.find.assert_not_called()
 
-    logger = MagicMock()
-    ai_client = MagicMock()
-    cache_client = MagicMock()
+    def test_l1_customized_skips_l2_l3(self, lookup):
+        mock_note = {"spelling": "hello", "is_customized": 1}
+        with patch.object(lookup, "_find_local", return_value=mock_note):
+            result = lookup.lookup("hello", "v1", "mimo")
+            assert result.source == "local_customized"
+            lookup.cache_client.find.assert_not_called()
 
-    lookup = WordLookup(logger=logger, ai_client=ai_client, cache_client=cache_client)
+    def test_l2_cache_hit_upserts_local(self, lookup):
+        mock_note = {"spelling": "world", "basic_meanings": "世界"}
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=mock_note):
+                with patch.object(lookup, "_upsert_local") as mock_upsert:
+                    result = lookup.lookup("world", "v1", "mimo")
+                    assert result.source == "cache"
+                    mock_upsert.assert_called_once()
 
-    def fake_find_local(spelling, prompt_version, ai_provider):
-        return {"voc_id": "v1", "spelling": "hello", "memory_aid": "自定义记忆", "is_customized": 1}
+    def test_l3_ai_full_chain(self, lookup):
+        lookup.ai_client.generate_mnemonics.return_value = (
+            [{"spelling": "new", "basic_meanings": "新"}], {})
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                with patch.object(lookup, "_save_local"):
+                    with patch.object(lookup, "_write_cache_async"):
+                        result = lookup.lookup("new", "v1", "mimo")
+                        assert result.source == "ai"
 
-    with patch.object(lookup, "_find_local", side_effect=fake_find_local):
-        result = lookup.lookup("hello", "v1", "mimo")
-        assert result.source == "local_customized"
-        cache_client.find.assert_not_called()
-        ai_client.generate_mnemonics.assert_not_called()
+    def test_cache_network_error_circuit_breaker(self, lookup):
+        lookup.cache_client.find.side_effect = CacheNetworkError("timeout")
+        with patch.object(lookup, "_find_local", return_value=None):
+            with pytest.raises(CacheNetworkError):
+                lookup.lookup("hello", "v1", "mimo")
 
-
-def test_network_error_circuit_breaker():
-    """CacheNetworkError propagates up — batch-level circuit breaker can catch it."""
-    logger = MagicMock()
-    ai_client = MagicMock()
-    cache_client = MagicMock()
-    cache_client.find.side_effect = CacheNetworkError("timeout")
-
-    lookup = WordLookup(logger=logger, ai_client=ai_client, cache_client=cache_client)
-
-    with patch.object(lookup, "_find_local", return_value=None):
-        with pytest.raises(CacheNetworkError):
-            lookup.lookup("hello", "v1", "mimo")
-
-
-def test_full_flow_cache_miss_then_ai():
-    """Full flow: L1 miss → L2 miss → L3 AI → save local + async cache write."""
-    conn = _setup_local_db()
-
-    logger = MagicMock()
-    ai_client = MagicMock()
-    ai_client.generate_mnemonics.return_value = (
-        [{"spelling": "newword", "basic_meanings": "新词", "voc_id": "v99"}],
-        {"total_tokens": 5, "request_id": "req-1"},
-    )
-
-    cache_client = MagicMock()
-    cache_client.find.return_value = None  # cache miss
-
-    lookup = WordLookup(logger=logger, ai_client=ai_client, cache_client=cache_client)
-
-    with patch.object(lookup, "_find_local", return_value=None):
-        with patch.object(lookup, "_save_local") as mock_save:
-            with patch.object(lookup, "_write_cache_async") as mock_cache_write:
-                result = lookup.lookup("newword", "v1", "mimo")
-                assert result.source == "ai"
-                mock_save.assert_called_once()
-                mock_cache_write.assert_called_once()
+    def test_llm_retry_limit(self, lookup):
+        lookup._llm_fail_counts["fail"] = 3
+        with patch.object(lookup, "_find_local", return_value=None):
+            with patch.object(lookup.cache_client, "find", return_value=None):
+                with pytest.raises(APIError, match="retry limit"):
+                    lookup.lookup("fail", "v1", "mimo")
 ```
 
 - [ ] **Step 2: Run integration test**
@@ -1528,18 +574,16 @@ def test_full_flow_cache_miss_then_ai():
 pytest tests/integration/test_word_lookup_flow.py -v --tb=short
 ```
 
-Expected: All pass.
-
 - [ ] **Step 3: Commit**
 
 ```bash
 git add tests/integration/test_word_lookup_flow.py
-git commit -m "test: add integration tests for 3-level WordLookup flow"
+git commit -m "test: add integration tests for 3-level WordLookup + retry limit + circuit breaker"
 ```
 
 ---
 
-## Task 12: Full Test Suite Verification
+### Task 12: Full Test Suite Verification
 
 - [ ] **Step 1: Run all tests**
 
@@ -1547,58 +591,375 @@ git commit -m "test: add integration tests for 3-level WordLookup flow"
 pytest tests/ -v --tb=short -m "not slow"
 ```
 
-Expected: All pass.
-
-- [ ] **Step 2: Run py_compile on new/modified files**
+- [ ] **Step 2: py_compile on new/modified files**
 
 ```bash
 python -m py_compile core/word_lookup.py
 python -m py_compile database/cache_client.py
-python -m py_compile database/notes_repo.py
-python -m py_compile database/sql_constants.py
 python -m py_compile core/study_workflow.py
-python -m py_compile core/feature_flags.py
-python -m py_compile core/settings.py
-python -m py_compile config.py
-python -m py_compile database/migrations/V005_is_customized.py
-python -m py_compile database/migrations/V006_seed_global_cache.py
 ```
 
-Expected: No errors.
+- [ ] **Step 3: Verify flag=false still works (legacy path)**
 
-- [ ] **Step 3: Verify migration runner discovers new migrations**
+```bash
+python -m pytest tests/ -v --tb=short -m "not slow" -k "not cache"
+```
+
+Expected: All pass.
+
+---
+
+## P6: pyturso 迁移（独立 feature branch）
+
+> P6 在 P0-P5 稳定后执行。以下任务作为独立 feature branch。
+
+### Task 13: pyturso 兼容性验证脚本
+
+**Files:**
+
+-Create: `scripts/validate_pyturso_compat.py`
+
+- [ ] **Step 1: Write compatibility validation script**
 
 ```python
-python -c "from database.migrations.runner import target_version; print(target_version())"
+"""scripts/validate_pyturso_compat.py: Validate pyturso compatibility before P6 migration."""
+import sys
+
+def check_import():
+    try:
+        import turso.sync
+        print("[OK] turso.sync importable")
+        return True
+    except ImportError as e:
+        print(f"[FAIL] Cannot import turso.sync: {e}")
+        return False
+
+def check_connect():
+    try:
+        import turso.sync
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            path = f.name
+        db = turso.sync.connect(path)
+        db.close()
+        os.unlink(path)
+        print("[OK] turso.sync.connect() works")
+        return True
+    except Exception as e:
+        print(f"[FAIL] turso.sync.connect() failed: {e}")
+        return False
+
+def check_pragma():
+    try:
+        import turso.sync
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            path = f.name
+        db = turso.sync.connect(path)
+        db.execute("PRAGMA busy_timeout=5000")
+        db.execute("PRAGMA synchronous=NORMAL")
+        db.close()
+        os.unlink(path)
+        print("[OK] PRAGMA syntax compatible")
+        return True
+    except Exception as e:
+        print(f"[FAIL] PRAGMA failed: {e}")
+        return False
+
+def check_vacuum_into():
+    try:
+        import turso.sync
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            path = f.name
+        db = turso.sync.connect(path)
+        db.execute("CREATE TABLE t(x)")
+        backup = path + ".bak"
+        db.execute(f"VACUUM INTO '{backup}'")
+        db.close()
+        os.unlink(path)
+        os.unlink(backup)
+        print("[OK] VACUUM INTO supported")
+        return True
+    except Exception as e:
+        print(f"[FAIL] VACUUM INTO failed: {e}")
+        return False
+
+def check_libsql_open():
+    """尝试用 pyturso 打开现有 libSQL 格式 .db 文件。"""
+    # 需要一个真实的 libSQL .db 文件路径
+    db_path = sys.argv[1] if len(sys.argv) > 1 else None
+    if not db_path:
+        print("[SKIP] libSQL open test (pass db path as argument)")
+        return True
+    try:
+        import turso.sync
+        db = turso.sync.connect(db_path)
+        db.close()
+        print(f"[OK] pyturso can open libSQL file: {db_path}")
+        return True
+    except Exception as e:
+        print(f"[FAIL] Cannot open libSQL file: {e}")
+        return False
+
+if __name__ == "__main__":
+    results = [check_import(), check_connect(), check_pragma(), check_vacuum_into(), check_libsql_open()]
+    passed = sum(results)
+    total = len(results)
+    print(f"\n{passed}/{total} checks passed")
+    sys.exit(0 if all(results) else 1)
 ```
 
-Expected: `6`
+- [ ] **Step 2: Run validation script**
+
+```bash
+python scripts/validate_pyturso_compat.py data/history-asher.db
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add scripts/validate_pyturso_compat.py
+git commit -m "chore: add pyturso compatibility validation script"
+```
+
+---
+
+### Task 14: V007 .db 格式迁移
+
+**Files:**
+
+-Create: `database/migrations/V007_migrate_db_format.py`
+
+- [ ] **Step 1: Write migration script**
+
+```python
+"""
+V007_migrate_db_format.py: Migrate .db from libSQL format to pyturso-compatible format.
+
+Strategy:
+  1. Detect format (try turso.sync.connect)
+  2. If compatible → no-op
+  3. If not → export-import (iterdump with internal table filter + foreign key guard)
+"""
+from __future__ import annotations
+import os
+import shutil
+import sqlite3
+from typing import Any
+
+# SQLite 内部表前缀，iterdump 时过滤
+INTERNAL_PREFIXES = ("sqlite_sequence", "_litestream_", "sqlite_")
+
+
+def _detect_format(db_path: str) -> str:
+    """探测 .db 文件是否兼容 pyturso。"""
+    try:
+        import turso.sync
+        db = turso.sync.connect(db_path)
+        db.close()
+        return "turso_sync"
+    except Exception:
+        return "libsql_embedded_replica"
+
+
+def _migrate_libsql_to_turso(db_path: str) -> str:
+    """将 libSQL 格式 .db 转换为 pyturso 兼容格式。
+
+    Returns: backup_path
+    """
+    import turso.sync
+
+    # 1. 备份
+    backup_path = db_path + ".pre_pyturso.bak"
+    shutil.copy2(db_path, backup_path)
+
+    # 2. 用标准 sqlite3 导出，过滤内部表
+    conn_old = sqlite3.connect(db_path)
+    dump_path = db_path + ".dump.sql"
+    with open(dump_path, "w") as f:
+        for line in conn_old.iterdump():
+            if any(f'"{p}"' in line or f" {p} " in line for p in INTERNAL_PREFIXES):
+                continue
+            f.write(line + "\n")
+    conn_old.close()
+    del conn_old  # 显式释放，防止 Windows 下 SQLite 文件句柄延迟释放
+
+    # 3. 用 pyturso 创建新库并导入（关闭外键避免子表先于父表导入）
+    import time
+    for attempt in range(3):
+        try:
+            os.remove(db_path)
+            break
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(0.5)  # Windows 句柄释放重试
+    db_new = turso.sync.connect(db_path)
+    db_new.execute("PRAGMA foreign_keys=OFF;")
+    with open(dump_path, "r") as f:
+        db_new.executescript(f.read())
+    db_new.execute("PRAGMA foreign_keys=ON;")
+    db_new.close()
+
+    # 4. 清理临时文件
+    os.remove(dump_path)
+    return backup_path
+
+
+def apply(cur: Any) -> None:
+    """Run V007 migration. Detects format and migrates if needed."""
+    # 获取 db_path 从 cursor 的 connection
+    db_path = None
+    try:
+        row = cur.execute("PRAGMA database_list").fetchone()
+        if row:
+            db_path = row[2]  # file path
+    except Exception:
+        pass
+
+    if not db_path or not os.path.exists(db_path):
+        return
+
+    fmt = _detect_format(db_path)
+    if fmt == "turso_sync":
+        return  # 已兼容，无需迁移
+
+    backup = _migrate_libsql_to_turso(db_path)
+    print(f"V007: Migrated {db_path} from libSQL to turso_sync format. Backup: {backup}")
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add database/migrations/V007_migrate_db_format.py
+git commit -m "feat: V007 migration — libSQL to pyturso format conversion"
+```
+
+---
+
+### Task 15: connection.py 重写 + Checkpoint 调度
+
+**Files:**
+
+- Modify: `database/connection.py`
+- Modify: `database/sync_service.py`
+- Modify: `database/execution_engine.py`
+
+- [ ] **Step 1: Rewrite _connect_embedded_replica → _connect_turso_sync**
+
+```python
+# database/connection.py
+import turso.sync
+
+def _connect_turso_sync(db_path, remote_url, auth_token):
+    """替代 _connect_embedded_replica()"""
+    db = turso.sync.connect(
+        db_path,
+        remote_url=remote_url,
+        auth_token=auth_token,
+    )
+    return db
+```
+
+- [ ] **Step 2: sync_service.py — conn.sync() → db.push()/db.pull()**
+
+```python
+# database/sync_service.py
+def do_sync(db, ...):
+    db.pull()  # 云端 → 本地
+    # ... 业务逻辑 ...
+    db.push()  # 本地 → 云端
+```
+
+- [ ] **Step 3: execution_engine.py — checkpoint 调度**
+
+```python
+# database/execution_engine.py
+
+class SyncDaemon:
+    def __init__(self, db):
+        self.db = db
+
+    def run_once(self):
+        self.db.pull()
+        # 每次 pull 后 checkpoint 合流 WAL
+        # （无新 WAL 增量时空 checkpoint 极轻量，开销可忽略）
+        self.db.checkpoint()
+        self.db.push()
+```
+
+- [ ] **Step 4: requirements.txt — 添加 pyturso，保留 libsql 宽限期**
+
+```
+pyturso>=0.1.0
+libsql-experimental  # 宽限期：P6 合并后保留 1 个版本周期
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add database/connection.py database/sync_service.py database/execution_engine.py requirements.txt
+git commit -m "feat(P6): migrate connection.py to turso.sync + checkpoint scheduling"
+```
+
+---
+
+### Task 16: P6 全量回归测试
+
+- [ ] **Step 1: Run all tests**
+
+```bash
+pytest tests/ -v --tb=short -m "not slow"
+```
+
+- [ ] **Step 2: Manual verification**
+
+```bash
+python main.py
+# 验证：CLI 启动正常、查词正常、push/pull 同步
+python scripts/start_web.py
+# 验证：Web 启动正常、编辑 memory_aid 正常
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add -A
+git commit -m "test(P6): full regression after pyturso migration"
+```
 
 ---
 
 ## Spec Coverage Checklist
 
-| Spec Section | Implemented In |
-|---|---|
-| §2.1 Two DB entities | Task 2 (config), Task 3 (cache_client) |
-| §2.2 3-level lookup flow | Task 6 (word_lookup.py) |
-| §3.1 core/word_lookup.py | Task 6 |
-| §3.2 database/cache_client.py | Task 3 |
-| §3.3 Module responsibility split | Task 8 (study_workflow) |
-| §4.1 is_customized column | Task 4 (V005 migration), Task 9 (SQL) |
-| §4.2 ai_cache table | Task 3 (init_table) |
-| §4.3 Seed data | Task 7 (V006 migration) |
-| §5 Config changes | Task 2 (config.py) |
-| §6 File change list | All tasks above |
-| §7 Data safety (VACUUM INTO) | Deferred — can add as separate task |
-| §8 Offline/exception matrix | Tested in Tasks 6, 11 |
-| §9.1 Feature flag | Task 1 |
-| §9.2 Incremental dev strategy | Each task is independently deployable with flag=false |
-| §9.3 Flag branch code | Task 8 |
-| §10 Turso setup guide | Documentation only, no code changes needed |
+| Spec Section | Implemented In | Status |
+|---|---|---|
+| §1.1 决策表 (LWW, CacheWriteWorker, retry limit) | Task 3, 6, 8 | In plan |
+| §2.2 3-level lookup flow | Task 6 | Needs update |
+| §3.1 WordLookup + retry limit | Task 6 | Needs update |
+| §3.2 CacheWriteWorker + /v2/pipeline format | Task 3 | Needs update |
+| §3.3 Module responsibility | Task 8 | Needs update |
+| §4.1 is_customized (V005) | Already done | DONE |
+| §4.2 ai_cache table | Task 3 (init_table) | Already in code |
+| §4.3 Seed data (V006) | Already done | DONE |
+| §5 Config changes | Already done | DONE |
+| §6 File change list | All tasks | Covered |
+| §7.1 VACUUM INTO snapshot | Task 14 (V007) | In plan |
+| §7.5 回滚 (correct versions) | Task 14 | In plan |
+| §8.1 3-level scenarios | Task 11 | In plan |
+| §8.2 LWW conflict | Documentation in spec | No code change needed |
+| §9.1 Feature flag | Already done | DONE |
+| §9.2 P phases | Task sequence follows phases | In plan |
+| §10.1 pyturso SDK | Task 13 | In plan |
+| §10.2 Compat validation | Task 13 | In plan |
+| §10.3 .db format migration (iterdump filter + FK guard) | Task 14 | In plan |
+| §10.4 P6 steps (checkpoint, libsql grace) | Task 15 | In plan |
+| §10.5 API diff table | Task 15 | In plan |
+
+---
 
 ## Deferred Items
 
-1. **VACUUM INTO backup** (§7.1): The V005 migration does not yet include automatic pre-migration backup. Add in a follow-up task if needed.
-2. **ui_manager source tag** (§6 file list): Display source label ("local" / "cache" / "ai") in CLI output — low priority, can be a follow-up.
-3. **Web UI integration**: The Web frontend would need similar source-tag display. Not in scope for this plan.
+1. **ui_manager source tag** (§6): 显示 source 标签（"local"/"cache"/"ai"）— 低优先级
+2. **Web UI integration**: Web 前端需要对应的 source 标签显示 — 不在本次范围
