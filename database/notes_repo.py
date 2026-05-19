@@ -568,6 +568,32 @@ def atomic_save_iteration_and_update_note(
         return False
 
 
+def update_memory_aid(
+    voc_id: str,
+    memory_aid: str,
+    db_path: Optional[str] = None,
+    conn: Any = None,
+) -> bool:
+    """Update memory_aid and mark is_customized=1.
+
+    Called when user edits a word note's memory aid via Web UI or CLI.
+    The is_customized flag prevents cache from overwriting user edits.
+    """
+    try:
+        ts = get_timestamp_with_tz()
+        sql = (
+            "UPDATE ai_word_notes SET memory_aid = ?, is_customized = 1, updated_at = ? "
+            "WHERE voc_id = ?"
+        )
+        return dispatch_write(sql, (memory_aid, ts, str(voc_id)), db_path=db_path, conn=conn)
+    except (sqlite3.DatabaseError, OSError, ValueError) as e:
+        _log_repo_failure("update_memory_aid", e)
+        return False
+    except Exception as e:
+        _log_repo_failure("update_memory_aid", e)
+        return False
+
+
 __all__ = [
     "NOTE_UPSERT_SQL",
     "build_note_upsert_args",
@@ -586,4 +612,5 @@ __all__ = [
     "save_ai_word_iteration",
     "update_ai_word_note_iteration_state",
     "atomic_save_iteration_and_update_note",
+    "update_memory_aid",
 ]
