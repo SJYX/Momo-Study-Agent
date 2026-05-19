@@ -52,8 +52,8 @@ def _setup_skeleton(conn):
 # ── 基础功能 ──────────────────────────────────────────────────
 
 
-def test_target_version_matches_v004():
-    assert target_version() == 4
+def test_target_version_matches_v005():
+    assert target_version() == 5
 
 
 def test_empty_db_starts_at_v0():
@@ -63,14 +63,14 @@ def test_empty_db_starts_at_v0():
 
 
 def test_apply_migrations_to_empty_db():
-    """全新空 DB：建骨架 → 跑迁移 → system_config 中 schema_version=4。"""
+    """全新空 DB：建骨架 → 跑迁移 → system_config 中 schema_version=5。"""
     conn = _fresh_db()
     _setup_skeleton(conn)
 
     start, end = apply_migrations(conn)
     assert start == 0
-    assert end == 4
-    assert _schema_version(conn) == 4
+    assert end == 5
+    assert _schema_version(conn) == 5
 
 
 def test_idempotent_second_run_is_noop():
@@ -79,9 +79,9 @@ def test_idempotent_second_run_is_noop():
 
     start1, end1 = apply_migrations(conn)
     start2, end2 = apply_migrations(conn)
-    assert start1 == 0 and end1 == 4
+    assert start1 == 0 and end1 == 5
     # 第二次跑：current >= target，立即返回
-    assert start2 == 4 and end2 == 4
+    assert start2 == 5 and end2 == 5
 
 
 # ── 旧库兼容 ──────────────────────────────────────────────────
@@ -113,14 +113,14 @@ def test_legacy_db_without_some_columns_gets_columns_added():
     cols2 = {row[1] for row in cur.fetchall()}
     assert "updated_at" in cols2
 
-    assert _schema_version(conn) == 4
+    assert _schema_version(conn) == 5
 
 
 # ── 失败回滚 ──────────────────────────────────────────────────
 
 
 def test_failure_in_migration_stops_at_last_good_version(monkeypatch):
-    """V001~V004 成功后追加一个会爆的 V999，版本应停在 4。"""
+    """V001~V005 成功后追加一个会爆的 V999，版本应停在 5。"""
     import database.migrations.runner as runner_mod
 
     conn = _fresh_db()
@@ -151,8 +151,8 @@ def test_failure_in_migration_stops_at_last_good_version(monkeypatch):
         runner_mod.apply_migrations(conn)
     assert "V999" in str(ex.value)
 
-    # V001~V004 已成功提交，V999 回滚 → schema_version 应停在 4
-    assert _schema_version(conn) == 4
+    # V001~V005 已成功提交，V999 回滚 → schema_version 应停在 5
+    assert _schema_version(conn) == 5
 
 
 def test_ddl_succeeds_even_if_version_write_fails():
@@ -201,7 +201,7 @@ def test_ddl_succeeds_even_if_version_write_fails():
     # DDL 应该成功，即使版本写入失败
     start, end = runner_mod.apply_migrations(wrapped)
     assert start == 0
-    assert end == 4
+    assert end == 5
 
     # DDL 确实已提交
     cur2 = primary_real.cursor()
