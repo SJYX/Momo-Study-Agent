@@ -6,12 +6,19 @@
 
 ## 1. 概述
 
-将 MOMO_Script 的单体数据库架构重构为"混合双轨架构"，分离用户私有同步库（User_Sync_DB）和全局 AI 缓存池（Global_Cache_DB）。核心底线：用户现有词汇数据零丢失、平滑过渡。
+将 MOMO_Script 从 **libSQL Embedded Replica（二进制帧同步）** 迁移到 **Turso Sync（逻辑 CDC 同步）**，同时重构为混合双轨架构：User_Sync_DB（pyturso embedded replica）+ Global_Cache_DB（HTTP remote query）。核心目标：
+
+1. **同步内核升级**：`libsql` → `pyturso`，`conn.sync()`（整帧） → `push()`/`pull()`（逻辑 CDC）
+2. **架构升级**：单体 DB → 双轨（用户私有库 + 全局缓存池）+ 3 级查找流水线
+3. **写入模型升级**：写入发到云端 → 本地写入 + 显式 push（离线友好）
+
+核心底线：用户现有词汇数据零丢失、平滑过渡。
 
 ### 1.1 设计决策汇总
 
 | 决策点 | 选择 | 理由 |
 |--------|------|------|
+| 同步内核 | `pyturso` + `turso.sync`（逻辑 CDC） | 替代 `libsql` 二进制帧同步，8.9x 更快，16.3x 更少数据传输；支持本地写入 + 显式 push/pull；原生 MVCC 并发写入 |
 | ai_word_notes 拆分 | 整表留在 User_Sync_DB | 迁移成本最低，本地表结构不变 |
 | Global_Cache_DB 连接 | HTTP Remote Query | 无本地副本，多用户共享，离线自动降级 |
 | 缓存主键 | spelling + prompt_version + ai_provider 三维度 hash | 支持同一词不同 provider 的缓存共存 |
@@ -20,15 +27,19 @@
 | 回写时机 | AI 生成后 fire-and-forget 异步回写 | 不阻塞主流程，其他用户立即可命中 |
 | 历史种子 | 997 条 ai_generated 上传缓存池 | 新用户首次查词即命中 |
 | 架构方案 | 方案 C：全新 WordLookup Pipeline | 最清晰的 3 级流程，职责单一 |
+| 并发写入 | pyturso 原生 MVCC | 消除 WalConflict 防护代码，简化 connection.py；支持并发读写 |
 
 ## 2. 目标架构
 
 ### 2.1 两个数据库实体
 
-**User_Sync_DB**（`history-{user}.db`，Embedded Replica）
+**User_Sync_DB**（`history-{user}.db`，Turso Sync Embedded Replica）
 
-- 同步方式：libsql `conn.sync()` 双向帧同步
-- 连接：现有 Embedded Replica 单例模式不变
+- 同步方式：`pyturso` 逻辑 CDC 同步 — `db.push()`（本地→云端） + `db.pull()`（云端→本地）
+  - 与旧版 `libsql` `conn.sync()` 的区别：传输逻辑变更（而非整页），支持本地写入，MVCC 并发
+- 连接：`turso.sync.connect("app.db", remote_url=..., auth_token=...)`，替代旧版 `libsql.connect(sync_url=..., auth_token=...)`
+- 写入模型：所有读写在本地完成（毫秒级），`push()` 显式推送变更到云端；`pull()` 拉取远端变更
+- 并发支持：pyturso 引擎原生 MVCC，不再需要单连接守护进程 + 写队列的 WalConflict 防护
 - 包含的表：
   - `processed_words` — 用户已处理词（1247 行 @ Asher）
   - `ai_word_notes` — AI 笔记（1223 行 @ Asher，**新增 `is_customized` 列**）
@@ -163,6 +174,9 @@ class GlobalCacheClient:
 | `study_workflow.py` | 批量处理 + 异常捕获 + pending | 修改 |
 | `community_lookup.py` | 本地历史库查找（保留作为 WordLookup 内部的 Level 1 子逻辑） | 不变 |
 | `notes_repo.py` | CRUD + sync 标记 | 小改（`update_memory_aid` 加 `is_customized=1`） |
+| `database/connection.py` | 连接管理 + 同步 | **大改** — 从 libsql Embedded Replica 迁移到 pyturso；消除 WalConflict 防护代码（单连接守护、写队列、GC hack 等）；使用 `turso.sync.connect()` + `push()`/`pull()` 替代 `libsql.connect()` + `conn.sync()` |
+| `database/sync_service.py` | 同步管线 | **中改** — `conn.sync()` 调用改为 `db.push()`/`db.pull()`；软超时机制可能需要调整 |
+| `database/execution_engine.py` | 写队列 + 后台同步守护 | **简化** — pyturso 原生 MVCC 可能消除写队列需求；`_sync_daemon` 改为 `push()`/`pull()` 调度 |
 
 ## 4. Schema 变更
 
@@ -234,13 +248,17 @@ CACHE_TIMEOUT_S = float(os.getenv("CACHE_TIMEOUT_S", "3.0"))
 | 文件 | 改动类型 | 风险 | 说明 |
 |------|---------|------|------|
 | `core/word_lookup.py` | 新建 | 低 | 3 级查找编排 |
-| `database/cache_client.py` | 新建 | 低 | HTTP 客户端 |
+| `database/cache_client.py` | 新建 | 低 | HTTP 客户端（Global_Cache_DB） |
 | `database/migrations/V002_add_is_customized.py` | 新建 | 低 | 幂等 ALTER |
 | `database/migrations/V003_seed_global_cache.py` | 新建 | 低 | 一次性回填 |
 | `core/study_workflow.py` | 修改 | 中 | 主流程循环 + pending + 熔断 |
 | `database/notes_repo.py` | 修改 | 低 | `update_memory_aid` 加 `is_customized=1` |
 | `config.py` | 修改 | 低 | 新增缓存配置项 |
 | `core/ui_manager.py` | 修改 | 低 | 显示 source 标签 |
+| **`database/connection.py`** | **重写** | **高** | **从 `libsql.connect(sync_url=...)` 迁移到 `turso.sync.connect()`；消除 WalConflict 防护（单连接守护、GC hack、写队列）；pyturso 原生 MVCC 并发** |
+| **`database/sync_service.py`** | **修改** | **中** | **`conn.sync()` → `db.push()`/`db.pull()`** |
+| **`database/execution_engine.py`** | **简化** | **中** | **写队列可能不再需要；`_sync_daemon` 改为 push/pull 调度** |
+| **`requirements.txt`** | **修改** | **低** | **`libsql` → `pyturso`** |
 
 ## 7. 数据安全保证（6 道防线）
 
@@ -308,15 +326,20 @@ def _snapshot_before_migration(conn) -> str:
 
 | 写操作 | 目标库 | 保护措施 |
 | ------ | ------ | ------- |
-| V002: ADD COLUMN | User_Sync_DB | 预快照 + 原子 DDL + 写队列 |
+| V002: ADD COLUMN | User_Sync_DB | 预快照 + 原子 DDL |
 | V003: INSERT INTO ai_cache | Global_Cache_DB | 全新库，零风险 |
-| `_upsert_local()` 缓存合流 | User_Sync_DB | 参数化 SQL + 写队列 + is_customized 保护 |
-| `UPDATE is_customized=1` | User_Sync_DB | 参数化 SQL + 写队列 |
+| `_upsert_local()` 缓存合流 | User_Sync_DB | 参数化 SQL + is_customized 保护 |
+| `UPDATE is_customized=1` | User_Sync_DB | 参数化 SQL |
 | fire-and-forget 缓存回写 | Global_Cache_DB | 异步 + 异常吞掉，不影响主库 |
+| pyturso 本地写入 | User_Sync_DB | 原生 MVCC 事务保护；`push()` 失败不回滚本地写（待确认冲突解决策略） |
 
 **铁律**：全程零 DROP TABLE / DROP COLUMN / DELETE FROM User_Sync_DB。
 
+> **注意**：pyturso 迁移后，旧版 libSQL 的 WalConflict 防护铁律（单连接、GC hack、cursor discipline）不再适用。Turso Database 引擎使用 MVCC，支持并发读写。但需要验证 `push()` 的冲突解决策略（§8 离线场景更新见下）。
+
 ## 8. 离线 / 异常场景矩阵
+
+### 8.1 3 级查找场景
 
 | 场景 | Level 1 | Level 2 | Level 3 | 行为 |
 |------|---------|---------|---------|------|
@@ -331,6 +354,16 @@ def _snapshot_before_migration(conn) -> str:
 | 缓存命中但本地有 custom | 命中+custom | 跳过 | 跳过 | 返回 local_customized |
 | LLM 失败 | miss | miss | raise | APIError → pending |
 | 缓存写入失败 | — | — | 异步 | 日志告警，不影响返回 |
+
+### 8.2 pyturso 同步场景（Logical Sync 迁移后）
+
+| 场景 | 旧行为（libsql） | 新行为（pyturso） | 备注 |
+|------|----------------|-----------------|------|
+| 在线写入 | 写入发到云端 primary，再 reflect 回本地 | 本地写入 → `push()` 推送到云端 | 写入更快（本地毫秒级） |
+| 离线写入 | 不支持（readYourWrites=true 时阻塞） | 支持 — 本地写入，`push()` 延迟到上线后 | 新能力 |
+| push 冲突 | N/A | 待确认：`pull()` 后的冲突解决策略 | 需要验证 pyturso 的 conflict resolution |
+| 初始同步 | `conn.sync()` 整库拉取 | `pull()` 支持 lazy load — 按需拉取页面 | 启动更快 |
+| 后台同步 | `_sync_daemon` 每 2s 检查 → `conn.sync()` | `push()`/`pull()` 间隔调度 | 需要重新设计调度策略 |
 
 ## 9. 增量开发策略
 
@@ -361,12 +394,15 @@ GLOBAL_CACHE_ENABLED: bool = False
 | ---- | ------ | ----------- | --------- |
 | P0 | 新建 `database/cache_client.py` + 单测 | 是（不接入主流程） | false |
 | P1 | 新建 `core/word_lookup.py` + 单测 | 是（不接入主流程） | false |
-| P2 | `database/migrations/V002_add_is_customized.py` | 是（幂等 ALTER） | false |
+| P2 | `database/migrations/V005_is_customized.py` | 是（幂等 ALTER） | false |
 | P3 | 修改 `study_workflow.py` 加 flag 分支 | 是（flag=false 走老逻辑） | false |
 | P4 | 修改 `notes_repo.py` 加 `is_customized=1` | 是（不影响读取） | false |
-| P4.5 | Turso 建库 + 种子数据回填 `V003_seed_global_cache.py` | 是 | false |
+| P4.5 | Turso 建库 + 种子数据回填 `V006_seed_global_cache.py` | 是 | false |
 | P5 | 端到端测试：设 flag=true，验证 L1/L2/L3 全链路 | 是（可随时关回） | true/false 切换 |
-| P6 | 清理：移除老逻辑分支（可选，最后一个 PR） | 是 | 移除 flag |
+| **P6** | **pyturso 迁移：`libsql` → `turso.sync`；connection.py 重写；消除 WalConflict 防护；同步管线改为 push/pull** | **需要充分回归测试** | **独立 feature branch** |
+| P7 | 清理：移除老逻辑分支（可选，最后一个 PR） | 是 | 移除 flag |
+
+> **P6 是高风险阶段**：`connection.py` 重写影响所有数据库操作。建议在 P0-P5（双轨架构）稳定后，作为独立 feature branch 合并，充分回归测试后上线。
 
 **核心原则**：每个阶段完成后 `main.py` 和 Web 都能正常启动。Flag=false 时行为与重构前 100% 一致。
 
@@ -383,9 +419,58 @@ def process_batch(self, batch_words, ...):
         return self._process_batch_legacy(batch_words, ...)  # 现有逻辑不变
 ```
 
-## 10. Turso Global_Cache_DB 建库指南
+### 9.4 pyturso 迁移代码示例（P6 阶段）
 
-### 10.1 使用 Turso CLI 创建数据库
+```python
+# database/connection.py — 迁移后
+import turso.sync
+
+def _connect_turso_sync(db_path, remote_url, auth_token):
+    """替代 _connect_embedded_replica()"""
+    db = turso.sync.connect(
+        db_path,
+        remote_url=remote_url,
+        auth_token=auth_token,
+    )
+    # 不再需要: _check_same_thread, WalConflict 防护, GC hack
+    # pyturso 原生 MVCC 支持并发读写
+    return db
+
+# 同步调用 — 替代 conn.sync()
+db.push()  # 本地 → 云端
+db.pull()  # 云端 → 本地
+```
+
+## 10. pyturso 安装与兼容性风险
+
+### 10.1 安装方式
+
+```bash
+# pip（需要 Rust 编译工具链）
+pip install pyturso
+
+# uv（推荐，预编译 wheel）
+uv add pyturso
+```
+
+> ⚠️ **Windows 安装风险**：pyturso 使用 maturin（Rust → Python）构建，当前在 Windows 上编译失败（target-lexicon crate 链接错误）。建议使用 `uv` 安装预编译 wheel，或在 CI 中使用 Linux 构建。需要验证是否有预编译 Windows wheel 可用。
+
+### 10.2 与 libsql 的 API 兼容性
+
+pyturso 声称 `sqlite3` 接口兼容，但以下点需要验证：
+- `row_factory` 行为（AI_CONTEXT §3.1 禁用 `row_factory`）
+- `PRAGMA` 语法（`busy_timeout`, `synchronous=NORMAL`, `wal_checkpoint(TRUNCATE)` 等）
+- `with_read_session` 装饰器与 pyturso connection 的兼容性
+- `VACUUM INTO` 是否支持（用于 §7.1 的预迁移快照）
+- 加密支持（当前 `libsql` 支持 `encryption_key` 参数）
+
+### 10.3 迁移路径
+
+现有用户的 `.db` 文件是 libSQL 格式的 Embedded Replica。pyturso（Turso Database 引擎）是否能直接打开 libSQL 格式的数据库文件？如果不能，需要提供迁移脚本。
+
+## 11. Turso Global_Cache_DB 建库指南
+
+### 11.1 使用 Turso CLI 创建数据库
 
 ```bash
 # 1. 安装 Turso CLI（如未安装）
@@ -412,7 +497,7 @@ turso db tokens create history-asher-cache
 # GLOBAL_CACHE_ENABLED=false
 ```
 
-### 10.2 使用 Turso Management API（可选脚本）
+### 11.2 使用 Turso Management API（可选脚本）
 
 如果已配置 `TURSO_MGMT_TOKEN` 和 `TURSO_ORG_SLUG`（项目已有），可自动化建库：
 
