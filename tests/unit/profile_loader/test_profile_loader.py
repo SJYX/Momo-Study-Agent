@@ -145,3 +145,18 @@ def test_switch_user_returns_new_paths_and_loads_env(tmp_layout, monkeypatch):
     # bob.env 的 AI_PROVIDER=mimo
     assert os.getenv("AI_PROVIDER") == "mimo"
     assert os.getenv("MOMO_TOKEN") == "bob_token"
+
+
+def test_switch_user_loads_api_base_and_model(tmp_layout, monkeypatch):
+    with open(os.path.join(tmp_layout["profiles_dir"], "Bob.env"), "a", encoding="utf-8") as f:
+        f.write("MIMO_API_BASE=https://custom.mimo.api/v1\nMIMO_MODEL=mimo-v99\n")
+
+    new_user, _, _ = profile_loader.switch_user(
+        "Bob",
+        global_env_path=tmp_layout["global_env"],
+        profiles_dir=tmp_layout["profiles_dir"],
+        data_dir=tmp_layout["data_dir"],
+    )
+    assert new_user == "bob"
+    assert os.getenv("MIMO_API_BASE") == "https://custom.mimo.api/v1"
+    assert os.getenv("MIMO_MODEL") == "mimo-v99"

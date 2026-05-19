@@ -13,10 +13,10 @@ from config import MIMO_MODEL, MIMO_API_KEY, MIMO_API_BASE, MAX_RETRIES, RETRY_W
 class MimoClient:
     """小米 Mimo 模型客户端，兼容 OpenAI API 格式"""
 
-    def __init__(self, api_key: str = None, model_name: str = None, prompt_file: str = None):
+    def __init__(self, api_key: str = None, model_name: str = None, prompt_file: str = None, api_base: str = None):
         self.api_key = api_key or MIMO_API_KEY
         self.model_name = model_name or MIMO_MODEL
-        self.api_base = MIMO_API_BASE
+        self.api_base = api_base or MIMO_API_BASE
         self.prompt_file = prompt_file or PROMPT_FILE
         self.connect_timeout_s = float(os.getenv("MIMO_CONNECT_TIMEOUT_S", "10"))
         self.read_timeout_s = float(os.getenv("MIMO_READ_TIMEOUT_S", "60"))

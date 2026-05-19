@@ -125,10 +125,17 @@ class UserContextManager:
 
         if cfg_snapshot.ai_provider == "mimo":
             from core.mimo_client import MimoClient
-            ai_client = MimoClient(cfg_snapshot.mimo_api_key)
+            ai_client = MimoClient(
+                api_key=cfg_snapshot.mimo_api_key,
+                model_name=cfg_snapshot.mimo_model or None,
+                api_base=cfg_snapshot.mimo_api_base or None,
+            )
         else:
             from core.gemini_client import GeminiClient
-            ai_client = GeminiClient(cfg_snapshot.gemini_api_key)
+            ai_client = GeminiClient(
+                api_key=cfg_snapshot.gemini_api_key,
+                model_name=cfg_snapshot.gemini_model or None,
+            )
 
         from core.study_workflow import StudyWorkflow
 
