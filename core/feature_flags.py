@@ -20,6 +20,7 @@ _KNOWN_FLAGS: Set[str] = {
     "BACKGROUND_RETRY_ENABLED",
     "IDLE_ENGINE_ENABLED",
     "ISOLATED_READ_CONN_ENABLED",
+    "GLOBAL_CACHE_ENABLED",
 }
 
 _TRUTHY = {"1", "true", "yes", "y", "on"}

@@ -64,9 +64,16 @@ class Settings(BaseSettings):
     AUTO_WARMUP_SYNC_ENABLED: bool = True
     SYNC_STATUS_HEAVY_QUERY_ENABLED: bool = True
     BACKGROUND_RETRY_ENABLED: bool = True
+    ISOLATED_READ_CONN_ENABLED: bool = True
 
     # ─────────────── PLAYBOOK B3 闲时引擎开关 ───────────────
     IDLE_ENGINE_ENABLED: bool = True
+
+    # ─────────────── Global Cache DB ───────────────
+    TURSO_CACHE_DB_URL: Optional[str] = None
+    TURSO_CACHE_AUTH_TOKEN: Optional[str] = None
+    CACHE_TIMEOUT_S: float = 3.0
+    GLOBAL_CACHE_ENABLED: bool = False
 
 
 _settings: Optional[Settings] = None
