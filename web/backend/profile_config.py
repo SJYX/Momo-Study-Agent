@@ -27,7 +27,10 @@ USER_SCOPED_KEYS = (
     "MOMO_TOKEN",
     "AI_PROVIDER",
     "MIMO_API_KEY",
+    "MIMO_API_BASE",
+    "MIMO_MODEL",
     "GEMINI_API_KEY",
+    "GEMINI_MODEL",
     "TURSO_DB_URL",
     "TURSO_AUTH_TOKEN",
     "TURSO_DB_HOSTNAME",
@@ -46,7 +49,10 @@ class ProfileConfig:
     momo_token: str = ""
     ai_provider: str = "mimo"
     gemini_api_key: str = ""
+    gemini_model: str = ""
     mimo_api_key: str = ""
+    mimo_api_base: str = ""
+    mimo_model: str = ""
     # 数据库路径
     db_path: str = ""
     test_db_path: str = ""
@@ -139,7 +145,10 @@ def load_profile_config(profile_name: str) -> ProfileConfig:
         momo_token=merged.get("MOMO_TOKEN", "") or "",
         ai_provider=(merged.get("AI_PROVIDER") or "mimo").strip().lower(),
         gemini_api_key=merged.get("GEMINI_API_KEY", "") or "",
+        gemini_model=merged.get("GEMINI_MODEL", "") or "",
         mimo_api_key=merged.get("MIMO_API_KEY", "") or "",
+        mimo_api_base=merged.get("MIMO_API_BASE", "") or "",
+        mimo_model=merged.get("MIMO_MODEL", "") or "",
         db_path=db_path,
         test_db_path=test_db_path,
         turso_db_url=merged.get("TURSO_DB_URL", "") or "",
