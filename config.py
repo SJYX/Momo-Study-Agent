@@ -106,6 +106,10 @@ TURSO_HUB_AUTH_TOKEN = os.getenv('TURSO_HUB_AUTH_TOKEN')
 # 全局 Turso 管理配置（用于创建用户数据库）
 TURSO_MGMT_TOKEN = os.getenv('TURSO_MGMT_TOKEN')
 TURSO_ORG_SLUG = os.getenv('TURSO_ORG_SLUG')
+# Global Cache DB (云端 AI 缓存池)
+TURSO_CACHE_DB_URL = os.getenv('TURSO_CACHE_DB_URL')
+TURSO_CACHE_AUTH_TOKEN = os.getenv('TURSO_CACHE_AUTH_TOKEN')
+CACHE_TIMEOUT_S = float(os.getenv('CACHE_TIMEOUT_S', '3.0'))
 TURSO_GROUP = os.getenv('TURSO_GROUP', '123')
 # 本地回退路径
 HUB_DB_PATH = os.path.join(DATA_DIR, "momo-users-hub.db")
@@ -143,6 +147,7 @@ def switch_user(username: str) -> str:
     """
     global ACTIVE_USER, MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY
     global AI_PROVIDER, DB_PATH, TEST_DB_PATH, TURSO_DB_URL, TURSO_AUTH_TOKEN
+    global TURSO_CACHE_DB_URL, TURSO_CACHE_AUTH_TOKEN  # NEW
 
     normalized, db_path, test_db_path = _switch_user_impl(
         username,
@@ -158,6 +163,8 @@ def switch_user(username: str) -> str:
     AI_PROVIDER = os.getenv("AI_PROVIDER", "mimo")
     TURSO_DB_URL = os.getenv("TURSO_DB_URL")
     TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+    TURSO_CACHE_DB_URL = os.getenv("TURSO_CACHE_DB_URL")
+    TURSO_CACHE_AUTH_TOKEN = os.getenv("TURSO_CACHE_AUTH_TOKEN")
     DB_PATH = db_path
     TEST_DB_PATH = test_db_path
 
