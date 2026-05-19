@@ -81,7 +81,7 @@ def _run_libsql_sync_pipeline(
                 return stats
             raise
 
-        if not hasattr(conn, "sync"):
+        if not (hasattr(conn, "sync") or hasattr(conn, "pull")):
             stats["status"] = "skipped"
             stats["reason"] = skip_reason_local_only
             _emit_sync_progress(progress_callback, "done", 1, 2, messages["local_only"], status="skipped")
@@ -102,9 +102,19 @@ def _run_libsql_sync_pipeline(
                     # 超时后释放锁会让 sync 与其他线程并发碰 libsql C 层（access violation）。
                     if conn_op_lock is not None:
                         with conn_op_lock:
-                            sync_result_box[0] = conn.sync()
+                            if hasattr(conn, "pull"):
+                                conn.push()
+                                conn.pull()
+                                sync_result_box[0] = True
+                            else:
+                                sync_result_box[0] = conn.sync()
                     else:
-                        sync_result_box[0] = conn.sync()
+                        if hasattr(conn, "pull"):
+                            conn.push()
+                            conn.pull()
+                            sync_result_box[0] = True
+                        else:
+                            sync_result_box[0] = conn.sync()
                 except Exception as e:
                     sync_err_box[0] = e
                 finally:
@@ -150,7 +160,7 @@ def sync_databases(
     from config import DB_PATH
 
     path = db_path or DB_PATH
-    creds_ok = bool(os.getenv("TURSO_DB_URL") and os.getenv("TURSO_AUTH_TOKEN") and connection.HAS_LIBSQL)
+    creds_ok = bool(os.getenv("TURSO_DB_URL") and os.getenv("TURSO_AUTH_TOKEN") and (connection.HAS_LIBSQL or connection.HAS_PYTURSO))
     if not (os.getenv("TURSO_DB_URL") and os.getenv("TURSO_AUTH_TOKEN")):
         creds_skip_reason = "missing-cloud-credentials"
     else:
@@ -188,7 +198,7 @@ def sync_hub_databases(
 ) -> Dict[str, Any]:
     hub_url = os.getenv("TURSO_HUB_DB_URL")
     hub_token = os.getenv("TURSO_HUB_AUTH_TOKEN")
-    creds_ok = bool(hub_url and hub_token and connection.HAS_LIBSQL)
+    creds_ok = bool(hub_url and hub_token and (connection.HAS_LIBSQL or connection.HAS_PYTURSO))
     creds_skip_reason = (
         "missing-hub-cloud-credentials"
         if not (hub_url and hub_token)
