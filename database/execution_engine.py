@@ -24,6 +24,7 @@ from database.connection import (
     HUB_DB_PATH,
 )
 from core.logger import get_logger
+from database.backends import get_active_backend
 
 # 内部状态
 _write_queue = queue.Queue(maxsize=10000)
@@ -301,8 +302,6 @@ def _sync_daemon() -> None:
 
         try:
             conn = _get_main_write_conn_singleton(do_sync=False)
-            if not (hasattr(conn, "sync") or hasattr(conn, "pull")):
-                continue
             conn_lock = _get_singleton_conn_op_lock(conn)
             sync_started_at = time.time()
             set_db_syncing(phase="idle_sync")
@@ -313,19 +312,9 @@ def _sync_daemon() -> None:
             # 触发 access violation (0xC0000005)。
             if conn_lock is not None:
                 with conn_lock:
-                    if hasattr(conn, "pull"):
-                        conn.push()
-                        conn.pull()
-                        conn.checkpoint()
-                    else:
-                        conn.sync()
+                    get_active_backend().do_sync_on(conn)
             else:
-                if hasattr(conn, "pull"):
-                    conn.push()
-                    conn.pull()
-                    conn.checkpoint()
-                else:
-                    conn.sync()
+                get_active_backend().do_sync_on(conn)
 
             _needs_sync = False
             clear_db_syncing()
