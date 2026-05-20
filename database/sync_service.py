@@ -105,6 +105,7 @@ def _run_libsql_sync_pipeline(
                             if hasattr(conn, "pull"):
                                 conn.push()
                                 conn.pull()
+                                conn.checkpoint()
                                 sync_result_box[0] = True
                             else:
                                 sync_result_box[0] = conn.sync()
@@ -112,6 +113,7 @@ def _run_libsql_sync_pipeline(
                         if hasattr(conn, "pull"):
                             conn.push()
                             conn.pull()
+                            conn.checkpoint()
                             sync_result_box[0] = True
                         else:
                             sync_result_box[0] = conn.sync()

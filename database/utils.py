@@ -419,12 +419,51 @@ def clean_for_maimemo(text: str) -> str:
     return s.strip()
 
 
+def _is_pyturso_db_missing_error(msg: str) -> bool:
+    """pyturso sync engine: local DB file missing or mismatched with metadata.
+
+    Indicates the .db file is gone/corrupt but pyturso sidecar metadata exists.
+    Triggers backup + cloud rebuild recovery path.
+    """
+    return "sync engine operation failed" in msg and (
+        "db file" in msg and ("doesn't exist" in msg or "does not exist" in msg or "doesn't exists" in msg or "doesnt exist" in msg)
+    )
+
+
+def _is_pyturso_db_corruption_error(msg: str) -> bool:
+    """pyturso sync engine: database pages are corrupt or unreadable.
+
+    Indicates the .db file exists but its content is malformed from the
+    sync engine's perspective (e.g. btree page corruption after a failed pull).
+
+    Excludes config errors like "remote_url is not available" which are
+    NOT corruption — they indicate missing connection config, not damaged data.
+    """
+    if "sync engine operation failed" not in msg:
+        return False
+    # Exclude config/setup errors (not corruption)
+    if "remote_url is not available" in msg:
+        return False
+    if "encryption" in msg and ("key" in msg or "cipher" in msg):
+        return False
+    return (
+        "not a database" in msg
+        or "malformed" in msg
+        or "corrupt" in msg
+        or "i/o error" in msg
+        or "io error" in msg
+        or "io processing error" in msg
+    )
+
+
 def _is_sqlite_malformed_error(error: Exception) -> bool:
     msg = str(error or "").lower()
     return (
         "database disk image is malformed" in msg
         or "file is not a database" in msg
         or "malformed" in msg
+        or _is_pyturso_db_missing_error(msg)
+        or _is_pyturso_db_corruption_error(msg)
     )
 
 
@@ -441,6 +480,11 @@ def _is_replica_metadata_missing_error(error: Exception) -> bool:
     msg = str(error or "").lower()
     return "db file exists but metadata file does not" in msg or (
         "local state is incorrect" in msg and "metadata" in msg
+    ) or (
+        # pyturso: DB file missing but sync metadata exists → needs rebuild
+        "sync engine operation failed" in msg
+        and "metadata" in msg
+        and ("doesn't exist" in msg or "does not exist" in msg or "doesn't exists" in msg or "doesnt exist" in msg or "incorrect" in msg)
     )
 
 

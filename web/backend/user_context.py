@@ -211,10 +211,9 @@ class UserContextManager:
 
     def _warmup_sync(self, ctx: UserContext) -> None:
         """阻塞段：DB schema 初始化 + 写连接单例 + 写并发系统启动。必须先于任何任务完成。"""
-        import time as _time
         from database.utils import _debug_log
         UserContextManager.prepare_for_task(ctx)
-        from database.connection import init_concurrent_system, _close_main_write_conn_singleton
+        from database.connection import init_concurrent_system
         from database.schema import init_db
 
         try:
@@ -230,17 +229,10 @@ class UserContextManager:
         except Exception as e:
             _debug_log(f"[_warmup_sync] 主库单例创建失败: {e}", level="WARNING", module="web.user_context")
 
-        # libsql 0.1.11 Windows 兼容：初始 pull 后关闭并重建连接。
-        # 初始 pull 留下的连接内部状态不稳定，并发访问会触发 access violation。
-        # 关闭后重新连接（此时 DB 已存在，跳过 pull）得到稳定连接。
-        try:
-            _debug_log("[_warmup_sync] 重建连接以绕过 libsql 初始 pull 不稳定问题", level="INFO")
-            _close_main_write_conn_singleton()
-            _time.sleep(0.5)
-            _get_main_write_conn_singleton(do_sync=False)
-            _debug_log("[_warmup_sync] 连接重建完成", level="INFO")
-        except Exception as e:
-            _debug_log(f"[_warmup_sync] 连接重建失败（忽略，使用原连接）: {e}", level="WARNING")
+        # pyturso 不需要 libsql 的 "重建连接" workaround。
+        # pyturso.sync.connect() 产生的连接状态稳定，关闭再重开会触发
+        # V007 误判格式（pyturso 的 .db-info 侧边文件被识别为 libsql ER），
+        # 导致数据库被删除重建，引发损坏。
 
         init_concurrent_system()
 
