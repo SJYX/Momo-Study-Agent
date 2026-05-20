@@ -204,8 +204,6 @@ class LibsqlBackend:
 
         _t0 = time.time()
         try:
-            if needs_initial_pull:
-                _debug_log(f"[{db_label}] 正在连接云端并执行 initial pull...", level="INFO", module="database.backends._libsql")
             conn = libsql.connect(
                 db_path,
                 sync_url=final_url,
@@ -279,11 +277,8 @@ class LibsqlBackend:
             finally:
                 _sync_elapsed = time.time() - _t1
                 _debug_log(f"[libsql] conn.sync() 完成 (耗时 {_sync_elapsed:.1f}s)", level="INFO", module="database.backends._libsql")
-                try:
-                    if clear_db_syncing is not None:
-                        clear_db_syncing()
-                except NameError:
-                    pass
+                if clear_db_syncing is not None:
+                    clear_db_syncing()
 
         return conn
 
