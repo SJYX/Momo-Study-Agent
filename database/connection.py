@@ -33,18 +33,16 @@ TURSO_HUB_DB_URL = _config.TURSO_HUB_DB_URL
 # 任何 database 子模块的全局；所有需要"当前用户 DB 路径"的位置都直接读
 # `_config.DB_PATH`（config 自己在 switch_user 时更新了模块级值）。
 
-try:
-    import libsql
+from database.backends import get_active_backend, HAS_LIBSQL, HAS_PYTURSO
 
-    HAS_LIBSQL = True
-except ImportError:
-    HAS_LIBSQL = False
+_backend = None  # Lazy init
 
-try:
-    import turso.sync
-    HAS_PYTURSO = True
-except ImportError:
-    HAS_PYTURSO = False
+
+def _get_backend():
+    global _backend
+    if _backend is None:
+        _backend = get_active_backend()
+    return _backend
 
 try:
     from core.logger import get_logger
@@ -231,323 +229,6 @@ def _resolve_conn_context(db_path: Optional[str] = None) -> Dict[str, Any]:
         "token": token,
         "force_cloud_mode": force_cloud_mode,
     }
-
-
-def _query_turso_db_size(url: str) -> int:
-    """查询 Turso 数据库总大小（字节）。失败返回 0（降级为绝对大小显示）。"""
-    try:
-        import requests
-    except ImportError:
-        return 0
-
-    api_token = os.getenv("TURSO_API_TOKEN", "")
-    org = os.getenv("TURSO_ORGANIZATION", "")
-    if not api_token:
-        return 0
-
-    # 从 URL 解析 db name: libsql://db-name-org.region.turso.io
-    host = url.replace("libsql://", "").replace("https://", "")
-    subdomain = host.split(".")[0]  # e.g. "history-asher-ashershi"
-
-    if not org:
-        # 尝试从 subdomain 提取 org（最后一个 - 后面的部分）
-        parts = subdomain.rsplit("-", 1)
-        if len(parts) == 2:
-            org = parts[1]
-        else:
-            return 0
-
-    # db name = subdomain 减去 "-{org}" 后缀
-    if subdomain.endswith(f"-{org}"):
-        db_name = subdomain[: -(len(org) + 1)]
-    else:
-        db_name = subdomain
-
-    try:
-        _debug_log(f"[_connect_embedded_replica] 正在查询云端数据库大小 (org={org}, db={db_name})…", level="INFO")
-        resp = requests.get(
-            f"https://api.turso.tech/v1/organizations/{org}/databases/{db_name}",
-            headers={"Authorization": f"Bearer {api_token}"},
-            timeout=10,
-        )
-        if not resp.ok:
-            _debug_log(f"[_connect_embedded_replica] Turso API 返回 {resp.status_code}，跳过大小查询", level="WARNING")
-            return 0
-
-        data = resp.json()
-        db_info = data.get("database", data)
-
-        # 灵活查找 size 相关字段
-        size = (
-            db_info.get("size")
-            or db_info.get("Size")
-            or db_info.get("size_bytes")
-            or db_info.get("db_size")
-            or 0
-        )
-        if not size:
-            usage = db_info.get("usage", db_info.get("Usage", {}))
-            if isinstance(usage, dict):
-                size = usage.get("storage_bytes") or usage.get("size") or 0
-
-        size = int(size)
-        if size > 0:
-            _debug_log(f"[_connect_embedded_replica] 云端数据库总大小: {size / 1024 / 1024:.1f} MB", level="INFO")
-        return size
-    except Exception as e:
-        _debug_log(f"[_connect_embedded_replica] 查询数据库大小失败（可忽略）: {e}", level="WARNING")
-        return 0
-
-
-def _start_pull_monitor(db_path: str, total_bytes: int) -> Optional[subprocess.Popen]:
-    """启动子进程监控初始 pull 下载进度。失败返回 None。"""
-    monitor_script = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "scripts", "_pull_monitor.py",
-    )
-    if not os.path.exists(monitor_script):
-        _debug_log("[_connect_embedded_replica] 监控脚本不存在，跳过进度显示", level="WARNING")
-        return None
-
-    try:
-        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-        proc = subprocess.Popen(
-            [sys.executable, monitor_script, db_path, str(total_bytes), str(os.getpid())],
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            env=env,
-        )
-        return proc
-    except Exception as e:
-        _debug_log(f"[_connect_embedded_replica] 启动监控子进程失败（可忽略）: {e}", level="WARNING")
-        return None
-
-
-def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool = False) -> Any:
-    """创建 Embedded Replica 连接。
-
-    如果本地 .db 文件不存在（例如自愈恢复后被删除），libsql.connect 会执行
-    初始 pull 从云端拉取完整数据，耗时取决于网络和库大小。
-    如果本地 .db 已存在且有对应 .db-info 元数据，则跳过初始 pull，连接瞬间完成。
-    """
-    if not HAS_LIBSQL:
-        raise RuntimeError("libsql is not available")
-
-    final_url = url.replace("libsql://", "https://")
-    _debug_log(f"[_connect_embedded_replica] db_path={db_path}, url={final_url[:50]}..., do_sync={do_sync}")
-
-    # 清理残留：如果 .db 不存在但 .db-info 残留，libsql 会报
-    # "db file exists but metadata file does not"。提前清理让 libsql 执行初始 pull。
-    has_existing_db = os.path.exists(db_path)
-    has_metadata = os.path.exists(db_path + "-info") if has_existing_db else False
-
-    if not has_existing_db:
-        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-        from database.utils import _cleanup_stale_sidecars
-        _cleanup_stale_sidecars(os.path.abspath(db_path))
-    elif not has_metadata:
-        # .db 存在但 .db-info 不存在：libsql 无法识别此文件为有效副本，
-        # 会跳过初始 pull 或报 "metadata file does not"。
-        # 无论 .db 大小，删除它让 libsql 从零开始拉取云端数据。
-        from database.utils import _cleanup_stale_sidecars
-        try:
-            db_size = os.path.getsize(db_path)
-        except OSError:
-            db_size = 0
-        _debug_log(
-            f"[_connect_embedded_replica] .db 文件存在 ({db_size} 字节) 但无元数据，"
-            f"删除后重新拉取云端数据",
-            level="WARNING",
-        )
-        try:
-            os.remove(db_path)
-            has_existing_db = False
-        except OSError:
-            pass
-        _cleanup_stale_sidecars(os.path.abspath(db_path))
-
-    needs_initial_pull = not has_existing_db or not has_metadata
-    monitor_proc = None
-
-    # 标记数据库类型，方便日志区分主库 vs Hub
-    db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
-
-    if needs_initial_pull:
-        total_size = _query_turso_db_size(url)
-        if total_size > 0:
-            _debug_log(
-                f"[{db_label}] 本地无有效副本（db={'存在' if has_existing_db else '不存在'}, "
-                f"metadata={'存在' if has_metadata else '不存在'}），正在连接云端并执行初始 pull…",
-                level="INFO",
-            )
-        else:
-            _debug_log(
-                f"[{db_label}] 本地无有效副本（db={'存在' if has_existing_db else '不存在'}, "
-                f"metadata={'存在' if has_metadata else '不存在'}），正在连接云端并执行初始 pull…"
-                f"（未配置 TURSO_API_TOKEN，仅显示绝对大小）",
-                level="INFO",
-            )
-        monitor_proc = _start_pull_monitor(db_path, total_size)
-    else:
-        _debug_log(f"[{db_label}] 本地已有副本，正在连接…", level="INFO")
-
-    _t0 = time.time()
-    try:
-        if needs_initial_pull:
-            _debug_log(f"[{db_label}] 正在连接云端并执行初始 pull…", level="INFO")
-        # _check_same_thread=False 必需：单例连接由多个线程通过 op_lock 串行访问
-        # （warmup_sync 创建 → _warmup_async 读 → _sync_daemon sync 等）。
-        # 默认 True 会让 libsql C 层在跨线程使用时触发 access violation (0xC0000005)。
-        # 应用层已用 _main_write_conn_op_lock(RLock) / _hub_write_conn_op_lock 保护并发。
-        conn = libsql.connect(
-            db_path,
-            sync_url=final_url,
-            auth_token=token,
-            timeout=30.0,
-            _check_same_thread=False,
-        )
-    except Exception as e:
-        _debug_log(
-            f"[{db_label}] libsql.connect 失败: {type(e).__name__}: {e}",
-            level="ERROR",
-        )
-        raise
-    finally:
-        # 无论成功失败，都要停止监控子进程
-        if monitor_proc is not None:
-            try:
-                monitor_proc.terminate()
-                monitor_proc.wait(timeout=3)
-            except Exception:
-                try:
-                    monitor_proc.kill()
-                except Exception:
-                    pass
-    _elapsed = time.time() - _t0
-
-    try:
-        final_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
-    except OSError:
-        final_size = 0
-
-    if needs_initial_pull:
-        _debug_log(
-            f"[{db_label}] 连接完成，本地 DB: {final_size / 1024 / 1024:.1f} MB (耗时 {_elapsed:.1f}s)",
-            level="INFO",
-        )
-    else:
-        _debug_log(f"[{db_label}] libsql.connect 返回成功 (耗时 {_elapsed:.1f}s)", level="INFO")
-
-    try:
-        conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-    except Exception as e:
-        _debug_log(f"Embedded Replica PRAGMA 配置失败（可忽略）: {e}", level="WARNING")
-
-    # 初始 pull 后的连接稳定化：WAL_CHECKPOINT(TRUNCATE) 将所有 WAL 条目
-    # 写入主数据库文件，确保 libsql C 层内部状态一致。
-    # Windows 上 libsql 0.1.11 在初始 pull 后不执行 checkpoint 会导致
-    # 后续并发访问时 access violation (0xC0000005)。
-    if needs_initial_pull:
-        try:
-            _debug_log(f"[{db_label}] 初始 pull 后执行 WAL CHECKPOINT 稳定化…", level="INFO")
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            _debug_log(f"[{db_label}] WAL CHECKPOINT 完成，连接已稳定", level="INFO")
-        except Exception as e:
-            _debug_log(f"[{db_label}] WAL CHECKPOINT 失败（可忽略）: {e}", level="WARNING")
-
-    if do_sync and hasattr(conn, "sync"):
-        try:
-            from database.execution_engine import set_db_syncing, clear_db_syncing
-            set_db_syncing(phase="initial_sync")
-        except ImportError:
-            pass
-        _debug_log("[_connect_embedded_replica] 执行 conn.sync()...")
-        _t1 = time.time()
-        try:
-            conn.sync()
-        finally:
-            _sync_elapsed = time.time() - _t1
-            _debug_log(f"[_connect_embedded_replica] conn.sync() 完成 (耗时 {_sync_elapsed:.1f}s)", level="INFO")
-            try:
-                clear_db_syncing()
-            except ImportError:
-                pass
-    return conn
-
-
-def _connect_turso_sync(db_path: str, url: str, token: str, do_sync: bool = False) -> Any:
-    """Create pyturso Turso Sync connection (replaces _connect_embedded_replica).
-
-    Lifecycle per official Turso Sync docs:
-      1. V007 format migration (before pyturso opens the file)
-      2. turso.sync.connect() — auto-bootstraps from remote when local db is empty
-         (bootstrap_if_empty=True default; NO explicit pull needed after connect)
-      3. For existing databases: pull() to fetch latest remote changes
-      4. If do_sync: push → pull → checkpoint (full sync cycle)
-
-    The returned db object has: .execute(), .pull(), .push(), .checkpoint(), .close()
-    """
-    if not HAS_PYTURSO:
-        raise RuntimeError("pyturso is not available")
-
-    final_url = url.replace("libsql://", "https://")
-    _debug_log(f"[_connect_turso_sync] db_path={db_path}, url={final_url[:50]}...")
-
-    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-
-    db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
-
-    # ── Step 1: V007 format migration (before pyturso opens the file) ──
-    try:
-        from database.migrations.V007_migrate_db_format import pre_connect_migrate
-        pre_connect_migrate(db_path)
-    except Exception as e:
-        _debug_log(f"[{db_label}] V007: 格式迁移失败（非致命，继续尝试连接）: {e}", level="WARNING")
-
-    # Track whether db file exists BEFORE connect — determines if bootstrap runs.
-    # bootstrap_if_empty=True (default): only bootstraps when local db is EMPTY.
-    # If file already exists, connect skips bootstrap and we must pull explicitly.
-    db_existed_before = os.path.exists(db_path)
-
-    # ── Step 2: Create pyturso sync connection ──
-    # Official docs: "On the first run, the local database is automatically
-    # bootstrapped from the remote." No explicit pull needed after connect.
-    _t0 = time.time()
-    db = turso.sync.connect(
-        db_path,
-        remote_url=final_url,
-        auth_token=token,
-    )
-    _elapsed = time.time() - _t0
-    _debug_log(f"[{db_label}] turso.sync.connect 完成 (耗时 {_elapsed:.1f}s)", level="INFO")
-
-    try:
-        db.execute("PRAGMA busy_timeout=30000;")
-        db.execute("PRAGMA synchronous=NORMAL;")
-    except Exception as e:
-        _debug_log(f"pyturso PRAGMA 配置失败（可忽略）: {e}", level="WARNING")
-
-    # ── Step 3: Pull for existing databases (bootstrap already handled new ones) ──
-    if db_existed_before and not do_sync:
-        try:
-            _debug_log(f"[{db_label}] 数据库已存在，pull 远端最新变更…", level="INFO")
-            changed = db.pull()
-            _debug_log(f"[{db_label}] pull 完成 (changed={changed})", level="INFO")
-        except Exception as e:
-            _debug_log(f"[{db_label}] pull 失败（非致命）: {e}", level="WARNING")
-
-    # ── Step 4: Full sync cycle if requested ──
-    if do_sync:
-        try:
-            db.push()
-            db.pull()
-            db.checkpoint()
-            _debug_log(f"[{db_label}] 同步完成 (push→pull→checkpoint)", level="INFO")
-        except Exception as e:
-            _debug_log(f"[{db_label}] 同步失败: {e}", level="WARNING")
-
-    return db
 
 
 def _close_main_write_conn_singleton() -> None:
@@ -741,12 +422,7 @@ def _get_main_write_conn_singleton(
                     conn.execute("SELECT 1")
                     _main_write_conn_last_check = now
                 if do_sync:
-                    if hasattr(conn, "sync"):
-                        conn.sync()  # libsql ER
-                    elif hasattr(conn, "pull"):
-                        conn.push()
-                        conn.pull()
-                        conn.checkpoint()  # pyturso
+                    _get_backend().do_sync_on(conn)
         except BaseException as health_error:
             _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _main_write_conn_lock:
@@ -776,10 +452,7 @@ def _get_main_write_conn_singleton(
                     if attempt > 0:
                         _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
                     try:
-                        if HAS_PYTURSO:
-                            conn = _connect_turso_sync(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
-                        else:
-                            conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+                        conn = _get_backend().connect(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
                         with _main_write_conn_lock:
                             _main_write_conn_singleton = conn
                             _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
@@ -820,12 +493,7 @@ def _get_hub_write_conn_singleton(
             with _hub_write_conn_op_lock:
                 conn.execute("SELECT 1")
                 if do_sync:
-                    if hasattr(conn, "sync"):
-                        conn.sync()
-                    elif hasattr(conn, "pull"):
-                        conn.push()
-                        conn.pull()
-                        conn.checkpoint()
+                    _get_backend().do_sync_on(conn)
         except BaseException as health_error:
             _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _hub_write_conn_lock:
@@ -849,11 +517,8 @@ def _get_hub_write_conn_singleton(
                 for attempt in range(max_retries):
                     try:
                         _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
-                        if HAS_PYTURSO:
-                            conn = _connect_turso_sync(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
-                        else:
-                            conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
-                        _debug_log("[_get_hub_write_conn_singleton] _connect_embedded_replica 返回成功")
+                        conn = _get_backend().connect(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+                        _debug_log("[_get_hub_write_conn_singleton] backend.connect 返回成功")
                         with _hub_write_conn_lock:
                             _hub_write_conn_singleton = conn
                             _debug_log("Hub Embedded Replica 写连接单例已创建", level="INFO")
@@ -975,10 +640,7 @@ def _get_conn(
         last_error = None
         for attempt in range(max_retries):
             try:
-                if HAS_PYTURSO:
-                    conn = _connect_turso_sync(db_path, ctx["url"], ctx["token"], do_sync=do_sync)
-                else:
-                    conn = _connect_embedded_replica(db_path, ctx["url"], ctx["token"], do_sync=do_sync)
+                conn = _get_backend().connect(db_path, ctx["url"], ctx["token"], do_sync=do_sync)
                 return _wrap_and_track_connection(db_path, conn, False)
             except Exception as e:
                 last_error = e
@@ -1011,9 +673,7 @@ def _get_cloud_conn(url: str, token: str, db_path: str = None, max_retries: int 
     last_error = None
     for attempt in range(max_retries):
         try:
-            if HAS_PYTURSO:
-                return _connect_turso_sync(local_path, url, token, do_sync=True)
-            return _connect_embedded_replica(local_path, url, token, do_sync=True)
+            return _get_backend().connect(local_path, url, token, do_sync=True)
         except Exception as e:
             last_error = e
             if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
