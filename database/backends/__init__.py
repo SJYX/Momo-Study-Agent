@@ -15,10 +15,14 @@ except ImportError:
 
 
 def get_active_backend() -> TursoBackend:
+    from database.utils import _debug_log
+
     if HAS_PYTURSO:
+        _debug_log("Backend: pyturso (turso.sync)", level="INFO", module="database.backends")
         from ._pyturso import PytursoBackend
         return PytursoBackend()
     if HAS_LIBSQL:
+        _debug_log("Backend: libsql (embedded replica)", level="INFO", module="database.backends")
         from ._libsql import LibsqlBackend
         return LibsqlBackend()
     raise RuntimeError("Neither pyturso nor libsql is available")

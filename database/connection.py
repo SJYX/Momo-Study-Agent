@@ -246,7 +246,7 @@ def _close_main_write_conn_singleton() -> None:
 
     try:
         conn.close()
-        _debug_log("主库 Embedded Replica 写连接单例已关闭", level="INFO")
+        _debug_log(f"主库 {_get_backend().name} 写连接单例已关闭", level="INFO")
     except Exception as e:
         _debug_log(f"关闭主库写连接单例失败: {e}", level="WARNING")
 
@@ -262,7 +262,7 @@ def _close_hub_write_conn_singleton() -> None:
 
     try:
         conn.close()
-        _debug_log("Hub Embedded Replica 写连接单例已关闭", level="INFO")
+        _debug_log(f"Hub {_get_backend().name} 写连接单例已关闭", level="INFO")
     except Exception as e:
         _debug_log(f"关闭 Hub 写连接单例失败: {e}", level="WARNING")
 
@@ -459,7 +459,7 @@ def _get_main_write_conn_singleton(
                         with _main_write_conn_lock:
                             _main_write_conn_singleton = conn
                             _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
-                            _debug_log(f"主库 Embedded Replica 写连接单例已创建 ({_main_write_conn_singleton_path})", level="INFO")
+                            _debug_log(f"主库 {_get_backend().name} 写连接单例已创建 ({_main_write_conn_singleton_path})", level="INFO")
                         break
                     except Exception as e:
                         last_error = e
@@ -471,7 +471,7 @@ def _get_main_write_conn_singleton(
                         break
                 
                 if conn is None:
-                    raise last_error or RuntimeError("无法创建主库 Embedded Replica 写连接单例")
+                    raise last_error or RuntimeError(f"无法创建主库 {_get_backend().name} 写连接单例")
 
     return conn
 
@@ -524,7 +524,7 @@ def _get_hub_write_conn_singleton(
                         _debug_log("[_get_hub_write_conn_singleton] backend.connect 返回成功")
                         with _hub_write_conn_lock:
                             _hub_write_conn_singleton = conn
-                            _debug_log("Hub Embedded Replica 写连接单例已创建", level="INFO")
+                            _debug_log(f"Hub {_get_backend().name} 写连接单例已创建", level="INFO")
                         break
                     except Exception as e:
                         last_error = e
@@ -537,7 +537,7 @@ def _get_hub_write_conn_singleton(
                         break
                 
                 if conn is None:
-                    raise last_error or RuntimeError("无法创建 Hub Embedded Replica 写连接单例")
+                    raise last_error or RuntimeError(f"无法创建 Hub {_get_backend().name} 写连接单例")
 
     return conn
 
@@ -606,7 +606,7 @@ def _get_read_conn_impl(
             except Exception as e:
                 last_error = e
                 if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                    _backup_broken_database_file(db_path, "Embedded Replica 本地状态损坏，已备份并重试")
+                    _backup_broken_database_file(db_path, f"{_get_backend().name} 副本本地状态损坏，已备份并重试")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
@@ -648,7 +648,7 @@ def _get_conn(
             except Exception as e:
                 last_error = e
                 if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                    _backup_broken_database_file(db_path, "Embedded Replica 本地状态损坏，已备份并重试")
+                    _backup_broken_database_file(db_path, f"{_get_backend().name} 副本本地状态损坏，已备份并重试")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
@@ -680,7 +680,7 @@ def _get_cloud_conn(url: str, token: str, db_path: str = None, max_retries: int 
         except Exception as e:
             last_error = e
             if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                _backup_broken_database_file(local_path, "Embedded Replica 状态损坏，已备份后重试")
+                _backup_broken_database_file(local_path, f"{_get_backend().name} 副本状态损坏，已备份后重试")
             if attempt < max_retries - 1:
                 time.sleep(0.5)
                 continue

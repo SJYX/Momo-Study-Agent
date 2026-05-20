@@ -68,6 +68,11 @@ class PytursoBackend:
 
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
+        # 清理残留 sidecar（.db 不存在时），防止 V007 格式检测误判
+        if not os.path.exists(db_path):
+            from database.utils import _cleanup_stale_sidecars
+            _cleanup_stale_sidecars(os.path.abspath(db_path))
+
         db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
 
         # ── Step 1: V007 format migration (before pyturso opens the file) ──

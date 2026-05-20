@@ -146,7 +146,7 @@ def _create_tables(cur: Any, skip_migrations: bool = False) -> None:
         "word_ratings TEXT, raw_full_text TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, "
         "batch_id TEXT, original_meanings TEXT, maimemo_context TEXT, content_origin TEXT, content_source_db TEXT, "
         "content_source_scope TEXT, it_level INTEGER DEFAULT 0, it_history TEXT, sync_status INTEGER DEFAULT 0, "
-        "match_confidence REAL, match_reason TEXT, last_synced_content TEXT, "
+        "match_confidence REAL, match_reason TEXT, last_synced_content TEXT, is_customized INTEGER DEFAULT 0, "
         "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
     cur.execute(
@@ -265,12 +265,12 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
             marker_exists = _is_db_initialized("main", main_fp)
 
             cloud_start = time.time()
-            _debug_log("[init_db] 正在获取云端写连接...", module="database.schema")
+            _debug_log(f"[init_db] 正在获取云端写连接 (is_main_db={is_main_db})...", level="INFO", module="database.schema")
             if is_main_db:
                 cc = connection._get_main_write_conn_singleton(do_sync=False)
             else:
                 cc = connection._get_conn(path, do_sync=False)
-            _debug_log("云端数据库连接完成", start_time=cloud_start, module="database.schema")
+            _debug_log(f"[init_db] 云端数据库连接完成 (type={type(cc).__name__})", start_time=cloud_start, level="INFO", module="database.schema")
 
             if marker_exists:
                 _debug_log("云端数据库已初始化（通过标记文件），跳过建表检查", module="database.schema")

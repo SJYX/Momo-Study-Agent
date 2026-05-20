@@ -321,3 +321,96 @@ def test_non_wal_conflict_still_raises(monkeypatch):
 
     with pytest.raises(MigrationError, match="disk I/O error"):
         runner_mod.apply_migrations(wrapped)
+
+
+# ── Schema 完整性校验 + 自愈 ────────────────────────────────────
+
+
+def test_validate_schema_integrity_passes_when_columns_exist():
+    """is_customized 列存在 → 校验通过。"""
+    from database.migrations.runner import _validate_schema_integrity
+
+    conn = _fresh_db()
+    _setup_skeleton(conn)
+    # 所有迁移跑完后，is_customized 应存在
+    apply_migrations(conn)
+
+    cur = conn.cursor()
+    assert _validate_schema_integrity(cur, 7) is True
+
+
+def test_validate_schema_integrity_fails_when_column_missing():
+    """schema_version=7 但 is_customized 列不存在 → 校验失败。"""
+    from database.migrations.runner import _validate_schema_integrity
+
+    conn = _fresh_db()
+    cur = conn.cursor()
+
+    # 创建不含 is_customized 的表（模拟远端脏状态）
+    cur.execute(
+        "CREATE TABLE ai_word_notes ("
+        "voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, "
+        "sync_status INTEGER DEFAULT 0, updated_at TIMESTAMP)"
+    )
+    # 脏写 schema_version=7
+    cur.execute(
+        "INSERT INTO system_config (key, value, updated_at) "
+        "VALUES ('schema_version', '7', CURRENT_TIMESTAMP)"
+    )
+    conn.commit()
+
+    assert _validate_schema_integrity(cur, 7) is False
+
+
+def test_validate_schema_integrity_skips_when_version_below_5():
+    """schema_version < 5 → 不检查 is_customized（V005 才引入）。"""
+    from database.migrations.runner import _validate_schema_integrity
+
+    conn = _fresh_db()
+    cur = conn.cursor()
+    # 没有 ai_word_notes 表也没关系——v3 不检查
+    assert _validate_schema_integrity(cur, 3) is True
+
+
+def test_self_healing_resets_dirty_schema_version():
+    """远端脏写 schema_version=7 但缺 is_customized → runner 自愈重跑迁移。
+
+    模拟场景：
+    1. 远端有 system_config(schema_version=7) + 老表（缺 is_customized）
+    2. bootstrap 拉到这个状态
+    3. runner 检测到不一致 → reset → 重跑 V001~V007
+    4. is_customized 被 V005 添加
+    """
+    conn = _fresh_db()
+    cur = conn.cursor()
+
+    # 创建老骨架（缺 is_customized，模拟远端 bootstrap 的状态）
+    cur.execute("CREATE TABLE processed_words (voc_id TEXT PRIMARY KEY, spelling TEXT)")
+    cur.execute(
+        "CREATE TABLE ai_word_notes ("
+        "voc_id TEXT PRIMARY KEY, spelling TEXT, basic_meanings TEXT, batch_id TEXT, "
+        "it_level INTEGER DEFAULT 0, it_history TEXT, prompt_tokens INTEGER DEFAULT 0, "
+        "completion_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, "
+        "original_meanings TEXT, maimemo_context TEXT, content_origin TEXT, "
+        "content_source_db TEXT, content_source_scope TEXT, raw_full_text TEXT, "
+        "word_ratings TEXT, sync_status INTEGER DEFAULT 0, updated_at TIMESTAMP)"
+    )
+    # 脏写 schema_version=7（模拟远端被旧 V007 bug 污染）
+    cur.execute(
+        "INSERT INTO system_config (key, value, updated_at) "
+        "VALUES ('schema_version', '7', CURRENT_TIMESTAMP)"
+    )
+    conn.commit()
+
+    # runner 应自愈：检测到缺列 → reset → 重跑
+    start, end = apply_migrations(conn)
+    assert start == 0, f"Expected reset to v0, got v{start}"
+    assert end == 7
+
+    # 验证 is_customized 已被 V005 添加
+    cur.execute("PRAGMA table_info(ai_word_notes)")
+    cols = {row[1] for row in cur.fetchall()}
+    assert "is_customized" in cols, "is_customized should be added after self-heal"
+
+    # 版本号应为 7
+    assert _schema_version(conn) == 7

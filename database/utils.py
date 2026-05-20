@@ -559,6 +559,11 @@ def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional
                         level="WARNING",
                     )
                 if not removed_source:
+                    # .db 仍存在（被占用），不能删 sidecar——pyturso 仍依赖它们
+                    _debug_log(
+                        f"源文件仍存在，跳过 sidecar 清理: {abs_path}",
+                        level="WARNING",
+                    )
                     return None
             except Exception as copy_error:
                 if last_error:
@@ -566,13 +571,14 @@ def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional
                 _debug_log(f"备份损坏数据库失败: {copy_error}", level="WARNING")
                 return None
 
-        # .db 已移走，必须同时清理 sidecar——否则 libsql 读到旧元数据
+        # .db 已移走，必须同时清理 sidecar——否则 pyturso/libsql 读到旧元数据
         # 会跳过云端 pull，导致重建的空 .db 被当作"已同步"。
         _cleanup_stale_sidecars(abs_path)
 
         _debug_log(
             f"{warning_message}: {backup_path}",
-            level="WARNING",
+            level="INFO",
+            module="database.utils",
         )
         return backup_path
     except Exception as backup_error:

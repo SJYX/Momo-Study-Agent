@@ -90,6 +90,27 @@ def _is_wal_conflict(error: Exception) -> bool:
     return "walconflict" in msg or "wal frame insert conflict" in msg
 
 
+def _validate_schema_integrity(cur: Any, current_version: int) -> bool:
+    """检查 schema 实际状态是否与版本号声称的一致。
+
+    场景：远端 system_config 的 schema_version 被旧 bug 脏写（如 V007 的
+    _preinit_schema 设了 v7 但未创建 is_customized 列），bootstrap 拉到脏版本后
+    migration runner 盲目跳过，导致关键列缺失。
+
+    返回 True = 完整，False = 需要重置版本重新跑迁移。
+    """
+    # V005 引入 is_customized 列——如果版本号 >= 5 但列不存在，说明状态被污染
+    if current_version >= 5:
+        try:
+            cur.execute("PRAGMA table_info(ai_word_notes)")
+            columns = {row[1] for row in (cur.fetchall() or [])}
+            if "is_customized" not in columns:
+                return False
+        except Exception:
+            return False
+    return True
+
+
 # ── 迁移发现与加载 ─────────────────────────────────────────────
 
 
@@ -165,7 +186,23 @@ def apply_migrations(
         _t_ver = time.time()
         start = _read_schema_version(cur)
         target = target_version()
-        _debug_log(f"[迁移] 当前版本 v{start}，目标版本 v{target}", start_time=_t_ver, level="INFO", module="database.migrations")
+        _debug_log(f"[迁移] DB 当前版本 v{start}，目标版本 v{target}", start_time=_t_ver, level="INFO", module="database.migrations")
+
+        # 完整性检查：版本号可能被旧 bug 脏写（如 V007 _preinit_schema），
+        # 远端 bootstrap 拉到 schema_version=7 但表缺关键列。
+        if start > 0 and not _validate_schema_integrity(cur, start):
+            _debug_log(
+                f"[迁移] schema_version=v{start} 但关键列缺失——版本号被脏写，重置为 v0 重新跑迁移",
+                level="WARNING",
+                module="database.migrations",
+            )
+            try:
+                _write_schema_version(cur, conn, 0)
+            except Exception:
+                pass
+            start = _read_schema_version(cur)
+            _debug_log(f"[迁移] 重置后版本 v{start}，目标 v{target}", level="INFO", module="database.migrations")
+
         if start >= target:
             _debug_log(f"[迁移] v{start} 已是最新，跳过", module="database.migrations")
             return start, start

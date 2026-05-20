@@ -307,6 +307,8 @@ class UserContextManager:
 
         因为 database 模块使用模块级 DB_PATH 或直接读 config.DB_PATH，
         此方法确保任务执行期间读写的是正确的 profile 数据库。
+        同时注入 profile 级 Turso 凭据到 os.environ 和模块级变量，
+        因为 database/connection.py 的 _resolve_conn_context() 从 os.getenv() 读取。
         """
         try:
             import config as _cfg
@@ -323,6 +325,22 @@ class UserContextManager:
             _db_momo.DB_PATH = ctx.db_path
         except Exception:
             pass
+        # 注入 profile 级 Turso 凭据到 os.environ + 模块级变量
+        if ctx.turso_db_url:
+            try:
+                import os
+                os.environ["TURSO_DB_URL"] = ctx.turso_db_url
+                if ctx.turso_auth_token:
+                    os.environ["TURSO_AUTH_TOKEN"] = ctx.turso_auth_token
+                import database.connection as _db_conn2
+                _db_conn2.set_runtime_cloud_credentials(
+                    ctx.turso_db_url, ctx.turso_auth_token
+                )
+                import config as _cfg2
+                _cfg2.TURSO_DB_URL = ctx.turso_db_url
+                _cfg2.TURSO_AUTH_TOKEN = ctx.turso_auth_token
+            except Exception:
+                pass
 
     @staticmethod
     def _cleanup_context(ctx: UserContext) -> None:
