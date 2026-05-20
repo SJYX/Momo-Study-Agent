@@ -16,6 +16,8 @@ from typing import Any, Dict, Optional
 
 from database.cache_client import CacheNetworkError, GlobalCacheClient
 
+MAX_LLM_RETRIES = 3
+
 
 @dataclass
 class LookupResult:
@@ -35,6 +37,8 @@ class WordLookup:
         self.ai_client = ai_client
         self.cache_client = cache_client
         self.db_path = db_path
+        self.cache_write_worker = None  # injected externally
+        self._llm_fail_counts: Dict[str, int] = {}  # spelling → consecutive fail count
 
     def lookup(self, spelling: str, prompt_version: str, ai_provider: str) -> LookupResult:
         """3-level lookup. CacheNetworkError and APIError propagate upward."""
@@ -53,14 +57,25 @@ class WordLookup:
                 self._upsert_local(cached_note, prompt_version, ai_provider)
                 return LookupResult(note=cached_note, source="cache")
 
-        # Level 3: AI API
-        ai_note = self._call_ai([spelling], prompt_version, ai_provider)
+        # Level 3: AI API (with retry limit)
+        fail_count = self._llm_fail_counts.get(spelling, 0)
+        if fail_count >= MAX_LLM_RETRIES:
+            from core.exceptions import APIError
+            raise APIError(f"LLM retry limit ({MAX_LLM_RETRIES}) reached for '{spelling}'")
+
+        try:
+            ai_note = self._call_ai([spelling], prompt_version, ai_provider)
+        except Exception:
+            self._llm_fail_counts[spelling] = fail_count + 1
+            raise
+
         if ai_note:
             self._save_local(ai_note, prompt_version, ai_provider)
             self._write_cache_async(ai_note, prompt_version, ai_provider)
+            # Success — reset retry count
+            self._llm_fail_counts.pop(spelling, None)
             return LookupResult(note=ai_note, source="ai")
 
-        # Should not reach here — AI returns something or raises
         raise RuntimeError(f"WordLookup: all levels exhausted for '{spelling}'")
 
     def _find_local(self, spelling: str, prompt_version: str, ai_provider: str) -> Optional[Dict[str, Any]]:
@@ -172,16 +187,14 @@ class WordLookup:
             self.logger.warning(f"AI result local save failed: {e}")
 
     def _write_cache_async(self, note: Dict[str, Any], prompt_version: str, ai_provider: str) -> None:
-        """Fire-and-forget write to Global_Cache_DB."""
+        """Fire-and-forget write to Global_Cache_DB via CacheWriteWorker."""
         if not self.cache_client:
             return
-        try:
-            import threading
-            t = threading.Thread(
-                target=self.cache_client.write,
-                args=(note, prompt_version, ai_provider),
-                daemon=True,
-            )
-            t.start()
-        except Exception as e:
-            self.logger.warning(f"Cache async write thread failed: {e}")
+        if self.cache_write_worker:
+            self.cache_write_worker.submit(note, prompt_version, ai_provider)
+        else:
+            # Fallback: direct write (should not happen in production)
+            try:
+                self.cache_client.write(note, prompt_version, ai_provider)
+            except Exception as e:
+                self.logger.warning(f"Cache write fallback failed: {e}")

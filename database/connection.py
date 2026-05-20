@@ -41,6 +41,12 @@ except ImportError:
     HAS_LIBSQL = False
 
 try:
+    import turso.sync
+    HAS_PYTURSO = True
+except ImportError:
+    HAS_PYTURSO = False
+
+try:
     from core.logger import get_logger
 except ImportError:
     try:
@@ -61,12 +67,35 @@ try:
     )
 except Exception:
 
+    def _is_pyturso_db_missing_error(msg: str) -> bool:
+        return "sync engine operation failed" in msg and (
+            "db file" in msg and ("doesn't exist" in msg or "does not exist" in msg or "doesn't exists" in msg or "doesnt exist" in msg)
+        )
+
+    def _is_pyturso_db_corruption_error(msg: str) -> bool:
+        if "sync engine operation failed" not in msg:
+            return False
+        if "remote_url is not available" in msg:
+            return False
+        if "encryption" in msg and ("key" in msg or "cipher" in msg):
+            return False
+        return (
+            "not a database" in msg
+            or "malformed" in msg
+            or "corrupt" in msg
+            or "i/o error" in msg
+            or "io error" in msg
+            or "io processing error" in msg
+        )
+
     def _is_sqlite_malformed_error(error: Exception) -> bool:
         msg = str(error or "").lower()
         return (
             "database disk image is malformed" in msg
             or "file is not a database" in msg
             or "malformed" in msg
+            or _is_pyturso_db_missing_error(msg)
+            or _is_pyturso_db_corruption_error(msg)
         )
 
     def _is_sqlite_data_corruption_error(error: Exception) -> bool:
@@ -164,6 +193,10 @@ def _is_replica_metadata_missing_error(error: Exception) -> bool:
     msg = str(error or "").lower()
     return "db file exists but metadata file does not" in msg or (
         "local state is incorrect" in msg and "metadata" in msg
+    ) or (
+        "sync engine operation failed" in msg
+        and "metadata" in msg
+        and ("doesn't exist" in msg or "does not exist" in msg or "doesn't exists" in msg or "doesnt exist" in msg or "incorrect" in msg)
     )
 
 
@@ -443,6 +476,80 @@ def _connect_embedded_replica(db_path: str, url: str, token: str, do_sync: bool 
     return conn
 
 
+def _connect_turso_sync(db_path: str, url: str, token: str, do_sync: bool = False) -> Any:
+    """Create pyturso Turso Sync connection (replaces _connect_embedded_replica).
+
+    Lifecycle per official Turso Sync docs:
+      1. V007 format migration (before pyturso opens the file)
+      2. turso.sync.connect() — auto-bootstraps from remote when local db is empty
+         (bootstrap_if_empty=True default; NO explicit pull needed after connect)
+      3. For existing databases: pull() to fetch latest remote changes
+      4. If do_sync: push → pull → checkpoint (full sync cycle)
+
+    The returned db object has: .execute(), .pull(), .push(), .checkpoint(), .close()
+    """
+    if not HAS_PYTURSO:
+        raise RuntimeError("pyturso is not available")
+
+    final_url = url.replace("libsql://", "https://")
+    _debug_log(f"[_connect_turso_sync] db_path={db_path}, url={final_url[:50]}...")
+
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+
+    db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
+
+    # ── Step 1: V007 format migration (before pyturso opens the file) ──
+    try:
+        from database.migrations.V007_migrate_db_format import pre_connect_migrate
+        pre_connect_migrate(db_path)
+    except Exception as e:
+        _debug_log(f"[{db_label}] V007: 格式迁移失败（非致命，继续尝试连接）: {e}", level="WARNING")
+
+    # Track whether db file exists BEFORE connect — determines if bootstrap runs.
+    # bootstrap_if_empty=True (default): only bootstraps when local db is EMPTY.
+    # If file already exists, connect skips bootstrap and we must pull explicitly.
+    db_existed_before = os.path.exists(db_path)
+
+    # ── Step 2: Create pyturso sync connection ──
+    # Official docs: "On the first run, the local database is automatically
+    # bootstrapped from the remote." No explicit pull needed after connect.
+    _t0 = time.time()
+    db = turso.sync.connect(
+        db_path,
+        remote_url=final_url,
+        auth_token=token,
+    )
+    _elapsed = time.time() - _t0
+    _debug_log(f"[{db_label}] turso.sync.connect 完成 (耗时 {_elapsed:.1f}s)", level="INFO")
+
+    try:
+        db.execute("PRAGMA busy_timeout=30000;")
+        db.execute("PRAGMA synchronous=NORMAL;")
+    except Exception as e:
+        _debug_log(f"pyturso PRAGMA 配置失败（可忽略）: {e}", level="WARNING")
+
+    # ── Step 3: Pull for existing databases (bootstrap already handled new ones) ──
+    if db_existed_before and not do_sync:
+        try:
+            _debug_log(f"[{db_label}] 数据库已存在，pull 远端最新变更…", level="INFO")
+            changed = db.pull()
+            _debug_log(f"[{db_label}] pull 完成 (changed={changed})", level="INFO")
+        except Exception as e:
+            _debug_log(f"[{db_label}] pull 失败（非致命）: {e}", level="WARNING")
+
+    # ── Step 4: Full sync cycle if requested ──
+    if do_sync:
+        try:
+            db.push()
+            db.pull()
+            db.checkpoint()
+            _debug_log(f"[{db_label}] 同步完成 (push→pull→checkpoint)", level="INFO")
+        except Exception as e:
+            _debug_log(f"[{db_label}] 同步失败: {e}", level="WARNING")
+
+    return db
+
+
 def _close_main_write_conn_singleton() -> None:
     global _main_write_conn_singleton, _main_write_conn_singleton_path
     with _main_write_conn_lock:
@@ -542,7 +649,7 @@ def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
             raise
 
         ctx = _resolve_conn_context(path)
-        if HAS_LIBSQL and ctx.get("url") and ctx.get("token"):
+        if (HAS_LIBSQL or HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
             try:
                 _debug_log(f"本地数据库损坏后，尝试通过云端副本重建: {path}", level="WARNING")
                 return _get_conn(path, allow_local_fallback=False)
@@ -584,7 +691,7 @@ def _get_hub_local_conn() -> sqlite3.Connection:
         if not backup_path:
             raise
 
-        if HAS_LIBSQL and TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN:
+        if (HAS_LIBSQL or HAS_PYTURSO) and TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN:
             try:
                 _debug_log(f"Hub 本地数据库损坏后，尝试通过云端副本重建: {path}", level="WARNING")
                 return _get_hub_write_conn_singleton(do_sync=True)
@@ -633,8 +740,13 @@ def _get_main_write_conn_singleton(
                 if now - _main_write_conn_last_check > 1.0:
                     conn.execute("SELECT 1")
                     _main_write_conn_last_check = now
-                if do_sync and hasattr(conn, "sync"):
-                    conn.sync()
+                if do_sync:
+                    if hasattr(conn, "sync"):
+                        conn.sync()  # libsql ER
+                    elif hasattr(conn, "pull"):
+                        conn.push()
+                        conn.pull()
+                        conn.checkpoint()  # pyturso
         except BaseException as health_error:
             _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _main_write_conn_lock:
@@ -656,7 +768,7 @@ def _get_main_write_conn_singleton(
             
             if conn is None:
                 ctx = _resolve_conn_context(_config.DB_PATH)
-                if not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL):
+                if not (ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO)):
                     return _get_local_conn(_config.DB_PATH)
 
                 last_error = None
@@ -664,7 +776,10 @@ def _get_main_write_conn_singleton(
                     if attempt > 0:
                         _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
                     try:
-                        conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+                        if HAS_PYTURSO:
+                            conn = _connect_turso_sync(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+                        else:
+                            conn = _connect_embedded_replica(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
                         with _main_write_conn_lock:
                             _main_write_conn_singleton = conn
                             _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
@@ -692,7 +807,7 @@ def _get_hub_write_conn_singleton(
 ) -> Any:
     global _hub_write_conn_singleton
 
-    if not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL):
+    if not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO)):
         return _get_hub_local_conn()
 
     # 1. 第一阶段：获取当前 Hub 单例引用
@@ -704,8 +819,13 @@ def _get_hub_write_conn_singleton(
         try:
             with _hub_write_conn_op_lock:
                 conn.execute("SELECT 1")
-                if do_sync and hasattr(conn, "sync"):
-                    conn.sync()
+                if do_sync:
+                    if hasattr(conn, "sync"):
+                        conn.sync()
+                    elif hasattr(conn, "pull"):
+                        conn.push()
+                        conn.pull()
+                        conn.checkpoint()
         except BaseException as health_error:
             _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _hub_write_conn_lock:
@@ -729,7 +849,10 @@ def _get_hub_write_conn_singleton(
                 for attempt in range(max_retries):
                     try:
                         _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
-                        conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+                        if HAS_PYTURSO:
+                            conn = _connect_turso_sync(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+                        else:
+                            conn = _connect_embedded_replica(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
                         _debug_log("[_get_hub_write_conn_singleton] _connect_embedded_replica 返回成功")
                         with _hub_write_conn_lock:
                             _hub_write_conn_singleton = conn
@@ -760,7 +883,7 @@ def _should_use_local_only_connection(db_path: Optional[str] = None, conn: Any =
         return True
 
     ctx = _resolve_conn_context(path)
-    return not (ctx.get("url") and ctx.get("token") and HAS_LIBSQL)
+    return not (ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO))
 
 
 def _wrap_and_track_connection(_db_path: str, conn: Any, _read_only: bool) -> Any:
@@ -803,8 +926,8 @@ def _get_read_conn_impl(
         conn = _get_local_conn(db_path)
         return _wrap_and_track_connection(db_path, conn, True)
 
-    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and HAS_LIBSQL:
-        # CRITICAL WalConflict fix: 
+    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_LIBSQL or HAS_PYTURSO):
+        # CRITICAL WalConflict fix:
         # In LibSQL mode, we MUST reuse the singleton connection to avoid deadlocks
         # during background sync, especially on Windows/OneDrive.
         last_error = None
@@ -842,17 +965,20 @@ def _get_conn(
     ctx = _resolve_conn_context(db_path)
     db_path = ctx["db_path"]
 
-    if _is_main_db_path(db_path) and ctx.get("url") and ctx.get("token") and HAS_LIBSQL:
+    if _is_main_db_path(db_path) and ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO):
         return _get_main_write_conn_singleton(do_sync=do_sync, max_retries=max_retries, retry_delay=retry_delay)
 
     if _should_use_local_only_connection(db_path):
         return _get_local_conn(db_path)
 
-    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and HAS_LIBSQL:
+    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_LIBSQL or HAS_PYTURSO):
         last_error = None
         for attempt in range(max_retries):
             try:
-                conn = _connect_embedded_replica(db_path, ctx["url"], ctx["token"], do_sync=do_sync)
+                if HAS_PYTURSO:
+                    conn = _connect_turso_sync(db_path, ctx["url"], ctx["token"], do_sync=do_sync)
+                else:
+                    conn = _connect_embedded_replica(db_path, ctx["url"], ctx["token"], do_sync=do_sync)
                 return _wrap_and_track_connection(db_path, conn, False)
             except Exception as e:
                 last_error = e
@@ -885,6 +1011,8 @@ def _get_cloud_conn(url: str, token: str, db_path: str = None, max_retries: int 
     last_error = None
     for attempt in range(max_retries):
         try:
+            if HAS_PYTURSO:
+                return _connect_turso_sync(local_path, url, token, do_sync=True)
             return _connect_embedded_replica(local_path, url, token, do_sync=True)
         except Exception as e:
             last_error = e
@@ -906,10 +1034,10 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
 
     if get_force_cloud_mode() and not is_hub_configured():
         raise RuntimeError("强制云端模式已启用，但未配置 TURSO_HUB_DB_URL/TURSO_HUB_AUTH_TOKEN")
-    if get_force_cloud_mode() and not HAS_LIBSQL:
+    if get_force_cloud_mode() and not (HAS_LIBSQL or HAS_PYTURSO):
         raise RuntimeError("强制云端模式已启用，但 libsql 不可用")
 
-    if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL:
+    if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
         _debug_log("[_get_hub_conn] 检测到云端 Hub 配置，尝试连接...")
         last_error = None
         for attempt in range(max_retries):
@@ -1000,7 +1128,7 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
     - No standalone local libsql read connections are created.
     """
     try:
-        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL:
+        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
             hub_conn = _get_hub_write_conn_singleton(do_sync=False)
         else:
             hub_conn = _get_hub_local_conn()
@@ -1050,7 +1178,7 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
     - No standalone local libsql read connections are created.
     """
     try:
-        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and HAS_LIBSQL:
+        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
             hub_conn = _get_hub_write_conn_singleton(do_sync=False)
         else:
             hub_conn = _get_hub_local_conn()

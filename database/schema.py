@@ -257,7 +257,7 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
         if hostname:
             url = _normalize_turso_url(hostname)
 
-    is_cloud_configured = bool(connection.HAS_LIBSQL and url and token)
+    is_cloud_configured = bool((connection.HAS_LIBSQL or connection.HAS_PYTURSO) and url and token)
 
     if is_cloud_configured:
         try:

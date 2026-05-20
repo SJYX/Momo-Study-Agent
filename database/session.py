@@ -137,7 +137,7 @@ def _attempt_auto_recovery(db_path: str) -> bool:
             _debug_log("损坏库备份未完成（源文件可能被占用），继续尝试云端/本地重建", level="WARNING", module="database.session")
 
         ctx = connection._resolve_conn_context(db_path)
-        if connection.HAS_LIBSQL and ctx.get("url") and ctx.get("token"):
+        if (connection.HAS_LIBSQL or connection.HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
             _debug_log(f"尝试从 Turso 云端重建损坏的数据库: {db_path}", level="INFO", module="database.session")
             repair_conn = connection._get_conn(db_path, allow_local_fallback=False, do_sync=True)
             try:

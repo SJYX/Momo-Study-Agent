@@ -1,945 +1,1389 @@
-# Turso API 速查
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.turso.tech/llms.txt
+> Use this file to discover all available pages before exploring further.
 
-> 本文档记录当前已经确认的 Turso 官方 API 参考与本项目的实际使用点。更完整的官方说明以 https://docs.turso.tech 为准。
 
-## 快速索引
+Examples:https://github.com/tursodatabase/libsql-python/tree/main/examples
 
-- [平台导读](#平台导读)
-- [组织与身份](#组织与身份)
-- [组织计费与配额](#组织计费与配额)
-- [位置与区域](#位置与区域)
-- [数据库管理](#数据库管理)
-- [组管理](#组管理)
-- [成员与邀请](#成员与邀请)
-- [审计日志](#审计日志)
-- [认证与令牌](#认证与令牌)
-- [迁移与同步](#迁移与同步)
-- [当前项目用法](#当前项目用法)
-- [参考链接](#参考链接)
 
-## 平台导读
+# Turso Quickstart (Python)
 
-### API Introduction
+> Get started with Turso and Python in a few simple steps.
 
-官方定义：Turso Platform API 用于管理组织、成员、组、数据库与 API token，适合平台化数据库创建与运维场景。
+In this Python quickstart we will learn how to:
 
-范围说明：
+* Install the Turso package
+* Connect to a local or remote database
+* Execute a query using SQL
+* Sync changes to local database
 
-- 组织与成员管理
-- 组与数据库生命周期管理
-- API token 签发和撤销
+## Recommended: pyturso (Local / Embedded)
 
-### Quickstart（官方 7 步）
+`pyturso` is the recommended package for local and embedded use cases. It is built on the Turso Database engine — a ground-up rewrite of SQLite with concurrent writes (MVCC) and async I/O. The API follows the standard Python `sqlite3` interface, so it works as a drop-in replacement.
 
-官方 quickstart 的主路径可以归纳为：
+<Steps>
+  <Step title="Install">
+    ```bash theme={null}
+    uv add pyturso
+    ```
 
-1. 通过 CLI 登录：`turso auth signup`
-2. 获取组织 slug：`turso org list`
-3. 创建平台 API token：`turso auth api-tokens mint quickstart`
-4. 获取可用区域：`GET /v1/locations`
-5. 创建组：`POST /v1/organizations/{organizationSlug}/groups`
-6. 创建数据库：`POST /v1/organizations/{organizationSlug}/databases`
-7. 使用 SDK 连接数据库
+    Or with pip:
 
-对本地镜像的意义：
+    ```bash theme={null}
+    pip install pyturso
+    ```
+  </Step>
 
-- quickstart 把 API 调用顺序串联起来，适合作为 onboarding 流程骨架
-- 便于对照当前项目配置向导（`core/config_wizard.py`）检查是否缺步骤
+  <Step title="Connect">
+    ```py theme={null}
+    import turso
 
-## 组织与身份
+    db = turso.connect("app.db")
+    ```
 
-### List Organizations
+    In-memory databases are also supported:
 
-返回当前认证用户拥有或加入的组织列表。
+    ```py theme={null}
+    db = turso.connect(":memory:")
+    ```
+  </Step>
 
-请求：
+  <Step title="Execute">
+    ```py theme={null}
+    db.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
+    db.execute("INSERT INTO users (name) VALUES (?)", ("Alice",))
+    db.commit()
 
-```text
-GET /v1/organizations
+    for row in db.execute("SELECT * FROM users"):
+        print(row)
+    ```
+  </Step>
+
+  <Step title="Sync (push and pull)">
+    If you need to sync your local database with Turso Cloud, use `turso.sync`:
+
+    ```py theme={null}
+    import os
+    import turso.sync
+
+    db = turso.sync.connect(
+        "app.db",
+        remote_url=os.environ["TURSO_DATABASE_URL"],
+        auth_token=os.environ["TURSO_AUTH_TOKEN"],
+    )
+
+    db.execute("INSERT INTO users (name) VALUES (?)", ("Bob",))
+    db.commit()
+
+    # Push local writes to Turso Cloud
+    db.push()
+
+    # Pull remote changes to local database
+    db.pull()
+    ```
+
+    All reads and writes happen against the local database file — fast, offline-capable. `push()` sends your changes to the cloud. `pull()` brings remote changes down. See [Turso Sync](/sync/usage) for details on conflict resolution, checkpointing, and more.
+  </Step>
+</Steps>
+
+## Remote Access (Over-the-Wire)
+
+If your application needs to query a Turso Cloud database directly over the network (e.g., from a web server or serverless function), you can use the `libsql` package. It connects to your database via HTTP — no local file needed.
+
+<Info>
+  For most applications, we recommend running a local database with [Turso Sync](/sync/usage) (`turso.sync`) instead — it gives you faster reads, offline support, and lower latency. Remote access is useful when you cannot store a local database file (e.g., stateless serverless environments).
+</Info>
+
+<Steps>
+  <Step title="Retrieve database credentials">
+    You will need an existing database to continue. If you don't have one, [create one](/quickstart).
+
+    <Snippet file="retrieve-database-credentials.mdx" />
+
+    <Info>You will want to store these as environment variables.</Info>
+  </Step>
+
+  <Step title="Install">
+    ```bash theme={null}
+    uv add libsql
+    ```
+
+    Or with pip:
+
+    ```bash theme={null}
+    pip install libsql
+    ```
+  </Step>
+
+  <Step title="Connect and query">
+    ```py theme={null}
+    import os
+    import libsql
+
+    conn = libsql.connect(
+        database=os.environ["TURSO_DATABASE_URL"],
+        auth_token=os.environ["TURSO_AUTH_TOKEN"],
+    )
+
+    conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("INSERT INTO users (name) VALUES (?)", ("Alice",))
+    conn.commit()
+
+    rows = conn.execute("SELECT * FROM users").fetchall()
+    print(rows)
+    ```
+  </Step>
+</Steps>
+
+## Embedded Replicas (libsql)
+
+The `libsql` package also supports Embedded Replicas — local reads from a file, with writes sent to the cloud primary and reflected back to the replica. Embedded Replicas are fully supported in production. For new projects that need sync, we recommend `turso.sync` instead: both reads and writes are local, and you sync explicitly with `push()` / `pull()`.
+
+See the [reference](/sdk/python/reference) for full documentation on Embedded Replicas, encryption, and periodic sync.
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.turso.tech/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Reference
+
+> Python Reference for Turso
+
+Turso offers two Python packages:
+
+|                       | `pyturso`                       | `libsql`                                       |
+| --------------------- | ------------------------------- | ---------------------------------------------- |
+| **Use case**          | Local / embedded database, sync | Existing libSQL codebases                      |
+| **Engine**            | Turso Database (rewrite)        | libSQL (SQLite fork)                           |
+| **Concurrent writes** | Yes (MVCC)                      | Not supported                                  |
+| **Sync**              | push/pull (local-first)         | Embedded Replicas (writes go to cloud primary) |
+| **API**               | Python `sqlite3`-compatible     | Python `sqlite3`-compatible                    |
+
+**Starting a new project?** Use `pyturso` — it is built on the Turso Database engine with concurrent writes and local-first sync.
+
+## pyturso
+
+For local and embedded use. Built on the Turso Database engine with concurrent writes (MVCC) and async I/O.
+
+### Installing
+
+```bash theme={null}
+pip install pyturso
 ```
 
-认证：
+### Connecting
 
-```text
-Authorization: Bearer <token>
+```py theme={null}
+import turso
+
+conn = turso.connect("app.db")
 ```
 
-响应要点：
+In-memory databases are also supported:
 
-- `name`：组织名称。个人账号通常是 `personal`。
-- `slug`：组织标识。个人账号时，这个值就是用户名。
-- `type`：`personal` 或 `team`
-
-示例：
-
-```json
-[
-  {
-    "name": "personal",
-    "slug": "iku",
-    "type": "personal",
-    "overages": false,
-    "blocked_reads": false,
-    "blocked_writes": false,
-    "plan_id": "developer",
-    "plan_timeline": "monthly",
-    "platform": "vercel"
-  }
-]
+```py theme={null}
+conn = turso.connect(":memory:")
 ```
 
-### Retrieve Organization
+### Querying
 
-获取单个组织信息。
+```py theme={null}
+conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
+conn.execute("INSERT INTO users (name) VALUES (?)", ("Alice",))
+conn.commit()
 
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}
+for row in conn.execute("SELECT * FROM users"):
+    print(row)
 ```
 
-### Update Organization
+### Encryption
 
-更新组织配置。
+Encrypt local databases at rest using the `encryption` option:
 
-请求：
+```py theme={null}
+from turso import connect, EncryptionOpts
 
-```text
-PATCH /v1/organizations/{organizationSlug}
+conn = connect("encrypted.db",
+               experimental_features="encryption",
+               encryption=EncryptionOpts(cipher="aegis256",
+                                         hexkey="b1bbfda4f589dc9daaf004fe21111e00dc00c98237102f5c7002a5669fc76327"))
 ```
 
-用途：
+Supported ciphers: `aegis256`, `aegis256x2`, `aegis128l`, `aegis128x2`, `aegis128x4`, `aes256gcm`, `aes128gcm`.
 
-- 修改组织级开关，例如 `overages`
-- 只适合管理类脚本，不建议在普通启动路径里调用
+Encrypted databases cannot be read as standard SQLite databases — you must use the Turso Database engine to open them.
 
-这个接口对本项目的意义：
+<Info>
+  Turso Cloud databases can also be encrypted with bring-your-own-key — [learn more](/cloud/encryption).
+</Info>
 
-- 便于校验用户配置里填写的 `TURSO_ORG_SLUG`
-- 个人账号场景下，`slug` 和用户名一致，适合直接作为默认组织标识
+## libsql (libSQL)
 
-## 组织计费与配额
+The `libsql` package is built on [libSQL](https://github.com/tursodatabase/libsql), the open-source fork of SQLite that powers Turso Cloud today. It is production-ready and battle-tested, and is the right choice when you are working with an existing `libsql`-based codebase.
 
-### Organization Usage
+<Info>
+  With `libsql` Embedded Replicas, reads are local and writes are sent to the cloud primary, then reflected back to the replica. Embedded Replicas are fully supported. For new projects that need sync, we recommend `turso.sync` — see the [quickstart](/sdk/python/quickstart).
+</Info>
 
-查询组织当前账期的整体用量。
+## Embedded Replicas
 
-请求：
+<Info>
+  For workloads that need **offline writes**, **bidirectional sync**, or **multi-writer convergence**, we recommend `turso.sync` — both reads and writes are local, and you sync explicitly with `push()` / `pull()`. See the [quickstart](/sdk/python/quickstart).
+</Info>
 
-```text
-GET /v1/organizations/{organizationSlug}/usage
+You can work with [embedded replicas](/features/embedded-replicas) that can sync from the remote database to a local SQLite file, and delegate writes to the remote primary database:
+
+```py theme={null}
+import os
+
+import libsql
+
+conn = libsql.connect("local.db", sync_url=os.getenv("LIBSQL_URL"),
+                      auth_token=os.getenv("LIBSQL_AUTH_TOKEN"))
+conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER);")
+conn.execute("INSERT INTO users(id) VALUES (1);")
+conn.commit()
+
+print(conn.execute("select * from users").fetchall())
 ```
 
-用途：
+<Snippet file="embedded-replicas-warning.mdx" />
 
-- 拉取组织级 rows read/write、存储和同步流量
-- 用于配额预警和计费看板
+### Periodic Sync
 
-### List Plans
+You can automatically sync at intervals by passing time in seconds to the `sync_interval` option. For example, to sync every minute, you can use the following code:
 
-查询组织可用套餐及配额。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/plans
+```py theme={null}
+conn = libsql.connect("local.db", sync_interval=60, sync_url=os.getenv("LIBSQL_URL"),
+                      auth_token=os.getenv("LIBSQL_AUTH_TOKEN"))
 ```
 
-### Current Subscription
+### Manual Sync
 
-查询组织当前订阅信息。
+The `Sync` function allows you to sync manually the local database with the remote counterpart:
 
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/subscription
+```py theme={null}
+conn.execute("INSERT INTO users(id) VALUES (2);")
+conn.commit()
+conn.sync()
 ```
 
-### List Invoices
+## Encryption
 
-查询组织账单。
+<Warning>
+  For new projects, we recommend [`pyturso`](#pyturso) for local encryption — it is built on the Turso Database engine with better performance and concurrent write support.
+</Warning>
 
-请求：
+To enable encryption on a SQLite file, pass the encryption secret to the `encryption_key` option:
 
-```text
-GET /v1/organizations/{organizationSlug}/invoices
+```py theme={null}
+conn = libsql.connect("encrypted.db", sync_url=os.getenv("LIBSQL_URL"),
+                      auth_token=os.getenv("LIBSQL_AUTH_TOKEN"),
+                      encryption_key=os.getenv("ENCRYPTION_KEY"))
 ```
 
-可选查询参数：
-
-- `type`：`all`、`upcoming`、`issued`
-
-## 位置与区域
-
-### List Locations
-
-返回可创建或复制数据库的区域映射。
-
-请求：
-
-```text
-GET /v1/locations
-```
-
-### Closest Region
-
-返回调用方就近区域。
-
-请求：
-
-```text
-GET https://region.turso.io
-```
-
-响应字段：
-
-- `server`
-- `client`
-
-## 数据库管理
-
-### Create Database
-
-创建一个新的 Turso 数据库。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/databases
-```
-
-请求头：
-
-```text
-Authorization: Bearer <token>
-Content-Type: application/json
-```
-
-常用请求体字段：
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `name` | string | 是 | 数据库名，仅允许小写字母、数字、短横线，最长 64 字符 |
-| `group` | string | 是 | 目标分组，必须已存在 |
-| `seed` | object | 否 | 预置数据源，可为 `database` 或 `database_upload` |
-| `size_limit` | string | 否 | 最大数据库大小，如 `1mb`、`256mb`、`1gb` |
-| `remote_encryption` | object | 否 | 远端加密配置 |
-
-示例：
-
-```bash
-curl -L -X POST 'https://api.turso.tech/v1/organizations/{organizationSlug}/databases' \
-  -H 'Authorization: Bearer TOKEN' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "history_asher",
-    "group": "default"
-  }'
-```
-
-### List Databases
-
-列出组织下所有数据库。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/databases
-```
-
-可选查询参数：
-
-- `group`
-- `schema`
-- `parent`
-
-用途：
-
-- 验证数据库是否已经创建
-- 发现当前可用数据库
-- 调试组织下的数据库分布
-
-### Retrieve Database
-
-获取单个数据库的元信息。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/databases/{databaseName}
-```
-
-用途：
-
-- 检查数据库是否存在
-- 获取数据库 ID 和状态
-
-### Retrieve Database Configuration
-
-获取数据库配置详情。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/databases/{databaseName}/configuration
-```
-
-### Update Database Configuration
-
-更新数据库配置。
-
-请求：
-
-```text
-PATCH /v1/organizations/{organizationSlug}/databases/{databaseName}/configuration
-```
-
-用途：
-
-- 调整大小上限
-- 开关读写阻断
-- 设置删除保护
-
-### List Database Instances
-
-列出数据库的实例分布。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/databases/{databaseName}/instances
-```
-
-用途：
-
-- 查看主实例和副本所在区域
-- 排查实例拓扑与连接目标
-
-### Retrieve Database Instance
-
-获取单个实例详情。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/databases/{databaseName}/instances/{instanceName}
-```
-
-### Retrieve Database Stats
-
-获取数据库统计信息。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/databases/{databaseName}/stats
-```
-
-用途：
-
-- 查看热点查询
-- 观察读写负载
-
-### Retrieve Database Usage
-
-查询数据库在时间范围内的用量。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/databases/{databaseName}/usage
-```
-
-可选查询参数：
-
-- `from`（ISO 8601）
-- `to`（ISO 8601）
-
-### Delete Database
-
-删除指定数据库，不可恢复。
-
-请求：
-
-```text
-DELETE /v1/organizations/{organizationSlug}/databases/{databaseName}
-```
-
-用途：
-
-- 清理测试库
-- 重建失败的数据库实例
-
-### Invalidate All Database Auth Tokens
-
-使指定数据库的所有认证令牌失效。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/databases/{databaseName}/auth/rotate
-```
-
-用途：
-
-- 令牌泄露后快速撤销权限
-- 切换到新 token 前先清掉旧 token
-
-## 组管理
-
-### List Groups
-
-列出组织下的所有组。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/groups
-```
-
-### Create Group
-
-创建新组。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/groups
-```
-
-常用请求体字段：
-
-- `name`：组名
-- `location`：初始区域
-- `extensions`：新数据库默认启用的扩展
-
-### Retrieve Group
-
-获取单个组信息。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/groups/{groupName}
-```
-
-### Retrieve Group Configuration
-
-查询组配置。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/groups/{groupName}/configuration
-```
-
-### Update Group Configuration
-
-更新组配置。
-
-请求：
-
-```text
-PATCH /v1/organizations/{organizationSlug}/groups/{groupName}/configuration
-```
-
-用途：
-
-- 打开或关闭删除保护
-
-### Delete Group
-
-删除组。
-
-请求：
-
-```text
-DELETE /v1/organizations/{organizationSlug}/groups/{groupName}
-```
-
-### Transfer Group
-
-将组转移到其他组织。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/groups/{groupName}/transfer
-```
-
-用途：
-
-- 组织重组时迁移数据库归属
-- 保持既有数据库 URL 和 token 可用，但要尽快更新配置
-
-### Unarchive Group
-
-恢复因长期无活动而归档的组。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/groups/{groupName}/unarchive
-```
-
-### Create Group Auth Token
-
-为指定组生成授权 token。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/groups/{groupName}/auth/tokens
-```
-
-查询参数：
-
-- `expiration`
-- `authorization`
-
-### Invalidate Group Auth Tokens
-
-使组的授权 token 失效。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/groups/{groupName}/auth/rotate
-```
-
-## 成员与邀请
-
-### Get Current User
-
-获取当前认证用户信息。
-
-请求：
-
-```text
-GET /v1/user
-```
-
-用途：
-
-- 校验当前 token 对应的身份
-- 获取用户名、邮箱和 plan 信息
-
-### List Members
-
-列出组织成员。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/members
-```
-
-### Add Member
-
-向组织添加已注册 Turso 用户。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/members
-```
-
-请求体字段：
-
-- `username`
-- `role`：`admin`、`member`、`viewer`
-
-### Retrieve Member
-
-获取单个成员信息。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/members/{username}
-```
-
-### Remove Member
-
-按用户名移除成员。
-
-请求：
-
-```text
-DELETE /v1/organizations/{organizationSlug}/members/{username}
-```
-
-### Update Member Role
-
-更新成员角色。
-
-请求：
-
-```text
-PATCH /v1/organizations/{organizationSlug}/members/{username}
-```
-
-请求体字段：
-
-- `role`：`admin`、`member`、`viewer`
-
-### List Invites
-
-列出组织邀请。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/invites
-```
-
-### Create Invite
-
-创建组织邀请。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/invites
-```
-
-请求体字段：
-
-- `email`
-- `role`
-
-说明：
-
-- 适用于邀请尚未注册 Turso 的用户
-- 官方文档提示已注册用户应使用成员添加流程
-
-### Delete Invite (v1)
-
-按邮箱删除邀请。
-
-请求：
-
-```text
-DELETE /v1/organizations/{organizationSlug}/invites/{email}
-```
-
-### List Invites (v2)
-
-列出待处理邀请（v2）。
-
-请求：
-
-```text
-GET /v2/organizations/{organizationSlug}/invites
-```
-
-### Create Invite (v2)
-
-创建邀请（v2）。
-
-请求：
-
-```text
-POST /v2/organizations/{organizationSlug}/invites
-```
-
-说明：
-
-- 若同邮箱有 pending invite，会被新邀请替换
-
-### Delete Invite (v2)
-
-删除待处理邀请（v2）。
-
-请求：
-
-```text
-DELETE /v2/organizations/{organizationSlug}/invites/{email}
-```
-
-## 审计日志
-
-### List Audit Logs
-
-列出组织审计日志（按 `created_at` 倒序）。
-
-请求：
-
-```text
-GET /v1/organizations/{organizationSlug}/audit-logs
-```
-
-可选查询参数：
-
-- `page`
-- `page_size`
-
-说明：
-
-- 官方提示该能力受套餐限制（付费计划可用）
-
-## 认证与令牌
-
-### Generate Database Auth Token
-
-为指定数据库生成认证令牌，供 `libsql.connect(url, auth_token=...)` 连接使用。
-
-请求：
-
-```text
-POST /v1/organizations/{organizationSlug}/databases/{databaseName}/auth/tokens
-```
-
-查询参数：
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `expiration` | string | `never` | 过期时间，例如 `2w1d30m` |
-| `authorization` | string | `full-access` | 权限级别：`full-access` 或 `read-only` |
-
-请求体可选字段：
-
-```json
-{
-  "permissions": {
-    "read_attach": {
-      "databases": ["db_name1", "db_name2"]
+<Info>
+  Encrypted databases appear as raw data and cannot be read as standard SQLite databases. You must use the libSQL client for any operations — [learn more](/libsql#encryption-at-rest).
+</Info>
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.turso.tech/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Usage
+
+> How to enable and use sync with Turso across TypeScript, Python, and Go.
+
+This guide shows how to set up a Turso database and use the sync features from your application.
+
+<Note>
+  This particular usage uses the Turso Cloud to sync the local Turso databases and assumes that you have an account.
+</Note>
+
+<Steps>
+  <Step title="1. Setup Turso Cloud database">
+    * Follow our [Quickstart](/quickstart) to install the CLI, create a database
+
+    * Get the database URL (`libsql://...`):
+
+    ```
+    turso db show <db>
+    ```
+
+    * Create a token for your app:
+
+    ```
+    turso db tokens create <db>
+    ```
+  </Step>
+
+  <Step title="2. Setup a basic connection with sync">
+    You need three essentials to enable sync:
+
+    * Local path: where the local, synced tursodb file is stored
+    * Remote URL: your Turso Cloud URL (`libsql://...`)
+    * Auth token: Turso Cloud token to authenticate requests
+
+    <CodeGroup>
+      ```ts TypeScript theme={null}
+      import { connect } from '@tursodatabase/sync';
+
+      const db = await connect({
+        path: './app.db',                               // local path
+        url: 'libsql://...',                            // remote URL (generated with turso db show <db-name> --url)
+        authToken: process.env.TURSO_AUTH_TOKEN,        // authentication token (generated with turso db tokens create <db-name>)
+        // longPollTimeoutMs: 10_000,                   // optional: server waits before replying to pull
+        // bootstrapIfEmpty: false,                     // set to false to avoid bootstrapping on first run
+      });
+      ```
+
+      ```py Python theme={null}
+      import os
+      import turso.sync
+
+      conn = turso.sync.connect(
+          path="./app.db",                                  # local path
+          remote_url="libsql://...",                        # remote URL (generated with turso db show <db-name> --url)
+          remote_auth_token=os.environ["TURSO_AUTH_TOKEN"], # authentication token (generated with turso db tokens create <db-name>)
+          # long_poll_timeout_ms=10_000,                    # optional: server waits before replying to pull
+          # bootstrap_if_empty=False,                       # set to false to avoid bootstrapping on first run
+      )
+      ```
+
+      ```go Go theme={null}
+      package main
+
+      import (
+      	"turso"
+      )
+
+      db, err := turso.NewTursoSyncDb(ctx, turso.TursoSyncDbConfig{
+        Path:              "./app.db",                    // local path
+        RemoteUrl:         "libsql://...",                // remote URL (generated with turso db show <db-name> --url)
+        RemoteAuthToken:   os.Getenv("TURSO_AUTH_TOKEN"), // authentication token (generated with turso db tokens create <db-name>)
+        // LongPollTimeoutMs: 10_000,                     // optional: server waits before replying to pull
+        // BootstrapIfEmpty: false,                       // set to false to avoid bootstrapping on first run
+      })
+      ```
+    </CodeGroup>
+
+    <Note>
+      On the first run, the local database is automatically bootstrapped from the remote — so the remote must be reachable during the initial connect.
+
+      If you set `bootstrap_if_empty` to `false`, the local database will start empty instead.
+      You can bootstrap or update it later at any time by explicitly calling `pull()`.
+    </Note>
+  </Step>
+
+  <Step title="3. Push changes">
+    Push sends your local changes to the Turso Cloud server. Under the hood, logical statements are sent, and on conflicts the strategy is "last push wins".
+
+    <CodeGroup>
+      ```ts TypeScript theme={null}
+      await db.exec("CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY, body TEXT)");
+      await db.exec("INSERT INTO notes VALUES ('n1', 'hello')");
+
+      await db.push();
+      ```
+
+      ```py Python theme={null}
+      conn.execute("CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY, body TEXT)")
+      conn.commit()
+      conn.execute("INSERT INTO notes VALUES ('n1', 'hello')")
+      conn.commit()
+
+      conn.push()
+      ```
+
+      ```go Go theme={null}
+      // create *sql.DB instance
+      conn, err := db.Connect(ctx)
+      if err != nil {
+        return err
+      }
+
+      _, err = conn.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY, body TEXT)")
+      if err != nil {
+        return err
+      }
+      _, err = conn.ExecContext(ctx, "INSERT INTO notes VALUES ('n1', 'hello')")
+      if err != nil {
+        return err
+      }
+
+      if err := db.Push(ctx); err != nil {
+      	return err
+      }
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="4. Pull changes">
+    Pull fetches remote changes and applies them locally. It returns a boolean indicating whether anything changed.
+
+    * Configure `long_poll_timeout_ms`/`LongPollTimeoutMs` if you want the server to wait for changes and avoid empty replies.
+    * If you pushed earlier, a subsequent pull can still return that something changed due to server-side conflict resolution frames.
+
+    <CodeGroup>
+      ```ts TypeScript theme={null}
+      // Returns true if anything changed locally
+      const changed = await db.pull();
+      console.info('pulled changes:', changed);
+      ```
+
+      ```py Python theme={null}
+      changed = conn.pull()
+      print("pulled changes:", changed)
+      ```
+
+      ```go Go theme={null}
+      changed, err := db.Pull(ctx)
+      if err != nil {
+      	return err
+      }
+      log.Println("pulled changes:", changed)
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="5. Checkpoint">
+    Checkpoint compacts the local WAL to bound local disk usage while preserving sync state.
+
+    <CodeGroup>
+      ```ts TypeScript theme={null}
+      await db.checkpoint();
+      ```
+
+      ```py Python theme={null}
+      conn.checkpoint()
+      ```
+
+      ```go Go theme={null}
+      if err := db.Checkpoint(ctx); err != nil {
+      	return err
+      }
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="6. Stats">
+    Stats help you observe sync behavior and usage (WAL sizes, last push/pull times, network usage, revision, etc.).
+
+    <CodeGroup>
+      ```ts TypeScript theme={null}
+      const s = await db.stats();
+      console.info({
+        cdcOperations: s.cdcOperations,
+        mainWalSize: s.mainWalSize,
+        revertWalSize: s.revertWalSize,
+        networkReceivedBytes: s.networkReceivedBytes,
+        networkSentBytes: s.networkSentBytes,
+        lastPullUnixTime: s.lastPullUnixTime,
+        lastPushUnixTime: s.lastPushUnixTime,
+        revision: s.revision,
+      });
+      ```
+
+      ```py Python theme={null}
+      s = conn.stats()
+      print({
+          "cdc_operations": s.cdc_operations,
+          "main_wal_size": s.main_wal_size,
+          "revert_wal_size": s.revert_wal_size,
+          "network_received_bytes": s.network_received_bytes,
+          "network_sent_bytes": s.network_sent_bytes,
+          "last_pull_unix_time": s.last_pull_unix_time,
+          "last_push_unix_time": s.last_push_unix_time,
+          "revision": s.revision,
+      })
+      ```
+
+      ```go Go theme={null}
+      s, err := db.Stats(ctx)
+      if err != nil {
+      	return err
+      }
+      log.Printf("stats: cdc=%v, main=%d revert=%d rx=%d tx=%d pull=%d push=%d revision=%s",
+        s.CdcOperations,
+        s.MainWalSize,
+        s.RevertWalSize,
+        s.NetworkReceivedBytes,
+        s.NetworkSentBytes,
+        s.LastPullUnixTime,
+        s.LastPushUnixTime,
+        s.Revision,
+      )
+      ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Offline-first writes
+
+If your app needs to accept writes without internet connectivity, write locally and call `push()` when the connection is available. All changes are safely stored in the local database file until they can be synced.
+
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  import { connect } from '@tursodatabase/sync';
+
+  // bootstrapIfEmpty: false lets the app start offline without
+  // needing to reach the remote on first launch
+  const db = await connect({
+    path: './local.db',
+    url: process.env.TURSO_URL!,
+    authToken: process.env.TURSO_AUTH_TOKEN!,
+    bootstrapIfEmpty: false,
+  });
+
+  async function syncWhenOnline(db) {
+    try {
+      await db.push();
+    } catch (e) {
+      // No connectivity — changes are safe in the local file
+      // and will sync on the next push() call
     }
   }
-}
+
+  // On app launch, pull the latest state if online
+  try {
+    await db.pull();
+  } catch (e) {
+    // Offline — local data is still available for reads and writes
+  }
+
+  // On a timer or connectivity event
+  await syncWhenOnline(db);
+  ```
+
+  ```py Python theme={null}
+  import os
+  import turso.sync
+
+  # bootstrap_if_empty=False lets the app start offline without
+  # needing to reach the remote on first launch
+  conn = turso.sync.connect(
+      path="./local.db",
+      remote_url=os.environ["TURSO_URL"],
+      remote_auth_token=os.environ["TURSO_AUTH_TOKEN"],
+      bootstrap_if_empty=False,
+  )
+
+  def sync_when_online(conn):
+      try:
+          conn.push()
+      except Exception:
+          # No connectivity — changes are safe in the local file
+          # and will sync on the next push() call
+          pass
+
+  # On app launch, pull the latest state if online
+  try:
+      conn.pull()
+  except Exception:
+      # Offline — local data is still available for reads and writes
+      pass
+
+  # On a timer or connectivity event
+  sync_when_online(conn)
+  ```
+
+  ```go Go theme={null}
+  // BootstrapIfEmpty: false lets the app start offline without
+  // needing to reach the remote on first launch
+  db, err := turso.NewTursoSyncDb(ctx, turso.TursoSyncDbConfig{
+  	Path:             "./local.db",
+  	RemoteUrl:        os.Getenv("TURSO_URL"),
+  	RemoteAuthToken:  os.Getenv("TURSO_AUTH_TOKEN"),
+  	BootstrapIfEmpty: false,
+  })
+
+  func syncWhenOnline(ctx context.Context, db *turso.TursoSyncDb) {
+  	if err := db.Push(ctx); err != nil {
+  		// No connectivity — changes are safe in the local file
+  		// and will sync on the next Push() call
+  		log.Println("push deferred:", err)
+  	}
+  }
+
+  // On app launch, pull the latest state if online
+  if _, err := db.Pull(ctx); err != nil {
+  	// Offline — local data is still available for reads and writes
+  	log.Println("pull deferred:", err)
+  }
+
+  // On a timer or connectivity event
+  syncWhenOnline(ctx, db)
+  ```
+</CodeGroup>
+
+This is the modern equivalent of the `offline: true` flag from [`@libsql/client` Embedded Replicas](/features/embedded-replicas/introduction). With Turso Sync, all reads and writes happen locally by default — you control when to sync with explicit `push()` and `pull()` calls.
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.turso.tech/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Local Sync Server
+
+> Use the Turso CLI as a local sync server for development and testing without Turso Cloud.
+
+The `tursodb` CLI includes a built-in sync server that you can run locally. This lets you develop and test sync workflows entirely on your machine — no Turso Cloud account required.
+
+<Info>
+  The local sync server implements the same sync protocol as Turso Cloud, so your application code works the same way in both environments.
+</Info>
+
+## Starting the server
+
+Pass `--sync-server` with an address to start the sync server. The database argument specifies where the server stores its data:
+
+```bash theme={null}
+tursodb ./server.db --sync-server 0.0.0.0:8080
 ```
 
-示例：
+This starts a sync server listening on port `8080`, backed by `./server.db`.
 
-```bash
-curl -L -X POST 'https://api.turso.tech/v1/organizations/{organizationSlug}/databases/{databaseName}/auth/tokens?expiration=2w&authorization=full-access' \
-  -H 'Authorization: Bearer TOKEN'
-```
+## Connecting clients
 
-### Create API Token
+Point your sync client at `http://localhost:8080`. No auth token is needed for the local server.
 
-创建用户级 API Token。
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  import { connect } from '@tursodatabase/sync';
 
-请求：
+  const db = await connect({
+    path: './local-replica.db',
+    url: 'http://localhost:8080',
+  });
+  ```
 
-```text
-POST /v1/auth/api-tokens/{tokenName}
-```
+  ```py Python theme={null}
+  import turso.sync
 
-兼容说明：
+  conn = turso.sync.connect(
+      path="./local-replica.db",
+      remote_url="http://localhost:8080",
+  )
+  ```
 
-- 旧版文档和脚本常见 `POST /v1/api-tokens`
-- 新版 API 参考主路径是 `/v1/auth/api-tokens/{tokenName}`
+  ```go Go theme={null}
+  package main
 
-示例请求体：
+  import (
+  	"turso"
+  )
 
-```json
-{
-  "name": "my-token",
-  "organization": "organizationSlug"
-}
-```
+  db, err := turso.NewTursoSyncDb(ctx, turso.TursoSyncDbConfig{
+      Path:      "./local-replica.db",
+      RemoteUrl: "http://localhost:8080",
+  })
+  ```
+</CodeGroup>
 
-用途：
+Once connected, all sync operations (`push`, `pull`, `checkpoint`, `stats`) work exactly as described in the [Usage](/sync/usage) guide.
 
-- 自动化脚本访问 Turso API
-- 为不同环境隔离权限
+## Example: full local sync workflow
 
-### Validate API Token
+This example walks through a complete workflow — starting the server, writing data from one client, and syncing it to another.
 
-验证 API Token 是否有效。
+<Steps>
+  <Step title="1. Start the sync server">
+    Open a terminal and start the server:
 
-请求：
+    ```bash theme={null}
+    tursodb ./server.db --sync-server 0.0.0.0:8080
+    ```
+  </Step>
 
-```text
-GET /v1/auth/validate
-```
+  <Step title="2. Write and push from Client A">
+    <CodeGroup>
+      ```ts TypeScript theme={null}
+      import { connect } from '@tursodatabase/sync';
 
-用途：
+      const clientA = await connect({
+        path: './client-a.db',
+        url: 'http://localhost:8080',
+      });
 
-- 启动前验证 `TURSO_AUTH_TOKEN`
-- 做配置自检和健康检查
+      await clientA.exec("CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, body TEXT)");
+      await clientA.exec("INSERT INTO notes VALUES ('n1', 'hello from client A')");
 
-### List API Tokens
+      await clientA.push();
+      ```
 
-列出当前用户的 API token。
+      ```py Python theme={null}
+      import turso.sync
 
-请求：
+      client_a = turso.sync.connect(
+          path="./client-a.db",
+          remote_url="http://localhost:8080",
+      )
 
-```text
-GET /v1/auth/api-tokens
-```
+      client_a.execute("CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, body TEXT)")
+      client_a.commit()
+      client_a.execute("INSERT INTO notes VALUES ('n1', 'hello from client A')")
+      client_a.commit()
 
-### Revoke API Token
+      client_a.push()
+      ```
 
-撤销指定 API token。
+      ```go Go theme={null}
+      clientA, err := turso.NewTursoSyncDb(ctx, turso.TursoSyncDbConfig{
+          Path:      "./client-a.db",
+          RemoteUrl: "http://localhost:8080",
+      })
+      if err != nil {
+          return err
+      }
+      connA, _ := clientA.Connect(ctx)
 
-请求：
+      connA.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, body TEXT)")
+      connA.ExecContext(ctx, "INSERT INTO notes VALUES ('n1', 'hello from client A')")
 
-```text
-DELETE /v1/auth/api-tokens/{tokenName}
-```
+      clientA.Push(ctx)
+      ```
+    </CodeGroup>
+  </Step>
 
-## 迁移与同步
+  <Step title="3. Pull from Client B">
+    <CodeGroup>
+      ```ts TypeScript theme={null}
+      import { connect } from '@tursodatabase/sync';
 
-### Upload Database
+      const clientB = await connect({
+        path: './client-b.db',
+        url: 'http://localhost:8080',
+      });
 
-将本地 SQLite 数据库上传为 Turso 数据源。
+      const changed = await clientB.pull();
+      console.log('changes pulled:', changed);
 
-请求：
+      const rows = await clientB.query("SELECT * FROM notes");
+      console.log(rows);
+      // [{ id: 'n1', body: 'hello from client A' }]
+      ```
 
-```text
-POST /v1/organizations/{organizationSlug}/databases/{databaseName}/upload
-```
+      ```py Python theme={null}
+      import turso.sync
 
-用途：
+      client_b = turso.sync.connect(
+          path="./client-b.db",
+          remote_url="http://localhost:8080",
+      )
 
-- 迁移现有本地 SQLite 到 Turso
-- 作为新数据库的种子数据源
+      changed = client_b.pull()
+      print("changes pulled:", changed)
 
-### Turso Sync
+      rows = client_b.execute("SELECT * FROM notes").fetchall()
+      print(rows)
+      # [('n1', 'hello from client A')]
+      ```
 
-官方当前更推荐的本地优先同步方向是 Turso Sync，而不是继续把嵌入式副本当作新项目首选。
+      ```go Go theme={null}
+      clientB, err := turso.NewTursoSyncDb(ctx, turso.TursoSyncDbConfig{
+          Path:      "./client-b.db",
+          RemoteUrl: "http://localhost:8080",
+      })
+      if err != nil {
+          return err
+      }
 
-核心概念：
+      changed, _ := clientB.Pull(ctx)
+      log.Println("changes pulled:", changed)
 
-- 本地数据库文件路径
-- 远端数据库 URL
-- 认证 token
-- 显式 `push()` / `pull()` 同步
-- 可用 `stats()`、`checkpoint()` 做状态观察和检查点控制
+      connB, _ := clientB.Connect(ctx)
+      rows, _ := connB.QueryContext(ctx, "SELECT * FROM notes")
+      ```
+    </CodeGroup>
+  </Step>
+</Steps>
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.turso.tech/llms.txt
+> Use this file to discover all available pages before exploring further.
 
-对本项目的含义：
+# Partial sync
 
-- 当前代码仍然采用本地 SQLite + Turso 云端双轨模式
-- 如果后续要做更底层的同步重构，Turso Sync 比嵌入式副本更值得优先评估
+> Sync only what you need. Faster cold starts and lower bandwidth by lazily fetching database pages on demand.
 
-### Embedded Replicas
+<Note>
+  This particular usage uses the Turso Cloud to sync the local Turso databases and assumes that you have an account.
+</Note>
 
-嵌入式副本文档当前属于旧路线，适合了解历史方案，不建议作为新项目默认实现。
+Partial sync lets your app open and use a database without downloading the entire file.
+The client lazily fetches pages of the database file from the Turso Cloud when a query touches data that is not present locally.
+This reduces startup time and network usage for large databases, while remaining fully compatible with the push/pull methods used
+by Turso's standard `sync` solution.
 
-建议：
+<Note>
+  * Reads on not-yet-downloaded data transparently trigger on-demand page fetches.
+  * Writes still apply locally first and are pushed as logical statements.
+</Note>
 
-- 新项目优先看 Turso Sync
-- 只有在明确需要兼容旧架构时，再考虑 embedded replicas 的实现细节
+## Modes
 
-## 当前项目用法
+Two bootstrap strategies define what is present locally at connect time:
 
-### 新用户创建数据库
+* **Prefix bootstrap**: download the first N bytes of the database file.
+  * Good default when you want a minimal, predictable starting footprint.
+* **Query bootstrap**: download pages touched by running a server-side SQL query.
+  * Ideal to hydrate only a narrow working set (e.g., a single user's rows, small tables with metadata, references, etc).
 
-`core/config_wizard.py` 会在新用户初始化阶段调用 `Create Database`，为用户创建个人数据库，并把结果写入对应 `.env` 文件。
+Both modes continue to lazily fetch missing pages on demand.
 
-### 中央 Hub
+### Prefix bootstrap
 
-项目里还有一个共享的中央 Hub 数据库，用于存储用户元数据、统计、审计与同步记录。
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  import { connect } from '@tursodatabase/sync';
 
-### 当前环境变量
+  const db = await connect({
+    path: './app.db',
+    url: 'libsql://...',
+    authToken: process.env.TURSO_AUTH_TOKEN,
+    partialSyncExperimental: {
+      bootstrapStrategy: { kind: 'prefix', length: 128 * 1024 }, // 128 KiB
+    },
+  });
+  ```
 
-新用户配置通常会包含：
+  ```py Python theme={null}
+  import os
+  import turso.sync
 
-```text
-TURSO_ORG_SLUG
-TURSO_DB_NAME
-TURSO_DB_HOSTNAME
-TURSO_DB_URL
-TURSO_AUTH_TOKEN
-```
+  conn = turso.sync.connect(
+      path="./app.db",
+      remote_url="libsql://...",
+      remote_auth_token=os.environ["TURSO_AUTH_TOKEN"],
+      partial_sync_opts=turso.sync.PartialSyncOpts(
+          bootstrap_strategy=turso.sync.PartialSyncPrefixBootstrap(length=128 * 1024),
+      ),
+  )
+  ```
 
-### 运行时行为
+  ```go Go theme={null}
+  import (
+  	"turso"
+  )
 
-1. 启动时加载用户配置
-2. 如果有 `TURSO_DB_URL` 和 `TURSO_AUTH_TOKEN`，优先连接 Turso 云端
-3. 否则回退到本地 SQLite
-4. 双向同步仅在 Turso 连接可用时执行
+  db, err := turso.NewTursoSyncDb(context.Background(), turso.TursoSyncDbConfig{
+    Path:            "./app.db",
+    RemoteUrl:       "libsql://...",
+    RemoteAuthToken: os.Getenv("TURSO_AUTH_TOKEN"),
+    PartialSyncConfig: turso.TursoPartialSyncConfig{
+      BoostrapStrategyPrefix: 128 * 1024, // 128 KiB
+    },
+  })
+  ```
+</CodeGroup>
 
-### 当前实现注意点
+### Query bootstrap
 
-- 如果只提供 `TURSO_DB_HOSTNAME`，项目会自动补全成 `https://{hostname}`
-- 当前配置向导只处理基础创建流程，不会自动展开复杂的 `seed` 或 `remote_encryption` 场景
-- 个人账号场景下，组织 `slug` 通常就是用户名
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  import { connect } from '@tursodatabase/sync';
 
-### 已确认的官方镜像范围
+  const db = await connect({
+    path: './app.db',
+    url: 'libsql://...',
+    authToken: process.env.TURSO_AUTH_TOKEN,
+    partialSyncExperimental: {
+      bootstrapStrategy: {
+        kind: 'query',
+        query: `SELECT * FROM messages WHERE user_id = 'u_123' LIMIT 100`,
+      },
+    },
+  });
+  ```
 
-当前本地速查已经覆盖以下已确认页面：
+  ```py Python theme={null}
+  import turso.sync
 
-- 组织：list / retrieve / update / usage / plans / subscription / invoices
-- 用户：get current
-- 位置：list / closest-region
-- 组：list / create / retrieve / configuration / update-configuration / delete / transfer / unarchive / auth token / auth rotate
-- 成员：list / add / retrieve / update / remove
-- 邀请：list / create / delete / list-v2 / create-v2 / delete-v2
-- 数据库：create / list / retrieve / configuration / update configuration / instances / retrieve-instance / usage / stats / delete / auth token / auth rotate / upload
-- 审计：audit logs list
-- API token：create / list / validate / revoke
+  conn = turso.sync.connect(
+      path=":memory:",
+      remote_url="libsql://...",
+      partial_sync_opts=turso.sync.PartialSyncOpts(
+          bootstrap_strategy=turso.sync.PartialSyncQueryBootstrap(
+              query="SELECT * FROM messages WHERE user_id = 'u_123' LIMIT 100"
+          ),
+      ),
+  )
+  ```
 
-### 官方 sitemap 覆盖清单（API Reference）
+  ```go Go theme={null}
+  import (
+  	"turso"
+  )
 
-以下清单来自官方 `sitemap.xml` 的 `/api-reference/*` 路径：
+  db, err := turso.NewTursoSyncDb(context.Background(), turso.TursoSyncDbConfig{
+    Path:            "./app.db",
+    RemoteUrl:       "libsql://...",
+    RemoteAuthToken: os.Getenv("TURSO_AUTH_TOKEN"),
+    PartialSyncConfig: turso.TursoPartialSyncConfig{
+      BoostrapStrategyQuery: "SELECT * FROM messages WHERE user_id = 'u_123' LIMIT 100",
+    },
+  })
+  ```
+</CodeGroup>
 
-- `/api-reference/audit-logs/list`：已镜像
-- `/api-reference/authentication`：已镜像
-- `/api-reference/databases/configuration`：已镜像
-- `/api-reference/databases/create`：已镜像
-- `/api-reference/databases/create-token`：已镜像
-- `/api-reference/databases/delete`：已镜像
-- `/api-reference/databases/invalidate-tokens`：已镜像
-- `/api-reference/databases/list`：已镜像
-- `/api-reference/databases/list-instances`：已镜像
-- `/api-reference/databases/retrieve`：已镜像
-- `/api-reference/databases/retrieve-instance`：已镜像
-- `/api-reference/databases/stats`：已镜像
-- `/api-reference/databases/update-configuration`：已镜像
-- `/api-reference/databases/upload`：已镜像
-- `/api-reference/databases/usage`：已镜像
-- `/api-reference/groups/configuration`：已镜像
-- `/api-reference/groups/create`：已镜像
-- `/api-reference/groups/create-token`：已镜像
-- `/api-reference/groups/delete`：已镜像
-- `/api-reference/groups/invalidate-tokens`：已镜像
-- `/api-reference/groups/list`：已镜像
-- `/api-reference/groups/retrieve`：已镜像
-- `/api-reference/groups/transfer`：已镜像
-- `/api-reference/groups/unarchive`：已镜像
-- `/api-reference/groups/update-configuration`：已镜像
-- `/api-reference/introduction`：已镜像
-- `/api-reference/locations/closest-region`：已镜像
-- `/api-reference/locations/list`：已镜像
-- `/api-reference/organizations/invites/create`：已镜像
-- `/api-reference/organizations/invites/create-v2`：已镜像
-- `/api-reference/organizations/invites/delete`：已镜像
-- `/api-reference/organizations/invites/delete-v2`：已镜像
-- `/api-reference/organizations/invites/list`：已镜像
-- `/api-reference/organizations/invites/list-v2`：已镜像
-- `/api-reference/organizations/invoices`：已镜像
-- `/api-reference/organizations/list`：已镜像
-- `/api-reference/organizations/members/add`：已镜像
-- `/api-reference/organizations/members/list`：已镜像
-- `/api-reference/organizations/members/remove`：已镜像
-- `/api-reference/organizations/members/retrieve`：已镜像
-- `/api-reference/organizations/members/update`：已镜像
-- `/api-reference/organizations/plans`：已镜像
-- `/api-reference/organizations/retrieve`：已镜像
-- `/api-reference/organizations/subscription`：已镜像
-- `/api-reference/organizations/update`：已镜像
-- `/api-reference/organizations/usage`：已镜像
-- `/api-reference/quickstart`：已镜像
-- `/api-reference/response-codes`：已镜像
-- `/api-reference/tokens/create`：已镜像
-- `/api-reference/tokens/list`：已镜像
-- `/api-reference/tokens/revoke`：已镜像
-- `/api-reference/tokens/validate`：已镜像
-- `/api-reference/user/get-current`：已镜像
+## Optimizations
 
-## 参考链接
+### Segment size (batched lazy reads)
 
-- [Turso API Reference](https://docs.turso.tech/api-reference/)
-- [Turso Introduction](https://docs.turso.tech/api-reference/introduction)
-- [Turso Quickstart](https://docs.turso.tech/api-reference/quickstart)
-- [Turso Organizations List](https://docs.turso.tech/api-reference/organizations/list)
-- [Turso User](https://docs.turso.tech/api-reference/user/get-current)
-- [Turso Audit Logs](https://docs.turso.tech/api-reference/audit-logs/list)
-- [Turso Groups](https://docs.turso.tech/api-reference/groups/list)
-- [Turso Databases](https://docs.turso.tech/api-reference/databases/list)
-- [Turso Tokens](https://docs.turso.tech/api-reference/tokens/list)
-- [Turso Sync](https://docs.turso.tech/usage/sync)
-- [Turso Authentication](https://docs.turso.tech/api-reference/authentication)
+<Frame>
+  <div id="seg-viz" style={{ padding: '1rem 0.5rem' }}>
+    <style>
+      {`
+              #s1-cell-1, #s1-cell-2, #s1-cell-3, #s1-cell-4, #s1-cell-5, #s1-cell-6, #s1-cell-7, #s1-cell-8, #s1-cell-9, #s1-cell-10, #s1-cell-11, #s1-cell-12 { cursor: pointer; }
+              #s1-cell-1:hover rect, #s1-cell-2:hover rect, #s1-cell-3:hover rect, #s1-cell-4:hover rect, #s1-cell-5:hover rect, #s1-cell-6:hover rect, #s1-cell-7:hover rect, #s1-cell-8:hover rect, #s1-cell-9:hover rect, #s1-cell-10:hover rect, #s1-cell-11:hover rect, #s1-cell-12:hover rect { filter: brightness(1.2); }
+            `}
+    </style>
+
+    <svg viewBox="0 0 540 140" xmlns="http://www.w3.org/2000/svg" style={{ width: '100%', minWidth: '480px', maxWidth: '620px', display: 'block', margin: '0 auto' }}>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#6b7280" />
+        </marker>
+      </defs>
+
+      <g id="seg-state-1">
+        <text x="76" y="14" fill="#9ca3af" fontFamily="ui-monospace,monospace" fontSize="10" textAnchor="middle">select page</text>
+
+        {/* Row 1 */}
+
+        <g id="s1-cell-1"><rect id="s1-rect-1" x="10" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s1-text-1" x="25" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>1</text></g>
+        <g id="s1-cell-2"><rect id="s1-rect-2" x="44" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s1-text-2" x="59" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>2</text></g>
+        <g id="s1-cell-3"><rect id="s1-rect-3" x="78" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s1-text-3" x="93" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>3</text></g>
+        <g id="s1-cell-4"><rect id="s1-rect-4" x="112" y="22" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-4" x="127" y="42" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>4</text></g>
+
+        {/* Row 2 */}
+
+        <g id="s1-cell-5"><rect id="s1-rect-5" x="10" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-5" x="25" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>5</text></g>
+        <g id="s1-cell-6"><rect id="s1-rect-6" x="44" y="56" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s1-text-6" x="59" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>6</text></g>
+        <g id="s1-cell-7"><rect id="s1-rect-7" x="78" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-7" x="93" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>7</text></g>
+        <g id="s1-cell-8"><rect id="s1-rect-8" x="112" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-8" x="127" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>8</text></g>
+
+        {/* Row 3 */}
+
+        <g id="s1-cell-9"><rect id="s1-rect-9" x="10" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-9" x="25" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>9</text></g>
+        <g id="s1-cell-10"><rect id="s1-rect-10" x="44" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-10" x="59" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>10</text></g>
+        <g id="s1-cell-11"><rect id="s1-rect-11" x="78" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-11" x="93" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>11</text></g>
+        <g id="s1-cell-12"><rect id="s1-rect-12" x="112" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s1-text-12" x="127" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>12</text></g>
+      </g>
+
+      <g id="seg-arrow-1" style={{ transition: 'opacity 0.3s' }}>
+        <line x1="152" y1="71" x2="188" y2="71" stroke="#6b7280" strokeWidth="2" markerEnd="url(#arrow)" />
+
+        <text id="seg-arrow-label" x="170" y="64" fill="#f97316" fontFamily="ui-monospace,monospace" fontSize="9" textAnchor="middle">read(7)</text>
+      </g>
+
+      <g id="seg-state-2" style={{ transition: 'opacity 0.3s' }}>
+        <text x="268" y="14" fill="#f97316" fontFamily="ui-monospace,monospace" fontSize="10" textAnchor="middle">fetching segment</text>
+
+        {/* Brackets */}
+
+        <rect id="s2-bracket-1" x="195" y="22" width="4" height="30" rx="2" fill="#f97316" style={{ opacity: 0, transition: 'opacity 0.3s' }} />
+
+        <rect id="s2-bracket-2" x="195" y="56" width="4" height="30" rx="2" fill="#f97316" style={{ opacity: 1, transition: 'opacity 0.3s' }} />
+
+        <rect id="s2-bracket-3" x="195" y="90" width="4" height="30" rx="2" fill="#f97316" style={{ opacity: 0, transition: 'opacity 0.3s' }} />
+
+        {/* Row 1 */}
+
+        <g><rect id="s2-rect-1" x="203" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s2-text-1" x="218" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">1</text></g>
+        <g><rect id="s2-rect-2" x="237" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s2-text-2" x="252" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">2</text></g>
+        <g><rect id="s2-rect-3" x="271" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s2-text-3" x="286" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">3</text></g>
+        <g><rect id="s2-rect-4" x="305" y="22" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s2-text-4" x="320" y="42" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">4</text></g>
+
+        {/* Row 2 */}
+
+        <g><rect id="s2-rect-5" x="203" y="56" width="30" height="30" fill="#f97316" stroke="#f97316" strokeWidth="2" rx="4" /><text id="s2-text-5" x="218" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">5</text></g>
+        <g><rect id="s2-rect-6" x="237" y="56" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s2-text-6" x="252" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">6</text></g>
+        <g><rect id="s2-rect-7" x="271" y="56" width="30" height="30" fill="#f97316" stroke="#fbbf24" strokeWidth="3" rx="4" /><text id="s2-text-7" x="286" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">7</text></g>
+        <g><rect id="s2-rect-8" x="305" y="56" width="30" height="30" fill="#f97316" stroke="#f97316" strokeWidth="2" rx="4" /><text id="s2-text-8" x="320" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">8</text></g>
+
+        {/* Row 3 */}
+
+        <g><rect id="s2-rect-9" x="203" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s2-text-9" x="218" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">9</text></g>
+        <g><rect id="s2-rect-10" x="237" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s2-text-10" x="252" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">10</text></g>
+        <g><rect id="s2-rect-11" x="271" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s2-text-11" x="286" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">11</text></g>
+        <g><rect id="s2-rect-12" x="305" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s2-text-12" x="320" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">12</text></g>
+        <text id="seg-segment-label" x="268" y="132" fill="#f97316" fontFamily="ui-monospace,monospace" fontSize="9" textAnchor="middle">segment 5-8</text>
+      </g>
+
+      <g id="seg-arrow-2" style={{ transition: 'opacity 0.3s' }}>
+        <line x1="345" y1="71" x2="381" y2="71" stroke="#6b7280" strokeWidth="2" markerEnd="url(#arrow)" />
+      </g>
+
+      <g id="seg-state-3" style={{ transition: 'opacity 0.3s' }}>
+        <text x="461" y="14" fill="#1ebca1" fontFamily="ui-monospace,monospace" fontSize="10" textAnchor="middle">segment cached</text>
+
+        {/* Row 1 */}
+
+        <g><rect id="s3-rect-1" x="396" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s3-text-1" x="411" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">1</text></g>
+        <g><rect id="s3-rect-2" x="430" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s3-text-2" x="445" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">2</text></g>
+        <g><rect id="s3-rect-3" x="464" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s3-text-3" x="479" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">3</text></g>
+        <g><rect id="s3-rect-4" x="498" y="22" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s3-text-4" x="513" y="42" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">4</text></g>
+
+        {/* Row 2 */}
+
+        <g><rect id="s3-rect-5" x="396" y="56" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s3-text-5" x="411" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">5</text></g>
+        <g><rect id="s3-rect-6" x="430" y="56" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s3-text-6" x="445" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">6</text></g>
+        <g><rect id="s3-rect-7" x="464" y="56" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s3-text-7" x="479" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">7</text></g>
+        <g><rect id="s3-rect-8" x="498" y="56" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="s3-text-8" x="513" y="76" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">8</text></g>
+
+        {/* Row 3 */}
+
+        <g><rect id="s3-rect-9" x="396" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s3-text-9" x="411" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">9</text></g>
+        <g><rect id="s3-rect-10" x="430" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s3-text-10" x="445" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">10</text></g>
+        <g><rect id="s3-rect-11" x="464" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s3-text-11" x="479" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">11</text></g>
+        <g><rect id="s3-rect-12" x="498" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="s3-text-12" x="513" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">12</text></g>
+      </g>
+    </svg>
+
+    <p id="seg-status" style={{ textAlign: 'center', color: '#f97316', fontSize: '0.8rem', margin: '0.5rem 0 0', fontFamily: 'ui-monospace, monospace', transition: 'color 0.3s' }}>
+      Read page 7 → fetch segment 5-8 (3 new pages)
+    </p>
+  </div>
+</Frame>
+
+When the client needs a page that isn’t present locally, partial sync performs an on-demand fetch from the remote database.
+
+To reduce round-trips and speed up these fetches, you can configure the **segment size**: instead of requesting a single page, the client downloads a whole *segment* of pages in one request.
+
+This lets the client amortize network overhead and hydrate nearby pages that are likely to be accessed soon.
+
+**How it works**
+
+Suppose your database has:
+
+* `page_size = 4 KiB`
+* `segment_size = 16 KiB`
+
+If a local query touches page **6**, the client computes the segment that page belongs to:
+
+* 16 KiB segment = 4 pages
+* Segment covering page 6 = pages **5-8**
+
+The client then fetches all four pages in a single request and stores them locally.
+Future reads to those pages incur no additional network cost.
+
+**Benefits**
+
+* Fewer HTTP requests (one segment fetch vs. many single-page fetches)
+* Faster hydration of hot ranges
+* Better performance for workloads with spatial locality (e.g., range scans, index lookups)
+
+**Default**
+
+The default `segment_size` is **128 KiB** (typically 32 pages on a 4 KiB page size), which provides a good balance between request overhead and total bytes transferred.
+
+<Tip>
+  If your workload touches data in tight clusters (e.g., reading several adjacent rows), larger segment sizes can significantly improve performance.
+
+  Conversely, very sparse/random-access workloads may benefit from smaller segment sizes.
+</Tip>
+
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  await connect({
+    ...
+    partialSyncExperimental: {
+      bootstrapStrategy: { kind: 'prefix', length: 128 * 1024 }, // 128 KiB
+      segmentSize: 16 * 1024,
+    },
+  });
+  ```
+
+  ```py Python theme={null}
+  turso.sync.connect(
+      ...
+      partial_sync_opts=turso.sync.PartialSyncOpts(
+          bootstrap_strategy=turso.sync.PartialSyncPrefixBootstrap(length=128 * 1024),
+          segment_size=16 * 1024,
+      ),
+  )
+  ```
+
+  ```go Go theme={null}
+  turso.NewTursoSyncDb(context.Background(), turso.TursoSyncDbConfig{
+    ...
+    PartialSyncConfig: turso.TursoPartialSyncConfig{
+      BoostrapStrategyPrefix: 128 * 1024, // 128 KiB
+      SegmentSize: 16 * 1024,
+    },
+  })
+  ```
+</CodeGroup>
+
+### Prefetch
+
+<Frame>
+  <div id="prefetch-viz" style={{ padding: '1rem 0.5rem' }}>
+    <style>
+      {`
+              #p1-cell-1, #p1-cell-2, #p1-cell-3, #p1-cell-4, #p1-cell-5, #p1-cell-6, #p1-cell-7, #p1-cell-8, #p1-cell-9, #p1-cell-10, #p1-cell-11, #p1-cell-12 { cursor: pointer; }
+              #p1-cell-1:hover rect, #p1-cell-2:hover rect, #p1-cell-3:hover rect, #p1-cell-4:hover rect, #p1-cell-5:hover rect, #p1-cell-6:hover rect, #p1-cell-7:hover rect, #p1-cell-8:hover rect, #p1-cell-9:hover rect, #p1-cell-10:hover rect, #p1-cell-11:hover rect, #p1-cell-12:hover rect { filter: brightness(1.2); }
+            `}
+    </style>
+
+    <svg viewBox="0 0 540 140" xmlns="http://www.w3.org/2000/svg" style={{ width: '100%', minWidth: '480px', maxWidth: '620px', display: 'block', margin: '0 auto' }}>
+      <defs>
+        <marker id="arrowPf" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#6b7280" />
+        </marker>
+
+        <marker id="arrowPrefetch" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+          <polygon points="0 0, 6 2.5, 0 5" fill="#8b5cf6" />
+        </marker>
+      </defs>
+
+      <g id="pf-state-1">
+        <text x="76" y="14" fill="#9ca3af" fontFamily="ui-monospace,monospace" fontSize="10" textAnchor="middle">select page</text>
+
+        {/* Row 1 */}
+
+        <g id="p1-cell-1"><rect id="p1-rect-1" x="10" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p1-text-1" x="25" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>1</text></g>
+        <g id="p1-cell-2"><rect id="p1-rect-2" x="44" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p1-text-2" x="59" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>2</text></g>
+        <g id="p1-cell-3"><rect id="p1-rect-3" x="78" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p1-text-3" x="93" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>3</text></g>
+        <g id="p1-cell-4"><rect id="p1-rect-4" x="112" y="22" width="30" height="30" fill="#2a2a4a" stroke="#fbbf24" strokeWidth="3" rx="4" /><text id="p1-text-4" x="127" y="42" fill="#fbbf24" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>4</text></g>
+
+        {/* Row 2 */}
+
+        <g id="p1-cell-5"><rect id="p1-rect-5" x="10" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p1-text-5" x="25" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>5</text></g>
+        <g id="p1-cell-6"><rect id="p1-rect-6" x="44" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p1-text-6" x="59" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>6</text></g>
+        <g id="p1-cell-7"><rect id="p1-rect-7" x="78" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p1-text-7" x="93" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>7</text></g>
+        <g id="p1-cell-8"><rect id="p1-rect-8" x="112" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p1-text-8" x="127" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>8</text></g>
+
+        {/* Row 3 */}
+
+        <g id="p1-cell-9"><rect id="p1-rect-9" x="10" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p1-text-9" x="25" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>9</text></g>
+        <g id="p1-cell-10"><rect id="p1-rect-10" x="44" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p1-text-10" x="59" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" style={{ pointerEvents:'none' }}>10</text></g>
+        <g id="p1-cell-11"><rect id="p1-rect-11" x="78" y="90" width="30" height="30" fill="#2a2a4a" stroke="#8b5cf6" strokeWidth="2" rx="4" /><text id="p1-text-11" x="93" y="110" fill="#8b5cf6" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>11</text></g>
+        <g id="p1-cell-12"><rect id="p1-rect-12" x="112" y="90" width="30" height="30" fill="#2a2a4a" stroke="#8b5cf6" strokeWidth="2" rx="4" /><text id="p1-text-12" x="127" y="110" fill="#8b5cf6" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold" style={{ pointerEvents:'none' }}>12</text></g>
+
+        {/* B-tree arrows drawn here by JS */}
+
+        <g id="pf-btree-arrows" />
+      </g>
+
+      <g id="pf-arrow-1" style={{ transition: 'opacity 0.3s' }}>
+        <line x1="152" y1="71" x2="188" y2="71" stroke="#6b7280" strokeWidth="2" markerEnd="url(#arrowPf)" />
+
+        <text id="pf-arrow-label" x="170" y="64" fill="#8b5cf6" fontFamily="ui-monospace,monospace" fontSize="9" textAnchor="middle">read(4)</text>
+      </g>
+
+      <g id="pf-state-2" style={{ transition: 'opacity 0.3s' }}>
+        <text x="268" y="14" fill="#f97316" fontFamily="ui-monospace,monospace" fontSize="10" textAnchor="middle">fetching</text>
+
+        {/* Row 1 */}
+
+        <g><rect id="p2-rect-1" x="203" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p2-text-1" x="218" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">1</text></g>
+        <g><rect id="p2-rect-2" x="237" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p2-text-2" x="252" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">2</text></g>
+        <g><rect id="p2-rect-3" x="271" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p2-text-3" x="286" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">3</text></g>
+        <g><rect id="p2-rect-4" x="305" y="22" width="30" height="30" fill="#f97316" stroke="#fbbf24" strokeWidth="3" rx="4" /><text id="p2-text-4" x="320" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">4</text></g>
+
+        {/* Row 2 */}
+
+        <g><rect id="p2-rect-5" x="203" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p2-text-5" x="218" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">5</text></g>
+        <g><rect id="p2-rect-6" x="237" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p2-text-6" x="252" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">6</text></g>
+        <g><rect id="p2-rect-7" x="271" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p2-text-7" x="286" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">7</text></g>
+        <g><rect id="p2-rect-8" x="305" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p2-text-8" x="320" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">8</text></g>
+
+        {/* Row 3 */}
+
+        <g><rect id="p2-rect-9" x="203" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p2-text-9" x="218" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">9</text></g>
+        <g><rect id="p2-rect-10" x="237" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p2-text-10" x="252" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">10</text></g>
+        <g><rect id="p2-rect-11" x="271" y="90" width="30" height="30" fill="#f97316" stroke="#f97316" strokeWidth="2" rx="4" /><text id="p2-text-11" x="286" y="110" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">11</text></g>
+        <g><rect id="p2-rect-12" x="305" y="90" width="30" height="30" fill="#f97316" stroke="#f97316" strokeWidth="2" rx="4" /><text id="p2-text-12" x="320" y="110" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">12</text></g>
+      </g>
+
+      <g id="pf-arrow-2" style={{ transition: 'opacity 0.3s' }}>
+        <line x1="345" y1="71" x2="381" y2="71" stroke="#6b7280" strokeWidth="2" markerEnd="url(#arrowPf)" />
+      </g>
+
+      <g id="pf-state-3" style={{ transition: 'opacity 0.3s' }}>
+        <text x="461" y="14" fill="#1ebca1" fontFamily="ui-monospace,monospace" fontSize="10" textAnchor="middle">loaded</text>
+
+        {/* Row 1 */}
+
+        <g><rect id="p3-rect-1" x="396" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p3-text-1" x="411" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">1</text></g>
+        <g><rect id="p3-rect-2" x="430" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p3-text-2" x="445" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">2</text></g>
+        <g><rect id="p3-rect-3" x="464" y="22" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p3-text-3" x="479" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">3</text></g>
+        <g><rect id="p3-rect-4" x="498" y="22" width="30" height="30" fill="#1ebca1" stroke="#fbbf24" strokeWidth="3" rx="4" /><text id="p3-text-4" x="513" y="42" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">4</text></g>
+
+        {/* Row 2 */}
+
+        <g><rect id="p3-rect-5" x="396" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p3-text-5" x="411" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">5</text></g>
+        <g><rect id="p3-rect-6" x="430" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p3-text-6" x="445" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">6</text></g>
+        <g><rect id="p3-rect-7" x="464" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p3-text-7" x="479" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">7</text></g>
+        <g><rect id="p3-rect-8" x="498" y="56" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p3-text-8" x="513" y="76" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">8</text></g>
+
+        {/* Row 3 */}
+
+        <g><rect id="p3-rect-9" x="396" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p3-text-9" x="411" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">9</text></g>
+        <g><rect id="p3-rect-10" x="430" y="90" width="30" height="30" fill="#2a2a4a" stroke="#3a3a5a" strokeWidth="1" rx="4" /><text id="p3-text-10" x="445" y="110" fill="#6b7280" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle">10</text></g>
+        <g><rect id="p3-rect-11" x="464" y="90" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p3-text-11" x="479" y="110" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">11</text></g>
+        <g><rect id="p3-rect-12" x="498" y="90" width="30" height="30" fill="#1ebca1" stroke="#1ebca1" strokeWidth="2" rx="4" /><text id="p3-text-12" x="513" y="110" fill="#0a0a0a" fontFamily="ui-monospace,monospace" fontSize="12" textAnchor="middle" fontWeight="bold">12</text></g>
+      </g>
+    </svg>
+
+    <p id="pf-status" style={{ textAlign: 'center', color: '#f97316', fontSize: '0.8rem', margin: '0.5rem 0 0', fontFamily: 'ui-monospace, monospace', transition: 'color 0.3s' }}>
+      Read page 4 → prefetch 2 child pages (11, 12)
+    </p>
+  </div>
+</Frame>
+
+Prefetch is an optional optimization that builds on top of lazy page fetches.
+When enabled, the client not only retrieves the pages required by the current query, but also **inspects the structure of the newly downloaded pages and recent access patterns** to predict which pages are likely to be needed next.
+
+If the client detects a natural continuation of the access pattern — such as child pages referenced by an internal B-tree node — it proactively downloads those pages in advance.
+This reduces the number of future on-demand fetches and helps avoid stalls during operations like range scans, index walks, or sequential lookups.
+
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  await connect({
+    ...
+    partialSyncExperimental: {
+      bootstrapStrategy: { kind: 'prefix', length: 128 * 1024 }, // 128 KiB
+      prefetch: true,
+    },
+  });
+  ```
+
+  ```py Python theme={null}
+  turso.sync.connect(
+      ...
+      partial_sync_opts=turso.sync.PartialSyncOpts(
+          bootstrap_strategy=turso.sync.PartialSyncPrefixBootstrap(length=128 * 1024),
+          prefetch=True,
+      ),
+  )
+  ```
+
+  ```go Go theme={null}
+  turso.NewTursoSyncDb(context.Background(), turso.TursoSyncDbConfig{
+    ...
+    PartialSyncConfig: turso.TursoPartialSyncConfig{
+      BoostrapStrategyPrefix: 128 * 1024, // 128 KiB
+      Prefetch: true,
+    },
+  })
+  ```
+</CodeGroup>
+
+<Note>
+  `segment_size` and `prefetch` are complementary.
+
+  Segment size batches nearby pages into a single on-demand fetch, while prefetch looks at the query's access pattern and proactively fetches additional pages likely to be needed next.
+
+  Using both together can provide the best performance for real-world workloads.
+</Note>
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.turso.tech/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Conflict Resolution
+
+> How Turso sync handles concurrent changes from multiple clients.
+
+<Note>
+  This particular usage uses the Turso Cloud to sync the local Turso databases and assumes that you have an account.
+</Note>
+
+## Last Push Wins
+
+Turso sync uses a **last push wins** strategy. When two clients modify the same data and push, the last push determines the final state on the remote.
+
+| Time | Client A                                   | Client B                                 |
+| ---- | ------------------------------------------ | ---------------------------------------- |
+| T1   | `UPDATE users SET name='Alice' WHERE id=1` |                                          |
+| T2   |                                            | `UPDATE users SET name='Bob' WHERE id=1` |
+| T3   | `push()`                                   |                                          |
+| T4   |                                            | `push()`                                 |
+
+**Result**: The name is `'Bob'` because Client B pushed last.
+
+## What Happens During Pull
+
+When you pull and have unpushed local changes:
+
+1. Your local database is rolled back to the last synced state
+2. Remote changes are applied
+3. Your unpushed local changes are **replayed** on top
+
+This rollback-and-replay happens atomically — if anything fails, your database remains in its previous state.
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.turso.tech/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Checkpoint
+
+> How to compact the local WAL to bound disk usage while preserving sync state.
+
+<Note>
+  This particular usage uses the Turso Cloud to sync the local Turso databases and assumes that you have an account.
+</Note>
+
+## Overview
+
+The sync engine uses a WAL (Write-Ahead Log) to track local writes. Over time, the WAL grows as you make changes. Checkpoint compacts it by transferring committed frames into the main database file and then truncating the WAL.
+
+Auto-checkpoint is **disabled** for sync databases — you must call `checkpoint()` explicitly.
+
+## Why Checkpoint Matters
+
+Without checkpointing, the WAL grows unbounded. After many writes, the WAL can become significantly larger than the database itself. Checkpointing reclaims that disk space.
+
+You can observe this with `stats()`:
+
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  const before = await db.stats();
+  console.log('WAL size before:', before.mainWalSize);
+
+  await db.checkpoint();
+
+  const after = await db.stats();
+  console.log('WAL size after:', after.mainWalSize);
+  ```
+
+  ```py Python theme={null}
+  before = conn.stats()
+  print("WAL size before:", before.main_wal_size)
+
+  conn.checkpoint()
+
+  after = conn.stats()
+  print("WAL size after:", after.main_wal_size)
+  ```
+
+  ```go Go theme={null}
+  before, _ := db.Stats(ctx)
+  log.Printf("WAL size before: %d", before.MainWalSize)
+
+  db.Checkpoint(ctx)
+
+  after, _ := db.Stats(ctx)
+  log.Printf("WAL size after: %d", after.MainWalSize)
+  ```
+</CodeGroup>
+
+## When to Checkpoint
+
+Call `checkpoint()` periodically based on your write patterns:
+
+* **After bulk inserts** — if you insert many rows at once, checkpoint afterward to reclaim WAL space
+* **On a schedule** — for steady write workloads, checkpoint at regular intervals (e.g. every few minutes)
+* **When WAL size is large** — use `stats().mainWalSize` to monitor and checkpoint when it exceeds a threshold
+
+<CodeGroup>
+  ```ts TypeScript theme={null}
+  await db.checkpoint();
+  ```
+
+  ```py Python theme={null}
+  conn.checkpoint()
+  ```
+
+  ```go Go theme={null}
+  if err := db.Checkpoint(ctx); err != nil {
+  	return err
+  }
+  ```
+</CodeGroup>

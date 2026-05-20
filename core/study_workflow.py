@@ -32,6 +32,36 @@ class StudyWorkflow:
             db_path=db_path,
         )
 
+        # Global Cache + CacheWriteWorker (feature-flag gated)
+        self.cache_client = None
+        self.cache_write_worker = None
+        self.word_lookup = None
+        try:
+            from core.feature_flags import is_enabled
+            if is_enabled("GLOBAL_CACHE_ENABLED"):
+                import config as _config
+                cache_url = getattr(_config, "TURSO_CACHE_DB_URL", None)
+                cache_token = getattr(_config, "TURSO_CACHE_AUTH_TOKEN", None)
+                cache_timeout = getattr(_config, "CACHE_TIMEOUT_S", 3.0)
+                if cache_url and cache_token:
+                    from database.cache_client import GlobalCacheClient, CacheWriteWorker
+                    self.cache_client = GlobalCacheClient(cache_url, cache_token, cache_timeout)
+                    self.cache_write_worker = CacheWriteWorker(self.cache_client)
+                    from core.word_lookup import WordLookup
+                    self.word_lookup = WordLookup(
+                        logger=logger,
+                        ai_client=ai_client,
+                        cache_client=self.cache_client,
+                        db_path=db_path,
+                    )
+                    self.word_lookup.cache_write_worker = self.cache_write_worker
+                    try:
+                        self.cache_client.init_table()
+                    except Exception:
+                        self.logger.warning("Cache table init failed (non-fatal)")
+        except Exception as e:
+            self.logger.warning(f"Cache init failed (non-fatal): {e}")
+
     @staticmethod
     def _format_words_preview(words, limit=20):
         """将单词列表压缩为日志友好的预览字符串。"""
@@ -431,4 +461,9 @@ class StudyWorkflow:
         self.sync_manager.flush_pending_syncs(name)
 
     def shutdown(self):
+        if self.cache_write_worker:
+            try:
+                self.cache_write_worker.stop()
+            except Exception:
+                pass
         self.sync_manager.shutdown()

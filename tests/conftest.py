@@ -16,6 +16,10 @@ def isolate_cloud_configuration(monkeypatch):
     monkeypatch.delenv("TURSO_TEST_DB_HOSTNAME", raising=False)
     monkeypatch.delenv("TURSO_HUB_DB_URL", raising=False)
     monkeypatch.delenv("TURSO_HUB_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("TURSO_CACHE_DB_URL", raising=False)
+    monkeypatch.delenv("TURSO_CACHE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CACHE_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("GLOBAL_CACHE_ENABLED", raising=False)
 
     for module_name in ("config", "database.connection", "database.schema", "database.momo_words", "database.hub_users", "main"):
         module = sys.modules.get(module_name)

@@ -75,12 +75,12 @@ pm = ProfileManager(PROFILES_DIR)
 MOMO_TOKEN = os.getenv("MOMO_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MIMO_API_KEY = os.getenv("MIMO_API_KEY")
-# MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com/v1")
-MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://token-plan-sgp.xiaomimimo.com/v1")
+MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com/v1")
+#MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://token-plan-sgp.xiaomimimo.com/v1")
 
 # 模型设置 (AI Settings)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2.5")
+MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2-flash")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
 
 # 当前使用的 AI 提供商: "gemini" 或 "mimo"
@@ -145,7 +145,7 @@ def switch_user(username: str) -> str:
 
     返回规范化后的用户名。
     """
-    global ACTIVE_USER, MOMO_TOKEN, GEMINI_API_KEY, MIMO_API_KEY
+    global ACTIVE_USER, MOMO_TOKEN, GEMINI_API_KEY, GEMINI_MODEL, MIMO_API_KEY, MIMO_API_BASE, MIMO_MODEL
     global AI_PROVIDER, DB_PATH, TEST_DB_PATH, TURSO_DB_URL, TURSO_AUTH_TOKEN
     global TURSO_CACHE_DB_URL, TURSO_CACHE_AUTH_TOKEN  # NEW
 
@@ -159,7 +159,10 @@ def switch_user(username: str) -> str:
     ACTIVE_USER = normalized
     MOMO_TOKEN = os.getenv("MOMO_TOKEN")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.0-flash"
     MIMO_API_KEY = os.getenv("MIMO_API_KEY")
+    MIMO_API_BASE = os.getenv("MIMO_API_BASE") or "https://api.xiaomimimo.com/v1"
+    MIMO_MODEL = os.getenv("MIMO_MODEL") or "mimo-v2-flash"
     AI_PROVIDER = os.getenv("AI_PROVIDER", "mimo")
     TURSO_DB_URL = os.getenv("TURSO_DB_URL")
     TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")

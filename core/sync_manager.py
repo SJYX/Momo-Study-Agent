@@ -64,6 +64,10 @@ class SyncManager:
         self._flush_batch_size = 20   # 积攒满 N 条即刷
         self._flush_interval_s = 2.0  # 或间隔 N 秒即刷
 
+        self._is_processing = False
+        self._is_processing_lock = threading.Lock()
+        self._is_processing_event = threading.Event()
+
         self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
         self.sync_worker_thread.start()
 
@@ -250,6 +254,9 @@ class SyncManager:
 
             priority, _, item = wrapped
             task_done_manually = False
+            with self._is_processing_lock:
+                self._is_processing = True
+            self._is_processing_event.set()
             try:
                 # B3 闲时引擎：系统稳定 idle 时全速消费 P3/P4，不再因非 active profile 暂停
                 if int(priority) >= int(Priority.P3) and not is_active(item.get("profile_name", "")):
@@ -535,6 +542,9 @@ class SyncManager:
             finally:
                 if not task_done_manually:
                     self.sync_queue.task_done()
+                with self._is_processing_lock:
+                    self._is_processing = False
+                self._is_processing_event.set()
 
             # 每轮循环末检查是否需要刷写缓冲
             self._maybe_flush()
@@ -590,9 +600,33 @@ class SyncManager:
     def flush_pending_syncs(self, context_name: str):
         # 先刷写积攒的终态
         self._flush_pending_writes()
-        pending_count = self.sync_queue.qsize()
-        if pending_count > 0:
-            self.logger.info(f"🔁 还有 {pending_count} 个 {context_name} 结果正在后台同步，可继续其他操作。")
+        # 等待同步队列完全排空，确保 taskStatus="done" 发出时墨墨同步已完成
+        remaining = self.sync_queue.qsize()
+        if remaining > 0:
+            self.logger.info(f"⏳ 等待 {remaining} 个 {context_name} 同步任务完成...")
+        self.wait_for_sync_completion(timeout_s=120.0)
+        final_qsize = self.sync_queue.qsize()
+        if final_qsize > 0:
+            self.logger.warning(f"⚠️ {context_name} 同步超时，仍有 {final_qsize} 个任务未完成")
+
+    def wait_for_sync_completion(self, timeout_s: float = 60.0) -> bool:
+        """阻塞等待，直到同步队列排空且当前处理项完成。
+
+        Returns:
+            True  — 队列已排空
+            False — 超时，队列可能仍有残留
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self.sync_queue.qsize() == 0 and not self._is_processing:
+                return True
+            remaining = min(1.0, deadline - time.time())
+            if remaining <= 0:
+                break
+            # 等待事件（worker 完成处理时会 set）或超时
+            self._is_processing_event.wait(timeout=remaining)
+            self._is_processing_event.clear()
+        return self.sync_queue.qsize() == 0 and not self._is_processing
 
     def shutdown(self):
         pending_count = self.sync_queue.qsize()

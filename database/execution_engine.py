@@ -174,19 +174,19 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
                 pass
             return
         except Exception as e:
-            # Catch ALL exceptions here to check for libsql WalConflicts
+            # pyturso 原生 MVCC 不会产生 WalConflict，但并发下仍可能出现 "database is locked" 等瞬时错误。
+            # 保留通用重试：对可重试的瞬时错误做指数退避重试。
             error_msg = str(e).lower()
-            is_wal_conflict = (
-                "wal" in error_msg
-                or "database is locked" in error_msg
-                or "frame insert conflict" in error_msg
-                or "walconflict" in error_msg
+            is_transient = (
+                "database is locked" in error_msg
+                or "wal" in error_msg
+                or "busy" in error_msg
             )
-            if is_wal_conflict and retry_count < max_retries - 1:
+            if is_transient and retry_count < max_retries - 1:
                 retry_count += 1
                 wait_time = 0.1 * (2 ** (retry_count - 1))
                 _debug_log(
-                    f"批量写入 WAL 冲突，等待 {wait_time*1000:.0f}ms 后重试 ({retry_count}/{max_retries}): {e}",
+                    f"批量写入瞬时错误，等待 {wait_time*1000:.0f}ms 后重试 ({retry_count}/{max_retries}): {e}",
                     level="WARNING",
                 )
                 time.sleep(wait_time)
@@ -301,7 +301,7 @@ def _sync_daemon() -> None:
 
         try:
             conn = _get_main_write_conn_singleton(do_sync=False)
-            if not hasattr(conn, "sync"):
+            if not (hasattr(conn, "sync") or hasattr(conn, "pull")):
                 continue
             conn_lock = _get_singleton_conn_op_lock(conn)
             sync_started_at = time.time()
@@ -313,9 +313,19 @@ def _sync_daemon() -> None:
             # 触发 access violation (0xC0000005)。
             if conn_lock is not None:
                 with conn_lock:
-                    conn.sync()
+                    if hasattr(conn, "pull"):
+                        conn.push()
+                        conn.pull()
+                        conn.checkpoint()
+                    else:
+                        conn.sync()
             else:
-                conn.sync()
+                if hasattr(conn, "pull"):
+                    conn.push()
+                    conn.pull()
+                    conn.checkpoint()
+                else:
+                    conn.sync()
 
             _needs_sync = False
             clear_db_syncing()
