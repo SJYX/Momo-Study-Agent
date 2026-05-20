@@ -101,11 +101,12 @@ def _run_libsql_sync_pipeline(
                 try:
                     # 锁必须由本线程持有：外层只持有锁等 sync_done，
                     # 超时后释放锁会让 sync 与其他线程并发碰 libsql C 层（access violation）。
+                    _backend = get_active_backend()
                     if conn_op_lock is not None:
                         with conn_op_lock:
-                            get_active_backend().do_sync_on(conn)
+                            _backend.do_sync_on(conn)
                     else:
-                        get_active_backend().do_sync_on(conn)
+                        _backend.do_sync_on(conn)
                     sync_result_box[0] = True
                 except Exception as e:
                     sync_err_box[0] = e

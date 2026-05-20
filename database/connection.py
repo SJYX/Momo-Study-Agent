@@ -36,12 +36,15 @@ TURSO_HUB_DB_URL = _config.TURSO_HUB_DB_URL
 from database.backends import get_active_backend, HAS_LIBSQL, HAS_PYTURSO
 
 _backend = None  # Lazy init
+_backend_lock = threading.Lock()
 
 
 def _get_backend():
     global _backend
     if _backend is None:
-        _backend = get_active_backend()
+        with _backend_lock:
+            if _backend is None:
+                _backend = get_active_backend()
     return _backend
 
 try:

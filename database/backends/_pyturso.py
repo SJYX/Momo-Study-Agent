@@ -113,6 +113,24 @@ class PytursoBackend:
                 module="database.backends._pyturso",
             )
 
+        # ── Step 2.5: Checkpoint to flush bootstrap WAL data to main db file ──
+        # pyturso's connect() may leave bootstrap data in WAL without checkpointing.
+        # Without this, the .db file has invalid btree pages (corruption).
+        # Also creates the .db-info sidecar that pyturso uses for sync state.
+        try:
+            db.checkpoint()
+            _debug_log(
+                f"[{db_label}] connect 后 checkpoint 完成",
+                level="INFO",
+                module="database.backends._pyturso",
+            )
+        except Exception as e:
+            _debug_log(
+                f"[{db_label}] connect 后 checkpoint 失败（非致命）: {e}",
+                level="WARNING",
+                module="database.backends._pyturso",
+            )
+
         # ── Step 3: Pull for existing databases (bootstrap already handled new ones) ──
         if db_existed_before and not do_sync:
             try:

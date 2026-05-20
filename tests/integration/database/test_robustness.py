@@ -95,8 +95,17 @@ def test_db_manager_get_cloud_conn_self_healing_regression(tmp_path, monkeypatch
             return FakeLibsqlConn(fail=True)
         return FakeLibsqlConn(fail=False)
 
-    import libsql # Ensure it's available or mocked
-    monkeypatch.setattr(db_connection.libsql, "connect", fake_connect)
+    import libsql  # noqa: F401 — ensure libsql is importable so backends work
+
+    # Force the libsql backend (this test validates libsql-specific self-healing).
+    # Reset the lazy backend singleton so it re-evaluates after we patch HAS_PYTURSO.
+    import database.backends as backends_mod
+    monkeypatch.setattr(backends_mod, "HAS_PYTURSO", False)
+    monkeypatch.setattr(db_connection, "_backend", None)  # reset lazy singleton
+
+    # Patch libsql.connect at the source (_libsql backend).
+    from database.backends import _libsql as backend_libsql
+    monkeypatch.setattr(backend_libsql.libsql, "connect", fake_connect)
 
     conn = db_connection._get_cloud_conn("libsql://test", "token", db_path=str(db_path))
     assert conn is not None
