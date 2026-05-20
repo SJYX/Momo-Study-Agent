@@ -48,8 +48,10 @@ class GlobalCacheClient:
         Returns parsed response dict, or None on non-200 or SQL error.
         Raises CacheNetworkError on timeout/connection errors.
         """
-        stmts = [{"sql": sql, "args": args or []}]
-        payload = {"requests": [{"type": "execute", "stmts": stmts}]}
+        raw_args = args or []
+        # Turso /v2/pipeline requires typed args: [{"type": "text", "value": "..."}, ...]
+        typed_args = [{"type": "text", "value": str(a)} for a in raw_args]
+        payload = {"requests": [{"type": "execute", "stmt": {"sql": sql, "args": typed_args}}]}
 
         try:
             resp = self.session.post(self.endpoint, json=payload, timeout=self.timeout)
