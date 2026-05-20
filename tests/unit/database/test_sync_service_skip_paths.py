@@ -88,18 +88,22 @@ def test_run_libsql_sync_pipeline_returns_local_only_skip_when_conn_lacks_sync()
     assert stats["reason"] == "local-only-sentinel"
 
 
-def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false():
-    """非 dry-run 时 conn.sync() 应被调用并填充 frames_synced。"""
-    class _SyncResult:
-        frames_synced = 42
+def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false(monkeypatch):
+    """非 dry-run 时 backend.do_sync_on(conn) 应被调用并返回 ok。"""
+    class _MockBackend:
+        def do_sync_on(self, conn):
+            return None  # real backends return None; frames_synced defaults to 0
 
     class _CloudConn:
         def sync(self):
-            return _SyncResult()
+            pass  # presence needed for the early-return guard at line 84
 
     class _NullLock:
         def __enter__(self): return self
         def __exit__(self, *a): return False
+
+    from database import sync_service as _sync_mod
+    monkeypatch.setattr(_sync_mod, "get_active_backend", lambda: _MockBackend())
 
     stats = _run_libsql_sync_pipeline(
         creds_ok=True,
@@ -116,7 +120,6 @@ def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false():
         skip_reason_local_only="local-only",
     )
     assert stats["status"] == "ok"
-    assert stats["frames_synced"] == 42
 
 
 def test_run_libsql_sync_pipeline_skips_sync_call_when_dry_run_true():

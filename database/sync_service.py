@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from . import connection
+from .backends import get_active_backend
 from .schema import _init_hub_schema
 from .utils import _debug_log
 
@@ -102,21 +103,10 @@ def _run_libsql_sync_pipeline(
                     # 超时后释放锁会让 sync 与其他线程并发碰 libsql C 层（access violation）。
                     if conn_op_lock is not None:
                         with conn_op_lock:
-                            if hasattr(conn, "pull"):
-                                conn.push()
-                                conn.pull()
-                                conn.checkpoint()
-                                sync_result_box[0] = True
-                            else:
-                                sync_result_box[0] = conn.sync()
+                            get_active_backend().do_sync_on(conn)
                     else:
-                        if hasattr(conn, "pull"):
-                            conn.push()
-                            conn.pull()
-                            conn.checkpoint()
-                            sync_result_box[0] = True
-                        else:
-                            sync_result_box[0] = conn.sync()
+                        get_active_backend().do_sync_on(conn)
+                    sync_result_box[0] = True
                 except Exception as e:
                     sync_err_box[0] = e
                 finally:
