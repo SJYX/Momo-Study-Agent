@@ -22,6 +22,7 @@ from .hub_users import *  # noqa: F401,F403
 from .momo_words import *  # noqa: F401,F403
 from .schema import *  # noqa: F401,F403
 from .utils import *  # noqa: F401,F403
+from .backends import get_active_backend, TursoBackend  # noqa: F401
 
 try:
     import libsql
