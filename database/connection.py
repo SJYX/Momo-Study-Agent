@@ -446,7 +446,7 @@ def _get_main_write_conn_singleton(
                     if attempt > 0:
                         _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
                     try:
-                        conn = _get_backend().connect(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+                        conn = _get_backend().connect(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync, is_singleton=True)
                         with _main_write_conn_lock:
                             _main_write_conn_singleton = conn
                             _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
@@ -511,7 +511,7 @@ def _get_hub_write_conn_singleton(
                 for attempt in range(max_retries):
                     try:
                         _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
-                        conn = _get_backend().connect(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
+                        conn = _get_backend().connect(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync, is_singleton=True)
                         _debug_log("[_get_hub_write_conn_singleton] backend.connect 返回成功")
                         with _hub_write_conn_lock:
                             _hub_write_conn_singleton = conn
