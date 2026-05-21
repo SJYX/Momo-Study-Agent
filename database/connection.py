@@ -743,7 +743,7 @@ def _run_with_managed_connection(
     finally:
         if owned:
             try:
-                if not _is_main_write_singleton_conn(target_conn) and not _is_hub_write_singleton_conn(target_conn):
+                if _get_backend().should_close(target_conn):
                     target_conn.close()
             except Exception:
                 pass
@@ -781,7 +781,6 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
         else:
             hub_conn = _get_hub_local_conn()
 
-        is_singleton = _is_hub_write_singleton_conn(hub_conn)
         with _get_backend().op_lock_for(hub_conn):
             cur = hub_conn.cursor()
             try:
@@ -790,7 +789,7 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
             finally:
                 cur.close()
             hub_conn.commit()
-        if not is_singleton:
+        if _get_backend().should_close(hub_conn):
             try:
                 hub_conn.close()
             except Exception:
@@ -821,7 +820,6 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
         else:
             hub_conn = _get_hub_local_conn()
 
-        is_singleton = _is_hub_write_singleton_conn(hub_conn)
         with _get_backend().op_lock_for(hub_conn):
             cur = hub_conn.cursor()
             try:
@@ -830,7 +828,7 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
             finally:
                 cur.close()
             hub_conn.commit()
-        if not is_singleton:
+        if _get_backend().should_close(hub_conn):
             try:
                 hub_conn.close()
             except Exception:
