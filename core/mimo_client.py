@@ -200,23 +200,6 @@ class MimoClient:
             }
 
 
-def _extract_json_array(text: str) -> str:
-    """从字符串中提取第一个完整的 JSON 数组 [...]，防止末尾乱码干扰"""
-    start = text.find("[")
-    if start == -1:
-        return text
-
-    count = 0
-    for i in range(start, len(text)):
-        if text[i] == "[":
-            count += 1
-        elif text[i] == "]":
-            count -= 1
-            if count == 0:
-                return text[start : i + 1]
-    return text[start:]
-
-
 if __name__ == "__main__":
     # 测试代码
     try:
