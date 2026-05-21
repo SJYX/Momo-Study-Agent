@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from typing import List, Dict, Tuple
 import config as _config
-from database.connection import _get_read_conn, _is_main_write_singleton_conn
+from database.connection import _get_read_conn
 from database.word_repo import query_weak_words
 
 
@@ -158,7 +158,7 @@ class WeakWordFilter:
                 total_words = cur.fetchone()[0] or 0
             finally:
                 cur.close()
-        if not _is_main_write_singleton_conn(conn):
+        if get_active_backend().should_close(conn):
             conn.close()
 
         # 估算学习频率 (简易实现)

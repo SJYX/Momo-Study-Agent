@@ -18,6 +18,7 @@ import config as _config
 
 from . import connection
 from .sql_constants import COMMUNITY_NOTE_LOOKUP_SQL_TEMPLATE
+from database.backends import get_active_backend
 from .utils import (
     _collect_cloud_lookup_targets,
     _debug_log,
@@ -172,7 +173,7 @@ def find_words_in_community_batch(
         except Exception:  # noqa: BLE001 - 当前库读失败让位给云端补查
             pass
         finally:
-            if c is not None and not connection._is_main_write_singleton_conn(c):
+            if c is not None and get_active_backend().should_close(c):
                 try:
                     c.close()
                 except Exception:  # noqa: BLE001

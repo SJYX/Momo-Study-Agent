@@ -478,7 +478,7 @@ def atomic_save_iteration_and_update_note(
     使用 BEGIN IMMEDIATE 以及 op_lock 确保不会被其他迭代中断。
     """
     try:
-        from database.connection import _get_conn, _is_main_write_singleton_conn
+        from database.connection import _get_conn
         from database.backends import get_active_backend
         from database.utils import _debug_log
         import json
@@ -548,7 +548,7 @@ def atomic_save_iteration_and_update_note(
                 try:
                     cur.close()
                 finally:
-                    if not _is_main_write_singleton_conn(write_conn):
+                    if get_active_backend().should_close(write_conn):
                         try:
                             write_conn.close()
                         except Exception:

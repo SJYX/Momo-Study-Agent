@@ -5,7 +5,7 @@ import json
 import time
 from typing import List, Dict
 import config as _config
-from database.connection import _get_read_conn, _row_to_dict, _is_main_write_singleton_conn
+from database.connection import _get_read_conn, _row_to_dict
 from database.word_repo import query_weak_words
 from database.momo_words import (
     get_latest_progress,
@@ -168,7 +168,7 @@ class IterationManager:
             finally:
                 cur.close()
             conn.commit()
-        if not _is_main_write_singleton_conn(conn):
+        if get_active_backend().should_close(conn):
             conn.close()
         if row and row[0]:
             history = json.loads(row[0])
@@ -331,7 +331,7 @@ class IterationManager:
                 row = cur.fetchone()
             finally:
                 cur.close()
-        if not _is_main_write_singleton_conn(conn):
+        if get_active_backend().should_close(conn):
             conn.close()
 
         old_history = json.loads(row[0]) if row and row[0] else []

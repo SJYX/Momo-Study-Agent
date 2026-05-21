@@ -113,7 +113,7 @@ async def db_replica_health(
     db_size_mb = 0.0
     try:
         import config as _cfg
-        from database.connection import _get_read_conn, _is_main_write_singleton_conn
+        from database.connection import _get_read_conn
         from database.backends import get_active_backend
         rconn = _get_read_conn(_cfg.DB_PATH)
         with get_active_backend().op_lock_for(rconn):
@@ -124,7 +124,7 @@ async def db_replica_health(
                 schema_version = int(row[0]) if row else 0
             finally:
                 rcur.close()
-        if not _is_main_write_singleton_conn(rconn):
+        if get_active_backend().should_close(rconn):
             rconn.close()
         # 文件大小
         if os.path.exists(_cfg.DB_PATH):

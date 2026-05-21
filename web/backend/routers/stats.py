@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 def _fetch_summary_data(db_path: str) -> dict:
     """同步 DB 操作，由 run_in_threadpool 在线程池执行，避免阻塞 ASGI 事件循环。"""
-    from database.connection import _get_read_conn, _is_main_write_singleton_conn
+    from database.connection import _get_read_conn
     from database.backends import get_active_backend
     from database.word_repo import count_by_state
     from database.word_state import WordState
@@ -66,7 +66,7 @@ def _fetch_summary_data(db_path: str) -> dict:
                 cur.close()
             conn.commit()
     finally:
-        if not _is_main_write_singleton_conn(conn):
+        if get_active_backend().should_close(conn):
             conn.close()
 
     try:
@@ -95,7 +95,7 @@ async def stats_summary(ctx = Depends(get_user_context)):
 
 def _fetch_ops_db_data(db_path: str) -> dict:
     """同步 DB 操作，由 run_in_threadpool 在线程池执行。"""
-    from database.connection import _get_read_conn, _is_main_write_singleton_conn
+    from database.connection import _get_read_conn
     from database.backends import get_active_backend
     from database.word_repo import count_by_state
     from database.word_state import WordState
@@ -111,7 +111,7 @@ def _fetch_ops_db_data(db_path: str) -> dict:
             sync_queue_depth = int((row or [0])[0] or 0)
         finally:
             cur1.close()
-        if not _is_main_write_singleton_conn(conn1):
+        if get_active_backend().should_close(conn1):
             conn1.close()
     except Exception:
         sync_queue_depth = 0
@@ -131,7 +131,7 @@ def _fetch_ops_db_data(db_path: str) -> dict:
                 cur.close()
             conn.commit()
         finally:
-            if not _is_main_write_singleton_conn(conn):
+            if get_active_backend().should_close(conn):
                 conn.close()
     except Exception:
         avg_latency = 0.0

@@ -373,6 +373,8 @@ def init_users_hub_tables() -> bool:
         _debug_log("[init_hub] 正在获取 Hub 连接...", module="database.schema")
         hub_conn = connection._get_hub_conn()
         _debug_log("[init_hub] Hub 连接获取成功", module="database.schema")
+
+        from database.backends import get_active_backend
         cur = hub_conn.cursor()
         
         # 检查所有关键表是否都已存在，若都存在则短路返回
@@ -390,7 +392,7 @@ def init_users_hub_tables() -> bool:
                     "last_checked_at": time.time(),
                 }
             )
-            if not connection._is_hub_write_singleton_conn(hub_conn):
+            if get_active_backend().should_close(hub_conn):
                 hub_conn.close()
             return True
 
@@ -398,7 +400,6 @@ def init_users_hub_tables() -> bool:
         if table_exists:
             _debug_log("中央 Hub users 表已存在，将执行增量 schema 校验", module="database.schema")
 
-        from database.backends import get_active_backend
         _backend = get_active_backend()
 
         def _exec(sql: str, args: Optional[tuple] = None) -> None:
@@ -451,7 +452,7 @@ def init_users_hub_tables() -> bool:
         with _backend.op_lock_for(hub_conn):
             hub_conn.commit()
 
-        if not connection._is_hub_write_singleton_conn(hub_conn):
+        if get_active_backend().should_close(hub_conn):
             hub_conn.close()
 
         _mark_db_initialized("hub", hub_fp)

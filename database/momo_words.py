@@ -196,7 +196,8 @@ def log_test_run(
     )
     c.commit()
     rid = cur.lastrowid
-    if not connection._is_main_write_singleton_conn(c):
+    from database.backends import get_active_backend
+    if get_active_backend().should_close(c):
         c.close()
     return rid
 
