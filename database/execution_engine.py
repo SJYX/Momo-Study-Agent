@@ -15,7 +15,6 @@ import config as _config
 from database.connection import (
     _get_dedicated_write_conn,
     _get_main_write_conn_singleton,
-    _get_singleton_conn_op_lock,
     _close_main_write_conn_singleton,
     _close_hub_write_conn_singleton,
     _is_main_db_path,
@@ -134,16 +133,12 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
     max_retries = 3
     retry_count = 0
     last_error = None
-    conn_lock = _get_singleton_conn_op_lock(write_conn)
     started_at = time.time()
 
     while retry_count < max_retries:
         try:
-            if conn_lock is None:
+            with get_active_backend().op_lock_for(write_conn):
                 _execute_batch_writes_unlocked(write_conn, batch)
-            else:
-                with conn_lock:
-                    _execute_batch_writes_unlocked(write_conn, batch)
             duration_ms = int((time.time() - started_at) * 1000)
             is_slow = duration_ms >= _SLOW_BATCH_WRITE_MS
             try:
@@ -302,18 +297,10 @@ def _sync_daemon() -> None:
 
         try:
             conn = _get_main_write_conn_singleton(do_sync=False)
-            conn_lock = _get_singleton_conn_op_lock(conn)
             sync_started_at = time.time()
             set_db_syncing(phase="idle_sync")
 
-            # 直接在 daemon 线程中持锁执行 conn.sync()。
-            # 必须在持锁窗口内同步执行，不能放到单独线程 — 否则 RLock/Lock
-            # 无法阻止其他线程通过 DBSession 持同一把锁并发访问 libsql C 层，
-            # 触发 access violation (0xC0000005)。
-            if conn_lock is not None:
-                with conn_lock:
-                    get_active_backend().do_sync_on(conn)
-            else:
+            with get_active_backend().op_lock_for(conn):
                 get_active_backend().do_sync_on(conn)
 
             _needs_sync = False
