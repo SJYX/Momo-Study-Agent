@@ -10,7 +10,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProfileStore } from '../stores/profile'
-import { apiClient, apiPost, apiPut, apiPutWithRetry } from '../api/client'
+import { apiClient, apiPost, apiPut } from '../api/client'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
 import type { UsersListResponse, UserProfile, ValidateResponse, ProfileCreateResponse } from '../api/types'
@@ -31,7 +31,6 @@ export default function UserGateway() {
   const [apiKey, setApiKey] = useState('')
   const [validateResult, setValidateResult] = useState<Record<string, ValidateResponse>>({})
   const [actionError, setActionError] = useState('')
-  const [isSwitching, setIsSwitching] = useState(false)
 
   // 列表查询（与 Users 页共享 cache key）
   const { data, isLoading, error } = useQuery({
@@ -95,25 +94,17 @@ export default function UserGateway() {
     onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
   })
 
-  const finishAndEnter = async (name: string) => {
+  const finishAndEnter = (name: string) => {
     setActiveProfile(name)
-    setIsSwitching(true)
-    try {
-      await apiPutWithRetry(`/api/users/active?username=${encodeURIComponent(name)}`)
-    } catch {
-      // Non-blocking
-    }
+    // Fire-and-forget: warmup is async, navigate immediately
+    apiPut(`/api/users/active?username=${encodeURIComponent(name)}`).catch(() => {})
     navigate('/', { replace: true })
   }
 
-  const handleSelectExisting = async (username: string) => {
+  const handleSelectExisting = (username: string) => {
     setActiveProfile(username)
-    setIsSwitching(true)
-    try {
-      await apiPutWithRetry(`/api/users/active?username=${encodeURIComponent(username)}`)
-    } catch {
-      // Non-blocking: even if PUT fails, navigate — next request will re-init
-    }
+    // Fire-and-forget: warmup is async, navigate immediately
+    apiPut(`/api/users/active?username=${encodeURIComponent(username)}`).catch(() => {})
     navigate('/', { replace: true })
   }
 
@@ -123,17 +114,6 @@ export default function UserGateway() {
   const creating = createMutation.isPending
   const saving = saveConfigMutation.isPending
   const showCurrentProfileHint = activeProfile && step === 'select'
-
-  if (isSwitching) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 size={40} className="animate-spin text-blue-600 mx-auto mb-4" />
-          <p className="text-gray-600 text-sm">正在初始化用户上下文...</p>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
