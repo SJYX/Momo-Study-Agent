@@ -13,13 +13,8 @@ import sys
 import time
 from typing import Any, Optional
 
-# ── libsql availability (module-level) ──
-try:
-    import libsql
-
-    HAS_LIBSQL = True
-except ImportError:
-    HAS_LIBSQL = False
+# ── libsql availability (集中探针) ──
+from database.backends import HAS_LIBSQL
 
 # ── helpers from database.utils (no circular import) ──
 from database.utils import _cleanup_stale_sidecars, _debug_log
