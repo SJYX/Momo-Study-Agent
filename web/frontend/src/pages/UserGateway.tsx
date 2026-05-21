@@ -10,7 +10,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProfileStore } from '../stores/profile'
-import { apiClient, apiPost, apiPut } from '../api/client'
+import { apiClient, apiPost, apiPut, apiPutWithRetry } from '../api/client'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
 import type { UsersListResponse, UserProfile, ValidateResponse, ProfileCreateResponse } from '../api/types'
@@ -99,7 +99,7 @@ export default function UserGateway() {
     setActiveProfile(name)
     setIsSwitching(true)
     try {
-      await apiPut(`/api/users/active?username=${encodeURIComponent(name)}`)
+      await apiPutWithRetry(`/api/users/active?username=${encodeURIComponent(name)}`)
     } catch {
       // Non-blocking
     }
@@ -110,7 +110,7 @@ export default function UserGateway() {
     setActiveProfile(username)
     setIsSwitching(true)
     try {
-      await apiPut(`/api/users/active?username=${encodeURIComponent(username)}`)
+      await apiPutWithRetry(`/api/users/active?username=${encodeURIComponent(username)}`)
     } catch {
       // Non-blocking: even if PUT fails, navigate — next request will re-init
     }

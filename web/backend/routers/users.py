@@ -94,12 +94,40 @@ async def switch_active_user(
     if not os.path.exists(profile_path):
         return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
 
-    # 预创建 context（如果尚未创建）
+    import web.backend.deps as _deps
+
     try:
-        import web.backend.deps as _deps
         if _deps._context_manager:
             ctx = _deps._context_manager.get(username.lower())
-            _deps._context_manager.ensure_profile_ready(ctx)
+            state = _deps._context_manager.get_warmup_state(username.lower())
+
+            if state == "done":
+                # Already warm — ensure_profile_ready is a no-op when done
+                _deps._context_manager.ensure_profile_ready(ctx)
+                return ok_response({
+                    "active_profile": username.lower(),
+                    "message": f"已切换到用户 '{username}'",
+                }, user_id=username.lower())
+
+            elif state == "in_progress":
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=503,
+                    content=error_response(
+                        "INITIALIZING",
+                        f"用户 '{username}' 正在初始化，请稍后重试",
+                        user_id=username.lower(),
+                    ).model_dump(),
+                    headers={"Retry-After": "2"},
+                )
+
+            else:
+                # not_started — trigger warmup
+                _deps._context_manager.ensure_profile_ready(ctx)
+                return ok_response({
+                    "active_profile": username.lower(),
+                    "message": f"已切换到用户 '{username}'",
+                }, user_id=username.lower())
     except Exception as e:
         return error_response("CONTEXT_ERROR", f"初始化用户上下文失败: {e}", user_id=user)
 

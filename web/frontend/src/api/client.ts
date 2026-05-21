@@ -85,6 +85,29 @@ export async function apiPut<T = unknown>(
   })
 }
 
+/**
+ * PUT with automatic retry on 503 (backend initializing).
+ * Used for /api/users/active which may return 503 during profile warmup.
+ */
+export async function apiPutWithRetry<T>(
+  url: string,
+  maxRetries = 10,
+  retryDelayMs = 2000,
+): Promise<ApiResponse<T>> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await apiClient<T>(url, { method: 'PUT' })
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('HTTP 503:')) {
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs))
+        continue
+      }
+      throw e
+    }
+  }
+  throw new Error('用户上下文初始化超时')
+}
+
 export async function apiDelete<T = unknown>(url: string): Promise<ApiResponse<T>> {
   return apiClient<T>(url, {
     method: 'DELETE',

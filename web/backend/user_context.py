@@ -182,6 +182,11 @@ class UserContextManager:
 
         return ctx
 
+    def get_warmup_state(self, profile_name: str) -> str:
+        """返回 profile 的 warmup 状态: 'not_started' | 'in_progress' | 'done'."""
+        with self._lock:
+            return self._warmup_state.get(profile_name, "not_started")
+
     def ensure_profile_ready(self, ctx: UserContext) -> None:
         """同步阶段必须完成才能让 context 投入使用；异步阶段（扫描待同步笔记并入队）
         在后台线程跑，不阻塞 Gateway 切换。"""
