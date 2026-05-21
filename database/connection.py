@@ -458,6 +458,22 @@ def _get_main_write_conn_singleton(
     return conn
 
 
+def _get_non_singleton_cloud_conn(do_sync: bool = False) -> Any:
+    """创建一个临时的云端连接（非单例），用于 init_db DDL 等不需要长期持有的场景。
+
+    与 _get_main_write_conn_singleton 不同，此连接：
+    - 不会被注册到 backend._singleton_ids
+    - 使用完毕后调用方负责关闭
+    - 不触发单例健康检查开销
+    """
+    ctx = _resolve_conn_context(_config.DB_PATH)
+    if not (ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO)):
+        return _get_local_conn(_config.DB_PATH)
+
+    # is_singleton=False (default) — 不注册到 _singleton_ids
+    return _get_backend().connect(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
+
+
 def _get_hub_write_conn_singleton(
     do_sync: bool = False,
     max_retries: int = 3,

@@ -267,7 +267,7 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
             cloud_start = time.time()
             _debug_log(f"[init_db] 正在获取云端写连接 (is_main_db={is_main_db})...", level="INFO", module="database.schema")
             if is_main_db:
-                cc = connection._get_main_write_conn_singleton(do_sync=False)
+                cc = connection._get_non_singleton_cloud_conn(do_sync=False)
             else:
                 cc = connection._get_conn(path, do_sync=False)
             _debug_log(f"[init_db] 云端数据库连接完成 (type={type(cc).__name__})", start_time=cloud_start, level="INFO", module="database.schema")
@@ -322,6 +322,13 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
                 )
             else:
                 _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
+
+            # Close non-singleton cloud connection (used only for DDL/migrations)
+            if is_cloud_configured and is_main_db:
+                try:
+                    cc.close()
+                except Exception:
+                    pass
         except Exception as e:
             _debug_log(f"云端数据库初始化失败 (可能网络不通或凭据过期): {e}", start_time=start_time, level="WARNING", module="database.schema")
     else:

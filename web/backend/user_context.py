@@ -221,14 +221,6 @@ class UserContextManager:
         except Exception as e:
             _debug_log(f"[_warmup_sync] init_db 异常（已捕获，继续启动）: {e}", level="WARNING", module="web.user_context")
 
-        # 确保主库写连接单例已创建，避免 _warmup_async 后台线程
-        # 触发第二次 _connect_embedded_replica（初始 pull 会阻塞异步段）。
-        try:
-            from database.connection import _get_main_write_conn_singleton
-            _get_main_write_conn_singleton(do_sync=False)
-        except Exception as e:
-            _debug_log(f"[_warmup_sync] 主库单例创建失败: {e}", level="WARNING", module="web.user_context")
-
         # pyturso 不需要 libsql 的 "重建连接" workaround。
         # pyturso.sync.connect() 产生的连接状态稳定，关闭再重开会触发
         # V007 误判格式（pyturso 的 .db-info 侧边文件被识别为 libsql ER），
