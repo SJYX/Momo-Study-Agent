@@ -71,6 +71,20 @@ class SyncManager:
         self.sync_worker_thread = threading.Thread(target=self._maimemo_sync_worker, daemon=True)
         self.sync_worker_thread.start()
 
+    def _log_row_status(self, spell: str, status: str, phase: str, message: str = "", error=None) -> None:
+        """Log a structured row_status event."""
+        row = {
+            "item_id": str(spell).lower(),
+            "status": status,
+            "phase": phase,
+        }
+        if error is not None:
+            row["error"] = str(error)
+        self.logger.info(
+            f"[RowStatus] {spell} {message}".rstrip(),
+            extra={"event": "row_status", "data": {"rows": [row]}},
+        )
+
     def _canonical_sync_label(self, label: str) -> str:
         text = str(label or "")
         if "用户数据库" in text:
@@ -302,21 +316,7 @@ class SyncManager:
 
                 try:
                     # 相态 4（syncing）虚化为内存态广播，不再硬写数据库。
-                    self.logger.info(
-                        f"[RowStatus] {spell} 开始同步 (队列剩余: {self.sync_queue.qsize()})",
-                        extra={
-                            "event": "row_status",
-                            "data": {
-                                "rows": [
-                                    {
-                                        "item_id": str(spell).lower(),
-                                        "status": "running",
-                                        "phase": "syncing",
-                                    }
-                                ]
-                            },
-                        },
-                    )
+                    self._log_row_status(spell, "running", "syncing", f"开始同步 (队列剩余: {self.sync_queue.qsize()})")
 
                     _task_started_at = time.time()
                     sync_result = self.momo.sync_interpretation(
@@ -362,21 +362,7 @@ class SyncManager:
                             self._pending_synced.append((voc_id, spell))
                             self._pending_status.append((1, match_confidence, match_reason, synced_content, voc_id))
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
-                        self.logger.info(
-                            f"[RowStatus] {spell} 同步完成",
-                            extra={
-                                "event": "row_status",
-                                "data": {
-                                    "rows": [
-                                        {
-                                            "item_id": str(spell).lower(),
-                                            "status": "done",
-                                            "phase": "sync_done",
-                                        }
-                                    ]
-                                },
-                            },
-                        )
+                        self._log_row_status(spell, "done", "sync_done", "同步完成")
                     elif sync_status == 2:
                         cloud_id = sync_result.get("cloud_id", "") if isinstance(sync_result, dict) else ""
                         cloud_text = sync_result.get("cloud_interpretation", "") if isinstance(sync_result, dict) else ""
@@ -420,22 +406,7 @@ class SyncManager:
                             if not ok:
                                 self.logger.warning(f"⚠️ {spell} sync_status=2 写回未命中")
                             self.logger.warning(f"[Pipeline] ⚠️ {spell} - 4. 墨墨同步提示: 发现已存在的不一致释义，已标记冲突")
-                            self.logger.info(
-                            f"[RowStatus] {spell} 同步冲突",
-                            extra={
-                                "event": "row_status",
-                                "data": {
-                                    "rows": [
-                                        {
-                                            "item_id": str(spell).lower(),
-                                            "status": "error",
-                                            "phase": "sync_conflict",
-                                            "error": "远端释义与本地不一致",
-                                        }
-                                    ]
-                                },
-                            },
-                        )
+                            self._log_row_status(spell, "error", "sync_conflict", "同步冲突", error="远端释义与本地不一致")
                     else:
                         reason = ""
                         if isinstance(sync_result, dict):
@@ -450,22 +421,7 @@ class SyncManager:
                             if not ok:
                                 self.logger.warning(f"⚠️ {spell} 非法 voc_id 状态写回未命中")
                             self.logger.warning(f"⚠️ {spell} voc_id={voc_id} 在墨墨侧非法，已标记为 failed 并停止重试")
-                            self.logger.info(
-                                f"[RowStatus] {spell} 同步失败",
-                                extra={
-                                    "event": "row_status",
-                                    "data": {
-                                        "rows": [
-                                            {
-                                                "item_id": str(spell).lower(),
-                                                "status": "error",
-                                                "phase": "sync_failed",
-                                                "error": "invalid_res_id",
-                                            }
-                                        ]
-                                    },
-                                },
-                            )
+                            self._log_row_status(spell, "error", "sync_failed", "同步失败", error="invalid_res_id")
                             continue
 
                         # 其他非成功结果（瞬态失败），最多重试 3 次
@@ -477,22 +433,7 @@ class SyncManager:
                             self.sync_queue.task_done()
                             task_done_manually = True
                             
-                            self.logger.info(
-                                f"[RowStatus] {spell} 同步重试中",
-                                extra={
-                                    "event": "row_status",
-                                    "data": {
-                                        "rows": [
-                                            {
-                                                "item_id": str(spell).lower(),
-                                                "status": "warning",
-                                                "phase": "sync_retry",
-                                                "error": f"第 {retry_count + 1} 次重试中",
-                                            }
-                                        ]
-                                    },
-                                },
-                            )
+                            self._log_row_status(spell, "warning", "sync_retry", "同步重试中", error=f"第 {retry_count + 1} 次重试中")
                             # 休眠一小段时间避免重试风暴
                             time.sleep(1.0)
                             continue
@@ -505,40 +446,10 @@ class SyncManager:
                         if not ok:
                             self.logger.warning(f"⚠️ {spell} sync_status=5 写回未命中")
                         self.logger.warning(f"⚠️ {spell} 墨墨同步多次重试失败，已标记 failed")
-                        self.logger.info(
-                            f"[RowStatus] {spell} 同步未完成",
-                            extra={
-                                "event": "row_status",
-                                "data": {
-                                    "rows": [
-                                        {
-                                            "item_id": str(spell).lower(),
-                                            "status": "error",
-                                            "phase": "sync_failed",
-                                            "error": reason or "sync_incomplete",
-                                        }
-                                    ]
-                                },
-                            },
-                        )
+                        self._log_row_status(spell, "error", "sync_failed", "同步未完成", error=reason or "sync_incomplete")
                 except Exception as e:
                     self.logger.error(f"❌ {spell} 后台同步异常: {e}")
-                    self.logger.info(
-                        f"[RowStatus] {spell} 同步异常",
-                        extra={
-                            "event": "row_status",
-                            "data": {
-                                "rows": [
-                                    {
-                                        "item_id": str(spell).lower(),
-                                        "status": "error",
-                                        "phase": "sync_failed",
-                                        "error": str(e),
-                                    }
-                                ]
-                            },
-                        },
-                    )
+                    self._log_row_status(spell, "error", "sync_failed", "同步异常", error=str(e))
             finally:
                 if not task_done_manually:
                     self.sync_queue.task_done()
