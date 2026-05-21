@@ -10,7 +10,7 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 
 1. `main.py`：主流程编排，负责菜单、任务分发、退出收尾。
 2. `core/study_workflow.py`：业务核心总线（AI 并发、任务过滤、批量落库投递）。
-3. `database/connection.py` + `database/momo_words.py`：持久层读写入口（单例连接 + 写队列 + SQL 业务函数）。老调用点可通过 `database/legacy.py` 门面过渡。
+3. `database/connection.py` + `database/momo_words.py`：持久层读写入口（单例连接 + 写队列 + SQL 业务函数）。
 4. `core/maimemo_api.py`：墨墨 API 封装与限流控制。
 5. `docs/dev/AUTO_SYNC.md`：同步链路、前后台边界、退出策略。
 
@@ -25,7 +25,7 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 > 本节每次发版或大 PR 合入后更新；`CLAUDE.md` 的「当前状态」以此为准。
 
 - **版本**：1.0.0；Python 3.12+。
-- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；所有持久层操作经 `database/` 包（老调用点可经 `database/legacy.py` 门面过渡）。
+- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；所有持久层操作经 `database/` 包。
 - **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定。优先队列调度（Phase 4）、防饿死保底、ActiveProfileRegistry 多用户追踪已实现。
 - **配置层**：profile_loader 三阶段加载（Phase 6.3a）、pydantic-settings 模型（Phase 6.3b）、Kill Switch 特性开关框架（Phase 6.1）已实现。
 - **Schema 迁移**：PRAGMA user_version 管理框架（Phase 6.2）建立，V001 迁移收纳所有历史 ALTER 语句。
@@ -68,7 +68,6 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
   - `database/hub_users.py`：Hub 用户业务 SQL。
   - `database/schema.py`：建表与迁移（`_create_tables` / `init_db`）。
   - `database/utils.py`：加密、时间戳、错误分类等底层工具。
-  - `database/legacy.py`：兼容门面，re-export 全部子模块——老调用点可 `from database.legacy import X` 过渡（新代码请直接依赖具体子模块）。
   - 具体运行期铁律（游标协议、自愈、PRAGMA、批量重试）见 [`../../database/README.md`](../../database/README.md)。
 - API 层：`core/maimemo_api.py`
   - 职责：墨墨 OpenAPI 封装；频控、重试、超时和错误归一。

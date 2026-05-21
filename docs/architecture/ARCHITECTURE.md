@@ -35,14 +35,14 @@ Momo Study Agent 是一个基于墨墨背单词 OpenAPI 的**多用户 AI 助记
 | AI 客户端 | `core/gemini_client.py` / `core/mimo_client.py` | LLM 调用、结果清洗、`requests.Session` 复用 |
 | 后台同步 | `core/sync_manager.py` | PriorityQueue（P1/P2/P3/P4）、防饿死保底、活跃 profile 暂停、冲突回写（Phase 4） |
 | 优先级（新） | `core/sync_priority.py` | Priority IntEnum：P1(1) 今日 / P2(2) 主动 / P3(3) warmup / P4(4) 预留（Phase 4） |
-| 持久层 | `database/connection.py` | Embedded Replica 单例连接、写队列、后台写/同步守护线程、动态 `_config.DB_PATH` |
+| 持久层 | `database/connection.py` | 单例连接管理、写队列、后台写/同步守护线程、动态 `_config.DB_PATH` |
+| 持久层（新） | `database/backends/` | Turso 后端适配层（`pyturso` 优先，`libsql` 回退），统一 `connect/do_sync_on/op_lock_for/should_close` 协议 |
 | 持久层 | `database/momo_words.py` | 主库业务 SQL、`sync_databases()` / `sync_hub_databases()` |
 | 持久层 | `database/hub_users.py` | Hub 用户元数据与加密凭据 |
 | 持久层 | `database/schema.py` | 建表、schema 迁移调用、migration 执行 |
 | 持久层（新） | `database/migrations/runner.py` | PRAGMA user_version 迁移编排、顺序应用、事务管理（Phase 6.2） |
 | 持久层（新） | `database/migrations/V001_initial.py` | 历史 ALTER 语句收纳、幂等性检查、数据回填（Phase 6.2） |
 | 持久层 | `database/utils.py` | 加密、时区时间戳、错误分类、动态 `_config.DB_PATH` |
-| 持久层（可选门面）| `database/legacy.py` | `from database.legacy import X` 作为老 `core.db_manager` 调用点的过渡 drop-in（re-export 所有子模块） |
 | 日志 | `core/logger.py` + `core/log_config.py` | 结构化 JSON、异步写入、性能统计、ContextLogger 节流方法（Phase 5） |
 | 体检 | `tools/preflight_check.py` | 启动前连通性 + 凭据校验（text/json 双输出） |
 
@@ -98,11 +98,11 @@ IterationManager.run_iteration()
                     ↓ (priority, seq, payload)
               [后台写守护线程（单）]
                     ↓
-              Embedded Replica 写连接（单例）
+              Turso backend 写连接（单例）
                     ↓
               本地副本 .db 文件 + WAL
                     ↓
-        [云同步守护线程] debounce → conn.sync()
+        [云同步守护线程] debounce → backend.do_sync_on(conn)
                     ↓
               云端 Turso 主库
 ```
@@ -144,22 +144,26 @@ SyncManager._maimemo_sync_worker()
 **三条铁律：**
 
 1. **进程唯一**：`data/.process.lock` 物理锁拦截多进程。
-2. **连接单例**：同一 replica 文件全球只持有一个 `libsql` 连接对象。
-3. **游标必闭**：所有 `SELECT` 必须 `try/finally + cur.close() + c.commit()`，否则锁死 WAL 阻塞 `conn.sync()`。
+2. **连接单例**：同一数据库文件只持有一个写连接单例（main/hub 各自单例）。
+3. **游标必闭**：所有 `SELECT` 必须 `try/finally + cur.close()`；避免长时间占用导致写入/同步受阻。
 
-## 5. 数据同步模型（libsql Embedded Replicas）
+## 5. 数据同步模型（Turso Backend 抽象）
 
-**原理**：`libsql.connect(path, sync_url, auth_token)` 返回的连接**同时管理本地 SQLite 文件和远程 Turso 主库**——写入自动走 WAL 帧复制到云端，读取本地即时返回。`conn.sync()` 做增量帧同步，不需要手工对比元数据。
+**原理**：`database/backends/` 提供统一后端接口，运行时自动选择 `pyturso`（优先）或 `libsql`（回退）。
+
+- `pyturso`：`turso.sync.connect(...)`，同步周期使用 `push/pull/checkpoint`。
+- `libsql`：`libsql.connect(...)`，同步周期使用 `conn.sync()`。
+- 上层统一调用 `backend.do_sync_on(conn)`，不直接绑定具体驱动 API。
 
 **执行路径：**
 
-- `sync_databases()` / `sync_hub_databases()`（`database/momo_words.py`）：唯一合法的同步入口，内部只调 `conn.sync()`。旧手工 `_sync_table()` / `_sync_progress_history()` / `_sync_hub_table()` 已于 Phase 3 删除。
+- `sync_databases()` / `sync_hub_databases()`（`database/sync_service.py`，由 `database/momo_words.py` re-export）：唯一合法的同步入口，内部统一走 `backend.do_sync_on(conn)`。
 - **前台同步**：用户交互触发，通过 `progress_callback` 回调渲染 CLI 进度条。
 - **后台同步**：菜单任务完成、退出收尾、定时 debounce 触发，仅写阶段日志（INFO/WARNING），不干扰交互。
 
 **降级策略：**
 
-- 无 `TURSO_DB_URL` / `TURSO_AUTH_TOKEN` 或 `libsql` 未安装 → 自动退回纯本地 sqlite3 模式。
+- 无 `TURSO_DB_URL` / `TURSO_AUTH_TOKEN` 或 Turso 后端不可用（`pyturso` 与 `libsql` 都不可用）→ 自动退回纯本地 sqlite3 模式。
 - `FORCE_CLOUD_MODE=True` 时，若云端不通会提供三选项：立即补配置 / 本次会话临时降级 / 退出并打印修复清单。
 
 ## 6. 外部依赖
@@ -167,22 +171,25 @@ SyncManager._maimemo_sync_worker()
 | 依赖 | 用途 | 封装点 |
 | --- | --- | --- |
 | 墨墨 OpenAPI | 今日/未来任务、释义/助记/例句/云词本 CRUD | `core/maimemo_api.py`（含 10s/20 次 + 60s/40 次自适应限流、Bearer 认证） |
-| Turso (libsql) | 云端备份、多设备同步 | `database/connection.py::_connect_embedded_replica` |
+| Turso (`pyturso` / `libsql`) | 云端备份、多设备同步 | `database/backends/` + `database/sync_service.py` |
 | Gemini | AI 助记生成 | `core/gemini_client.py`（`google-genai` SDK） |
 | 小米 Mimo | AI 助记生成（备选） | `core/mimo_client.py`（HTTP + `requests.Session`） |
 | 中央 Hub | 多用户元数据、加密凭据、审计日志 | `database/hub_users.py`（Fernet 加密） |
 
-## 7. 同步状态机（sync_status）
+## 7. 同步状态与 WordState
 
-`ai_word_notes.sync_status` 三态语义（**只反映"当前用户对该单词的云端释义同步状态"，与内容来源无关**）：
+`ai_word_notes.sync_status` 字段用于同步细分状态；Web/业务层统一通过 `database/word_state.py` 的 `WordState`（5 态）展示。
+
+`sync_status` 字段语义（**只反映"当前用户对该单词的云端释义同步状态"，与内容来源无关**）：
 
 | 值 | 含义 |
 | --- | --- |
 | `0` | 云端未检出自己的释义 |
 | `1` | 云端释义与本地一致 |
 | `2` | 云端释义存在，但与本地内容不一致（冲突） |
+| `5` | 同步失败（如非法资源 ID 等不可重试场景） |
 
-状态流转细节（初始化规则 / 内存信任快路径 / 冲突处理）见 [`../dev/AUTO_SYNC.md`](../dev/AUTO_SYNC.md) 与 [`DATABASE_DESIGN.md`](DATABASE_DESIGN.md)。
+状态流转细节（初始化规则 / 内存信任快路径 / 冲突处理）见 [`../dev/AUTO_SYNC.md`](../dev/AUTO_SYNC.md)、[`DATABASE_DESIGN.md`](DATABASE_DESIGN.md) 与 `database/word_state.py`。
 
 ## 8. 关键运行规则
 

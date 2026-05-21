@@ -2,6 +2,37 @@
 
 记录 Momo Study Agent 项目文档的变更历史。
 
+## 2026-05-21
+
+### libsql 技术债全面清理
+- 删除 `database/legacy.py`（无代码引用的死文件）
+- 删除 `compat/` 包（3 个文件，仅 3 个测试使用，已更新测试直接从 core/ 导入）
+- 删除 `core/log_config.py` 重复定义（后半段覆盖前半段）
+- 清理 `database/connection.py`：删除 fallback 错误分类、未使用全局变量、重复 `_normalize_turso_url`、精简 re-import block
+- 清理 `database/utils.py`：删除未使用的 `_is_replica_metadata_missing_error`，简化 `_normalize_turso_url` 无意义条件
+- 清理 dead imports：`session.py`、`community_lookup.py` 的死 libsql import
+- 重命名误称：`_run_libsql_sync_pipeline` → `_run_sync_pipeline`，`use_libsql_dict` → `use_raw_dict`
+- 删除 `core/mimo_client.py` 死函数 `_extract_json_array`
+- 提取 `core/iteration_manager.py` 重复 json_repair import
+- 提取 `core/sync_manager.py` 重复 RowStatus logging 模式（-89 行）
+
+## 2026-05-21
+
+### 文档与代码现状对齐 + 过期文档归档
+
+- 更新 `README.md`：同步当前数据库后端架构，明确 `database/backends/` 为 Turso 后端适配层（优先 `pyturso`，回退 `libsql`）。
+- 更新 `docs/architecture/ARCHITECTURE.md`：将“sync_status 三态”修订为“sync_status + WordState（5 态）”说明，补充 `sync_status=5` 失败态。
+- 更新 `docs/dev/DEVELOPMENT.md` 与 `CLAUDE.md`：修正“sync_status 三态”措辞，统一到当前状态机语义。
+- 新增文档导航与归档入口：
+  - `docs/README.md`（文档总览）
+  - `docs/history/README.md`（历史文档索引）
+  - `docs/dev/web_ui/README.md`（Web UI 工作区导航）
+- 归档过期的一次性评审文档（从 `docs/dev/` 移至 `docs/history/snapshots/`）：
+  - `AI_REVIEW_20260512_OPTIMIZATIONS.md`
+  - `AI_REVIEW_20260514_TODAY_TASK_PIPELINE.md`
+  - `CODE_REVIEW_AI_FIXES_20260514.md`
+  - `FINAL_REVIEW_SUMMARY_20260514.md`
+
 ## 2026-04-22
 
 ### 彻底删除 core/db_manager.py（~3972 行）
