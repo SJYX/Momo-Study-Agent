@@ -265,15 +265,6 @@ def _close_hub_write_conn_singleton() -> None:
         _debug_log(f"关闭 Hub 写连接单例失败: {e}", level="WARNING")
 
 
-def _is_main_write_singleton_conn(conn: Any) -> bool:
-    with _main_write_conn_lock:
-        return conn is not None and conn is _main_write_conn_singleton
-
-
-def _is_hub_write_singleton_conn(conn: Any) -> bool:
-    with _hub_write_conn_lock:
-        return conn is not None and conn is _hub_write_conn_singleton
-
 
 
 def _get_local_read_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
