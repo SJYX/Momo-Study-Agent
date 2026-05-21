@@ -323,14 +323,15 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
             else:
                 _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
 
+        except Exception as e:
+            _debug_log(f"云端数据库初始化失败 (可能网络不通或凭据过期): {e}", start_time=start_time, level="WARNING", module="database.schema")
+        finally:
             # Close non-singleton cloud connection (used only for DDL/migrations)
             if is_cloud_configured and is_main_db:
                 try:
                     cc.close()
                 except Exception:
                     pass
-        except Exception as e:
-            _debug_log(f"云端数据库初始化失败 (可能网络不通或凭据过期): {e}", start_time=start_time, level="WARNING", module="database.schema")
     else:
         try:
             _debug_log("[init_db] 本地模式：获取连接...", module="database.schema")
