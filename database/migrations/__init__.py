@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from .runner import (
     MigrationError,
+    _NeedCloudMigrations,
     apply_migrations,
     current_version,
     target_version,
@@ -22,6 +23,7 @@ from .runner import (
 
 __all__ = [
     "MigrationError",
+    "_NeedCloudMigrations",
     "apply_migrations",
     "current_version",
     "target_version",

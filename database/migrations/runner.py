@@ -31,6 +31,14 @@ class MigrationError(RuntimeError):
     """迁移过程中的所有错误统一抛此类型，便于上层区分。"""
 
 
+class _NeedCloudMigrations(Exception):
+    """local_only 模式下检测到需要执行迁移，信号调用方需要连云。"""
+    def __init__(self, current: int, target: int):
+        self.current = current
+        self.target = target
+        super().__init__(f"需要从 v{current} 迁移到 v{target}")
+
+
 # ── 版本读写（基于 system_config 表） ──────────────────────────────
 
 
@@ -229,6 +237,10 @@ def apply_migrations(
         if start >= target and _migrations_unchanged():
             _debug_log(f"[迁移] v{start} 已是最新（文件未变），跳过", module="database.migrations")
             return start, start
+
+        # local_only 模式：检测到需要执行迁移，信号调用方使用云端连接
+        if local_only and start < target:
+            raise _NeedCloudMigrations(start, target)
 
         migrations = [(v, m) for v, m in _discover_migrations() if v > start]
         total = len(migrations)

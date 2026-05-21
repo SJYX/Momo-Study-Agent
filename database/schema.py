@@ -242,7 +242,7 @@ def init_db(db_path: Optional[str] = None) -> None:
 
 
 def _init_db_impl(db_path: Optional[str] = None) -> None:
-    from database.migrations import apply_migrations
+    from database.migrations import apply_migrations, _NeedCloudMigrations
 
     path = db_path or DB_PATH
     start_time = time.time()
@@ -267,7 +267,24 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
             _debug_log("数据库已初始化（通过标记文件），跳过建表检查", module="database.schema")
 
         _debug_log("[init_db] 开始应用迁移...", module="database.schema")
-        start_v, end_v = apply_migrations(lc, local_only=True)
+        try:
+            start_v, end_v = apply_migrations(lc, local_only=True)
+        except _NeedCloudMigrations as e:
+            # 有新迁移需要执行，需要连云
+            _debug_log(f"[init_db] 检测到新迁移 v{e.current}→v{e.target}，使用云端连接...", module="database.schema")
+            from database.backends import get_active_backend
+            from database.connection import _resolve_conn_context
+            import config as _cfg
+            ctx = _resolve_conn_context(_cfg.DB_PATH)
+            if ctx.get("url") and ctx.get("token"):
+                cc = get_active_backend().connect(_cfg.DB_PATH, ctx["url"], ctx["token"], do_sync=False)
+                try:
+                    start_v, end_v = apply_migrations(cc)
+                finally:
+                    cc.close()
+            else:
+                _debug_log("[init_db] 无云端连接配置，跳过迁移", level="WARNING", module="database.schema")
+                start_v = end_v = e.current
         if start_v != end_v:
             _debug_log(
                 f"数据库迁移完成 v{start_v} → v{end_v}",
