@@ -478,25 +478,15 @@ def atomic_save_iteration_and_update_note(
     使用 BEGIN IMMEDIATE 以及 op_lock 确保不会被其他迭代中断。
     """
     try:
-        from database.connection import _get_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+        from database.connection import _get_conn, _is_main_write_singleton_conn
+        from database.backends import get_active_backend
         from database.utils import _debug_log
         import json
-        
+
         db_path = db_path or _config.DB_PATH
         write_conn = _get_conn(db_path)
-        conn_lock = _get_singleton_conn_op_lock(write_conn)
-        
-        if conn_lock is None:
-            _debug_log(
-                f"atomic_save_iteration_and_update_note: 无可用 op_lock（仅本地模式？），降级到非原子操作",
-                level="WARNING",
-                module="database.momo_words",
-            )
-            # 降级：分别执行两个操作（风险：不原子）
-            save_ai_word_iteration(voc_id, iteration_payload, db_path=db_path, metadata=metadata)
-            return update_ai_word_note_iteration_state(voc_id, level, history_json, memory_aid=memory_aid, db_path=db_path)
-        
-        with conn_lock:
+
+        with get_active_backend().op_lock_for(write_conn):
             cur = write_conn.cursor()
             try:
                 cur.execute("BEGIN IMMEDIATE")

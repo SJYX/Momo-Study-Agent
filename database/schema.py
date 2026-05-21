@@ -281,7 +281,8 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
                 _debug_log(f"[init_db] processed_words 表存在={table_exists}，准备执行建表事务...", module="database.schema")
 
                 # 获取操作锁
-                with connection._main_write_conn_op_lock:
+                from database.backends import get_active_backend
+                with get_active_backend().op_lock_for(cc):
                     _debug_log("[init_db] 已获取写锁，准备开启事务...", module="database.schema")
                     wcur = cc.cursor()
                     try:
@@ -313,10 +314,7 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
             # 迁移每次启动都执行（幂等）；marker 只跳过建表，不跳过迁移
             # 版本追踪使用 system_config 表（libsql 同步），不再依赖 PRAGMA user_version。
             _debug_log("[init_db] 开始应用迁移...", module="database.schema")
-            start_v, end_v = apply_migrations(
-                cc,
-                lock=connection._main_write_conn_op_lock,
-            )
+            start_v, end_v = apply_migrations(cc)
             if start_v != end_v:
                 _debug_log(
                     f"数据库迁移完成 v{start_v} → v{end_v}",
@@ -400,13 +398,11 @@ def init_users_hub_tables() -> bool:
         if table_exists:
             _debug_log("中央 Hub users 表已存在，将执行增量 schema 校验", module="database.schema")
 
-        op_lock = connection._hub_write_conn_op_lock if connection._is_hub_write_singleton_conn(hub_conn) else None
+        from database.backends import get_active_backend
+        _backend = get_active_backend()
 
         def _exec(sql: str, args: Optional[tuple] = None) -> None:
-            if op_lock is not None:
-                with op_lock:
-                    cur.execute(sql, args or ())
-            else:
+            with _backend.op_lock_for(hub_conn):
                 cur.execute(sql, args or ())
 
         _exec(
@@ -452,10 +448,7 @@ def init_users_hub_tables() -> bool:
             "gemini_api_key_enc TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(user_id))"
         )
 
-        if op_lock is not None:
-            with op_lock:
-                hub_conn.commit()
-        else:
+        with _backend.op_lock_for(hub_conn):
             hub_conn.commit()
 
         if not connection._is_hub_write_singleton_conn(hub_conn):

@@ -29,12 +29,12 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 def _fetch_summary_data(db_path: str) -> dict:
     """同步 DB 操作，由 run_in_threadpool 在线程池执行，避免阻塞 ASGI 事件循环。"""
-    from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+    from database.connection import _get_read_conn, _is_main_write_singleton_conn
+    from database.backends import get_active_backend
     from database.word_repo import count_by_state
     from database.word_state import WordState
 
     conn = _get_read_conn(db_path)
-    conn_lock = _get_singleton_conn_op_lock(conn)
     cur = conn.cursor()
 
     try:
@@ -43,30 +43,7 @@ def _fetch_summary_data(db_path: str) -> dict:
             row = cur.fetchone()
             return row[0] if row else 0
 
-        if conn_lock is not None:
-            with conn_lock:
-                try:
-                    total_words = _q("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
-                    processed_words = _q("SELECT COUNT(*) FROM processed_words")
-                    ai_batches = _q("SELECT COUNT(*) FROM ai_batches")
-                    total_tokens = _q("SELECT COALESCE(SUM(total_tokens), 0) FROM ai_batches")
-                    avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
-                    ai_notes_count = _q("SELECT COUNT(*) FROM ai_word_notes")
-                    weak_words = _q("""
-                        SELECT COUNT(*) FROM (
-                            SELECT h.voc_id
-                            FROM word_progress_history h
-                            JOIN (
-                                SELECT voc_id, MAX(created_at) as mc
-                                FROM word_progress_history GROUP BY voc_id
-                            ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.mc
-                            WHERE h.familiarity_short < 3.0
-                        )
-                    """)
-                finally:
-                    cur.close()
-                conn.commit()
-        else:
+        with get_active_backend().op_lock_for(conn):
             try:
                 total_words = _q("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
                 processed_words = _q("SELECT COUNT(*) FROM processed_words")
@@ -118,21 +95,17 @@ async def stats_summary(ctx = Depends(get_user_context)):
 
 def _fetch_ops_db_data(db_path: str) -> dict:
     """同步 DB 操作，由 run_in_threadpool 在线程池执行。"""
-    from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+    from database.connection import _get_read_conn, _is_main_write_singleton_conn
+    from database.backends import get_active_backend
     from database.word_repo import count_by_state
     from database.word_state import WordState
 
     # sync_queue_depth
     try:
         conn1 = _get_read_conn(db_path)
-        lock1 = _get_singleton_conn_op_lock(conn1)
         cur1 = conn1.cursor()
         try:
-            if lock1 is not None:
-                with lock1:
-                    cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                    row = cur1.fetchone()
-            else:
+            with get_active_backend().op_lock_for(conn1):
                 cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
                 row = cur1.fetchone()
             sync_queue_depth = int((row or [0])[0] or 0)
@@ -146,7 +119,6 @@ def _fetch_ops_db_data(db_path: str) -> dict:
     # avg_latency
     try:
         conn = _get_read_conn(db_path)
-        conn_lock = _get_singleton_conn_op_lock(conn)
         cur = conn.cursor()
         try:
             def _q(sql):
@@ -154,17 +126,10 @@ def _fetch_ops_db_data(db_path: str) -> dict:
                 row = cur.fetchone()
                 return row[0] if row else 0
 
-            if conn_lock is not None:
-                with conn_lock:
-                    avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
-                    cur.close()
-                conn.commit()
-            else:
-                try:
-                    avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
-                finally:
-                    cur.close()
-                conn.commit()
+            with get_active_backend().op_lock_for(conn):
+                avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
+                cur.close()
+            conn.commit()
         finally:
             if not _is_main_write_singleton_conn(conn):
                 conn.close()

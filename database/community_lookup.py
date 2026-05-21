@@ -63,23 +63,14 @@ def _query_notes_from_cursor(cur, voc_ids: List[str], *, use_libsql_dict: bool =
 
 
 @contextmanager
-def _safe_cursor(conn_obj, *, lock=None) -> Iterator[Any]:
-    """游标 + 锁的上下文管理器：保证在 cur.close() 前完成 description 访问，并 commit 释放读事务锁。"""
-    if lock is not None:
-        with lock:
-            cur = conn_obj.cursor()
-            try:
-                yield cur
-            finally:
-                cur.close()
-            conn_obj.commit()
-    else:
-        cur = conn_obj.cursor()
-        try:
-            yield cur
-        finally:
-            cur.close()
-        conn_obj.commit()
+def _safe_cursor(conn_obj) -> Iterator[Any]:
+    """游标上下文管理器：保证在 cur.close() 前完成 description 访问，并 commit 释放读事务锁。"""
+    cur = conn_obj.cursor()
+    try:
+        yield cur
+    finally:
+        cur.close()
+    conn_obj.commit()
 
 
 def _absorb_lookup_results(
@@ -165,10 +156,11 @@ def find_words_in_community_batch(
     if remaining_ids:
         c = None
         try:
+            from database.backends import get_active_backend
             c = connection._get_read_conn(_config.DB_PATH)
-            conn_lock = connection._get_singleton_conn_op_lock(c)
-            with _safe_cursor(c, lock=conn_lock) as cur:
-                mapped_rows = _query_notes_from_cursor(cur, remaining_ids)
+            with get_active_backend().op_lock_for(c):
+                with _safe_cursor(c) as cur:
+                    mapped_rows = _query_notes_from_cursor(cur, remaining_ids)
             _absorb_lookup_results(
                 mapped_rows,
                 source_label="当前数据库",

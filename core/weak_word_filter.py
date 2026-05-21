@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from typing import List, Dict, Tuple
 import config as _config
-from database.connection import _get_read_conn, _get_singleton_conn_op_lock, _is_main_write_singleton_conn
+from database.connection import _get_read_conn, _is_main_write_singleton_conn
 from database.word_repo import query_weak_words
 
 
@@ -132,60 +132,34 @@ class WeakWordFilter:
             return self._user_stats_cache
         
         # 缓存已过期或不存在，执行查询
+        from database.backends import get_active_backend
         conn = _get_read_conn(_config.DB_PATH)
-        conn_lock = _get_singleton_conn_op_lock(conn)
-        cur = conn.cursor()
-        try:
-            if conn_lock is not None:
-                with conn_lock:
-                    try:
-                        # 获取平均熟悉度
-                        cur.execute("""
-                            SELECT AVG(familiarity_short) as avg_fam
-                            FROM (
-                                SELECT familiarity_short
-                                FROM word_progress_history
-                                GROUP BY voc_id
-                                HAVING MAX(created_at)
-                            )
-                        """)
-                        avg_fam = cur.fetchone()[0] or 2.5
+        with get_active_backend().op_lock_for(conn):
+            cur = conn.cursor()
+            try:
+                # 获取平均熟悉度
+                cur.execute("""
+                    SELECT AVG(familiarity_short) as avg_fam
+                    FROM (
+                        SELECT familiarity_short
+                        FROM word_progress_history
+                        GROUP BY voc_id
+                        HAVING MAX(created_at)
+                    )
+                """)
+                avg_fam = cur.fetchone()[0] or 2.5
 
-                        # 获取平均复习次数
-                        cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
-                        avg_reviews = cur.fetchone()[0] or 0
+                # 获取平均复习次数
+                cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
+                avg_reviews = cur.fetchone()[0] or 0
 
-                        # 获取总单词数
-                        cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
-                        total_words = cur.fetchone()[0] or 0
-                    finally:
-                        cur.close()
-            else:
-                try:
-                    # 获取平均熟悉度
-                    cur.execute("""
-                        SELECT AVG(familiarity_short) as avg_fam
-                        FROM (
-                            SELECT familiarity_short
-                            FROM word_progress_history
-                            GROUP BY voc_id
-                            HAVING MAX(created_at)
-                        )
-                    """)
-                    avg_fam = cur.fetchone()[0] or 2.5
-
-                    # 获取平均复习次数
-                    cur.execute("SELECT AVG(review_count) FROM (SELECT review_count FROM word_progress_history GROUP BY voc_id HAVING MAX(created_at))")
-                    avg_reviews = cur.fetchone()[0] or 0
-
-                    # 获取总单词数
-                    cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
-                    total_words = cur.fetchone()[0] or 0
-                finally:
-                    cur.close()
-        finally:
-            if not _is_main_write_singleton_conn(conn):
-                conn.close()
+                # 获取总单词数
+                cur.execute("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
+                total_words = cur.fetchone()[0] or 0
+            finally:
+                cur.close()
+        if not _is_main_write_singleton_conn(conn):
+            conn.close()
 
         # 估算学习频率 (简易实现)
         study_frequency = "normal"

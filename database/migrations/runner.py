@@ -158,16 +158,14 @@ def current_version(cur: Any) -> int:
 def apply_migrations(
     conn: Any,
     *,
-    lock: Any = None,
     local_conn: Optional[Any] = None,
 ) -> Tuple[int, int]:
     """从 current_version 推进到 target_version。
 
-    返回 (start_version, end_version)。可在锁外调用——会自动 acquire 提供的 lock。
+    返回 (start_version, end_version)。
 
     Args:
         conn: 主连接（云端 libsql 或本地 sqlite3）。DDL/DML 在此连接上执行。
-        lock: 可选的并发锁（如 _main_write_conn_op_lock）。
         local_conn: 本地 sqlite3 连接（保留兼容，版本追踪已迁移到 system_config）。
 
     多客户端安全：
@@ -256,19 +254,6 @@ def apply_migrations(
         _debug_log(f"[迁移] 全部完成: v{start} → v{target}", start_time=_t_all, level="INFO", module="database.migrations")
         return start, target
 
-    if lock is not None:
-        with lock:
-            try:
-                return _do()
-            finally:
-                try:
-                    cur.close()
-                except Exception:
-                    pass
-                # libsql 强约束（database/README.md §5）：sync 前必须 gc.collect()
-                # 销毁僵尸游标对象，否则下一次同 conn 上的 SELECT 可能撞 C 层 access violation。
-                import gc
-                gc.collect()
     try:
         return _do()
     finally:
