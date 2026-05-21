@@ -496,11 +496,12 @@ def _cleanup_stale_sidecars(db_abs_path: str) -> None:
     initial cloud pull and leaving an empty database.  Removing them lets
     libsql re-initialise metadata on next connect.
     """
-    for suffix in (".db-info", ".db-wal", ".db-shm"):
+    # include pyturso/libsql sidecars and both dashed and dotted legacy forms
+    for suffix in (".db-info", ".db-wal", ".db-shm", ".db-changes"):
         sidecar = db_abs_path + suffix[len(".db"):]  # e.g. "…/foo.db-info"
-        # legacy dotted form kept for safety
-        legacy = db_abs_path + suffix.replace(".db", ".db.", 1)  # "…/foo.db.info"
-        for candidate in (sidecar, legacy):
+        # also consider legacy dotted form where '-' is replaced by '.' (foo.db.info)
+        dotted = sidecar.replace("-", ".")
+        for candidate in (sidecar, dotted):
             try:
                 if os.path.exists(candidate):
                     os.remove(candidate)

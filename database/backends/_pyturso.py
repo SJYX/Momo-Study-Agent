@@ -75,11 +75,19 @@ class PytursoBackend:
 
         db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
 
-        # ── Step 1: V007 format migration (before pyturso opens the file) ──
+        # ── Step 1: V007 format migration (仅当文件真实存在且包含数据时才执行) ──
+        # 拦截掉空文件生成，保护 pyturso 的 bootstrap 机制
         try:
-            from database.migrations.V007_migrate_db_format import pre_connect_migrate
+            if os.path.exists(db_path) and os.path.getsize(db_path) > 0:
+                from database.migrations.V007_migrate_db_format import pre_connect_migrate
 
-            pre_connect_migrate(db_path)
+                pre_connect_migrate(db_path)
+            else:
+                _debug_log(
+                    f"[{db_label}] 这是一个新库或空库，跳过 V007 历史迁移...",
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
         except Exception as e:
             _debug_log(
                 f"[{db_label}] V007: 格式迁移失败（非致命，继续尝试连接）: {e}",
@@ -88,9 +96,18 @@ class PytursoBackend:
             )
 
         # Track whether db file exists BEFORE connect — determines if bootstrap runs.
-        # bootstrap_if_empty=True (default): only bootstraps when local db is EMPTY.
-        # If file already exists, connect skips bootstrap and we must pull explicitly.
-        db_existed_before = os.path.exists(db_path)
+        # Use a stricter check: file must exist, be non-empty, and look like a SQLite file.
+        def _is_valid_sqlite(fp: str) -> bool:
+            try:
+                if not os.path.exists(fp) or os.path.getsize(fp) == 0:
+                    return False
+                with open(fp, "rb") as f:
+                    header = f.read(16)
+                return bool(header and header.startswith(b"SQLite format 3"))
+            except Exception:
+                return False
+
+        db_existed_before = _is_valid_sqlite(db_path)
 
         # ── Step 2: Create pyturso sync connection ──
         # Official docs: "On the first run, the local database is automatically
@@ -145,6 +162,24 @@ class PytursoBackend:
                     module="database.backends._pyturso",
                 )
                 changed = db.pull()
+
+                # 若 pull 真正应用了远端变更，立即 checkpoint 将 WAL 数据落盘到主文件，
+                # 避免返回后未落盘导致外部工具打开 .db 时出现 corrupted/empty 情况。
+                try:
+                    if changed:
+                        db.checkpoint()
+                        _debug_log(
+                            f"[{db_label}] pull 之后执行 checkpoint 落盘成功",
+                            level="INFO",
+                            module="database.backends._pyturso",
+                        )
+                except Exception as e:
+                    _debug_log(
+                        f"[{db_label}] pull 后 checkpoint 失败（非致命）: {e}",
+                        level="WARNING",
+                        module="database.backends._pyturso",
+                    )
+
                 _debug_log(
                     f"[{db_label}] pull 完成 (changed={changed})",
                     level="INFO",
