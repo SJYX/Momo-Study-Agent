@@ -93,20 +93,18 @@ async def update_word_note(
     if not ok:
         return error_response("UPDATE_ERROR", "更新 memory_aid 失败", user_id=ctx.profile_name)
 
-    # 后台去抖触发云端同步（SyncDebouncer 计时 + TaskRegistry 线程池执行）
+    # 后台去抖触发云端同步（SyncDebouncer 计时 → 后台线程执行）
     try:
         from database.sync_debouncer import get_sync_debouncer
-        from web.backend.deps import get_task_registry
-        from database.backends import get_active_backend
-        from database.connection import _get_main_write_conn_singleton
 
         def _do_sync():
+            from database.backends import get_active_backend
+            from database.connection import _get_main_write_conn_singleton
             conn = _get_main_write_conn_singleton()
             get_active_backend().do_sync_on(conn)
 
-        get_sync_debouncer().trigger(
-            lambda: get_task_registry().submit(_do_sync)
-        )
+        import threading
+        get_sync_debouncer().trigger(lambda: threading.Thread(target=_do_sync, daemon=True).start())
     except Exception:
         pass
 
