@@ -117,7 +117,7 @@ async def switch_active_user(
                         "INITIALIZING",
                         f"用户 '{username}' 正在初始化，请稍后重试",
                         user_id=username.lower(),
-                    ).model_dump(),
+                    ),
                     headers={"Retry-After": "2"},
                 )
 
