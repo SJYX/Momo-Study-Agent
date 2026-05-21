@@ -92,6 +92,24 @@ async def update_word_note(
     ok = await run_in_threadpool(update_memory_aid, voc_id, memory_aid, db_path=ctx.db_path)
     if not ok:
         return error_response("UPDATE_ERROR", "更新 memory_aid 失败", user_id=ctx.profile_name)
+
+    # 后台去抖触发云端同步（SyncDebouncer 计时 + TaskRegistry 线程池执行）
+    try:
+        from database.sync_debouncer import get_sync_debouncer
+        from web.backend.deps import get_task_registry
+        from database.backends import get_active_backend
+        from database.connection import _get_main_write_conn_singleton
+
+        def _do_sync():
+            conn = _get_main_write_conn_singleton()
+            get_active_backend().do_sync_on(conn)
+
+        get_sync_debouncer().trigger(
+            lambda: get_task_registry().submit(_do_sync)
+        )
+    except Exception:
+        pass
+
     return ok_response({"updated": True, "voc_id": voc_id}, user_id=ctx.profile_name)
 
 
