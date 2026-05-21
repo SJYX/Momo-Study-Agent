@@ -59,52 +59,11 @@ except ImportError:
             return logging.getLogger(__name__)
 
 
-# Optional utility imports (to be fully moved into database/utils.py later).
-try:
-    from .utils import (  # type: ignore
-        _backup_broken_database_file,
-        _is_sqlite_data_corruption_error,
-        _is_sqlite_malformed_error,
-    )
-except Exception:
-
-    def _is_pyturso_db_missing_error(msg: str) -> bool:
-        return "sync engine operation failed" in msg and (
-            "db file" in msg and ("doesn't exist" in msg or "does not exist" in msg or "doesn't exists" in msg or "doesnt exist" in msg)
-        )
-
-    def _is_pyturso_db_corruption_error(msg: str) -> bool:
-        if "sync engine operation failed" not in msg:
-            return False
-        if "remote_url is not available" in msg:
-            return False
-        if "encryption" in msg and ("key" in msg or "cipher" in msg):
-            return False
-        return (
-            "not a database" in msg
-            or "malformed" in msg
-            or "corrupt" in msg
-            or "i/o error" in msg
-            or "io error" in msg
-            or "io processing error" in msg
-        )
-
-    def _is_sqlite_malformed_error(error: Exception) -> bool:
-        msg = str(error or "").lower()
-        return (
-            "database disk image is malformed" in msg
-            or "file is not a database" in msg
-            or "malformed" in msg
-            or _is_pyturso_db_missing_error(msg)
-            or _is_pyturso_db_corruption_error(msg)
-        )
-
-    def _is_sqlite_data_corruption_error(error: Exception) -> bool:
-        return _is_sqlite_malformed_error(error)
-
-    def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional[str]:
-        _debug_log(f"{warning_message}: {db_path}", level="WARNING")
-        return None
+from .utils import (
+    _backup_broken_database_file,
+    _is_sqlite_data_corruption_error,
+    _is_sqlite_malformed_error,
+)
 
 
 # Runtime cloud credentials (kept mutable to support profile loading workflows).
