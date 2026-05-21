@@ -188,8 +188,8 @@ class UserContextManager:
             return self._warmup_state.get(profile_name, "not_started")
 
     def ensure_profile_ready(self, ctx: UserContext) -> None:
-        """同步阶段必须完成才能让 context 投入使用；异步阶段（扫描待同步笔记并入队）
-        在后台线程跑，不阻塞 Gateway 切换。"""
+        """异步启动 warmup（DB schema 初始化 + 写并发系统 + 笔记扫描入队），
+        不阻塞调用方。PUT /api/users/active 可立即返回 200。"""
         profile = (ctx.profile_name or "").strip().lower()
         with self._lock:
             state = self._warmup_state.get(profile, "not_started")
@@ -197,19 +197,11 @@ class UserContextManager:
                 return
             self._warmup_state[profile] = "in_progress"
 
-        try:
-            self._warmup_sync(ctx)
-        except Exception:
-            with self._lock:
-                # 失败时回滚状态，让下次 get(profile) 可以重试
-                self._warmup_state[profile] = "not_started"
-            raise
-
-        # 启动后台异步部分（扫描 + 入队），不阻塞调用方
+        # 整个 warmup（同步 + 异步）放入后台线程，PUT 立即返回
         thread = threading.Thread(
-            target=self._warmup_async_safe,
+            target=self._warmup_full,
             args=(ctx, profile),
-            name=f"warmup-async-{profile}",
+            name=f"warmup-full-{profile}",
             daemon=True,
         )
         thread.start()
@@ -232,6 +224,34 @@ class UserContextManager:
         # 导致数据库被删除重建，引发损坏。
 
         init_concurrent_system()
+
+    def _warmup_full(self, ctx: UserContext, profile: str) -> None:
+        """完整 warmup：同步段（DB 初始化 + 写并发系统）+ 异步段（笔记扫描入队）。
+        在后台线程中运行，不阻塞 PUT 响应。"""
+        try:
+            self._warmup_sync(ctx)
+        except Exception as exc:
+            try:
+                ctx.logger.warning(
+                    f"[Web] profile '{profile}' 同步 warmup 失败: {exc}",
+                    module="user_context",
+                )
+            except Exception:
+                pass
+
+        try:
+            self._warmup_async(ctx)
+        except Exception as exc:
+            try:
+                ctx.logger.warning(
+                    f"[Web] profile '{profile}' 异步 warmup 失败: {exc}",
+                    module="user_context",
+                )
+            except Exception:
+                pass
+
+        with self._lock:
+            self._warmup_state[profile] = "done"
 
     def _warmup_async_safe(self, ctx: UserContext, profile: str) -> None:
         """异步段：扫描未同步笔记并入队。失败不影响 ctx 可用性。"""
