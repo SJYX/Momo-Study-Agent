@@ -1,6 +1,6 @@
 import pytest
 import json
-from compat.gemini_client import GeminiClient, _extract_json_array
+from core.gemini_client import GeminiClient, _extract_json_array
 
 def test_extract_json_array_standard():
     """测试标准 JSON 数组提取。"""

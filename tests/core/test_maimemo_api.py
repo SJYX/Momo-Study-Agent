@@ -1,5 +1,5 @@
 import pytest
-from compat.maimemo_api import MaiMemoAPI
+from core.maimemo_api import MaiMemoAPI
 
 @pytest.fixture
 def mock_api(mocker):
