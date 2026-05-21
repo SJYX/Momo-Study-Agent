@@ -25,11 +25,6 @@ from .utils import (
     _get_cloud_lookup_replica_path,
 )
 
-try:
-    import libsql
-except Exception:  # noqa: BLE001 - libsql 是可选依赖，缺失时跳过云端补查
-    libsql = None
-
 _LOG_MOD = "database.momo_words"
 
 

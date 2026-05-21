@@ -13,11 +13,6 @@ import config as _config
 from config import DATA_DIR
 from core.logger import get_logger
 
-try:
-    import libsql
-except Exception:
-    libsql = None
-
 T = TypeVar('T')
 
 class DBSession:
