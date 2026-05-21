@@ -5,7 +5,7 @@ from database import connection as conn_mod
 from database import sync_service
 from database.sync_service import (
     _is_cloud_connection_unavailable_error,
-    _run_libsql_sync_pipeline,
+    _run_sync_pipeline,
     sync_databases,
     sync_hub_databases,
 )
@@ -26,21 +26,21 @@ def test_sync_databases_skipped_when_no_cloud_credentials(monkeypatch):
     """conftest 已清空 TURSO_DB_URL，sync_databases 应进入 skip 分支。"""
     stats = sync_databases()
     assert stats["status"] == "skipped"
-    assert stats["reason"] in {"missing-cloud-credentials", "libsql-unavailable"}
+    assert stats["reason"] in {"missing-cloud-credentials", "backend-unavailable"}
 
 
 def test_sync_hub_databases_skipped_when_no_hub_credentials():
     stats = sync_hub_databases()
     assert stats["status"] == "skipped"
-    assert stats["reason"] in {"missing-hub-cloud-credentials", "libsql-unavailable"}
+    assert stats["reason"] in {"missing-hub-cloud-credentials", "backend-unavailable"}
 
 
-def test_run_libsql_sync_pipeline_returns_skip_on_cloud_unavailable():
+def test_run_sync_pipeline_returns_skip_on_cloud_unavailable():
     """如果 conn_factory 抛出云端不可用异常，pipeline 应返回 status=skipped/cloud-unavailable。"""
     def boom():
         raise RuntimeError("Cannot connect to the cloud (mock)")
 
-    stats = _run_libsql_sync_pipeline(
+    stats = _run_sync_pipeline(
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=boom,
@@ -57,11 +57,11 @@ def test_run_libsql_sync_pipeline_returns_skip_on_cloud_unavailable():
     assert stats["reason"] == "cloud-unavailable"
 
 
-def test_run_libsql_sync_pipeline_returns_local_only_skip_when_conn_lacks_sync():
+def test_run_sync_pipeline_returns_local_only_skip_when_conn_lacks_sync():
     class _LocalOnlyConn:
         pass  # 没有 .sync() 方法
 
-    stats = _run_libsql_sync_pipeline(
+    stats = _run_sync_pipeline(
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=lambda: _LocalOnlyConn(),
@@ -78,7 +78,7 @@ def test_run_libsql_sync_pipeline_returns_local_only_skip_when_conn_lacks_sync()
     assert stats["reason"] == "local-only-sentinel"
 
 
-def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false(monkeypatch):
+def test_run_sync_pipeline_runs_sync_when_dry_run_false(monkeypatch):
     """非 dry-run 时 backend.do_sync_on(conn) 应被调用并返回 ok。"""
     import contextlib
 
@@ -95,7 +95,7 @@ def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false(monkeypatch):
     from database import sync_service as _sync_mod
     monkeypatch.setattr(_sync_mod, "get_active_backend", lambda: _MockBackend())
 
-    stats = _run_libsql_sync_pipeline(
+    stats = _run_sync_pipeline(
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=lambda: _CloudConn(),
@@ -111,7 +111,7 @@ def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false(monkeypatch):
     assert stats["status"] == "ok"
 
 
-def test_run_libsql_sync_pipeline_skips_sync_call_when_dry_run_true():
+def test_run_sync_pipeline_skips_sync_call_when_dry_run_true():
     """dry-run 不调用 conn.sync()。"""
     calls = {"sync": 0}
 
@@ -119,7 +119,7 @@ def test_run_libsql_sync_pipeline_skips_sync_call_when_dry_run_true():
         def sync(self):
             calls["sync"] += 1
 
-    stats = _run_libsql_sync_pipeline(
+    stats = _run_sync_pipeline(
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=lambda: _CloudConn(),

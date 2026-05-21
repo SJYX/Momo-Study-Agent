@@ -44,7 +44,7 @@ def _matches_ai_generation_context(note_row: Dict[str, Any], ai_provider: Option
     return bool(batch_provider and batch_prompt_version)
 
 
-def _query_notes_from_cursor(cur, voc_ids: List[str], *, use_libsql_dict: bool = False) -> List[Dict[str, Any]]:
+def _query_notes_from_cursor(cur, voc_ids: List[str], *, use_raw_dict: bool = False) -> List[Dict[str, Any]]:
     """在已打开的游标上执行跨库 lookup SQL，并在游标关闭前完成行映射。"""
     placeholders = ",".join(["?"] * len(voc_ids))
     sql = COMMUNITY_NOTE_LOOKUP_SQL_TEMPLATE.format(placeholders=placeholders)
@@ -52,7 +52,7 @@ def _query_notes_from_cursor(cur, voc_ids: List[str], *, use_libsql_dict: bool =
     rows = cur.fetchall()
     if not rows:
         return []
-    if use_libsql_dict:
+    if use_raw_dict:
         columns = [col[0] for col in cur.description]
         return [dict(zip(columns, row)) for row in rows]
     return [connection._row_to_dict(cur, row) for row in rows]
@@ -189,7 +189,7 @@ def find_words_in_community_batch(
                 cloud_conn = sqlite3.connect(lookup_path)
                 cur = cloud_conn.cursor()
                 try:
-                    mapped_rows = _query_notes_from_cursor(cur, remaining_ids, use_libsql_dict=True)
+                    mapped_rows = _query_notes_from_cursor(cur, remaining_ids, use_raw_dict=True)
                 finally:
                     cur.close()
 

@@ -41,7 +41,7 @@ def _is_cloud_connection_unavailable_error(error: Exception) -> bool:
     )
 
 
-def _run_libsql_sync_pipeline(
+def _run_sync_pipeline(
     *,
     creds_ok: bool,
     creds_skip_reason: str,
@@ -151,14 +151,14 @@ def sync_databases(
     if not (os.getenv("TURSO_DB_URL") and os.getenv("TURSO_AUTH_TOKEN")):
         creds_skip_reason = "missing-cloud-credentials"
     else:
-        creds_skip_reason = "libsql-unavailable"
+        creds_skip_reason = "backend-unavailable"
 
     def _factory():
         if connection._is_main_db_path(path):
             return connection._get_main_write_conn_singleton(do_sync=False)
         return connection._get_conn(path, do_sync=False)
 
-    return _run_libsql_sync_pipeline(
+    return _run_sync_pipeline(
         creds_ok=creds_ok,
         creds_skip_reason=creds_skip_reason,
         conn_factory=_factory,
@@ -188,7 +188,7 @@ def sync_hub_databases(
     creds_skip_reason = (
         "missing-hub-cloud-credentials"
         if not (hub_url and hub_token)
-        else "libsql-unavailable"
+        else "backend-unavailable"
     )
 
     def _pre_setup():
@@ -201,7 +201,7 @@ def sync_hub_databases(
             except Exception:  # noqa: BLE001 - close 不应阻塞同步主流程
                 pass
 
-    return _run_libsql_sync_pipeline(
+    return _run_sync_pipeline(
         creds_ok=creds_ok,
         creds_skip_reason=creds_skip_reason,
         conn_factory=connection._get_hub_conn,
