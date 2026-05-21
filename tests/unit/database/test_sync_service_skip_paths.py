@@ -40,15 +40,10 @@ def test_run_libsql_sync_pipeline_returns_skip_on_cloud_unavailable():
     def boom():
         raise RuntimeError("Cannot connect to the cloud (mock)")
 
-    class _NullLock:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
     stats = _run_libsql_sync_pipeline(
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=boom,
-        conn_op_lock=_NullLock(),
         dry_run=False,
         progress_callback=None,
         messages={
@@ -66,15 +61,10 @@ def test_run_libsql_sync_pipeline_returns_local_only_skip_when_conn_lacks_sync()
     class _LocalOnlyConn:
         pass  # 没有 .sync() 方法
 
-    class _NullLock:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
     stats = _run_libsql_sync_pipeline(
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=lambda: _LocalOnlyConn(),
-        conn_op_lock=_NullLock(),
         dry_run=False,
         progress_callback=None,
         messages={
@@ -90,17 +80,17 @@ def test_run_libsql_sync_pipeline_returns_local_only_skip_when_conn_lacks_sync()
 
 def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false(monkeypatch):
     """非 dry-run 时 backend.do_sync_on(conn) 应被调用并返回 ok。"""
+    import contextlib
+
     class _MockBackend:
         def do_sync_on(self, conn):
             return None  # real backends return None; frames_synced defaults to 0
+        def op_lock_for(self, conn):
+            return contextlib.nullcontext()
 
     class _CloudConn:
         def sync(self):
             pass  # presence needed for the early-return guard at line 84
-
-    class _NullLock:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
 
     from database import sync_service as _sync_mod
     monkeypatch.setattr(_sync_mod, "get_active_backend", lambda: _MockBackend())
@@ -109,7 +99,6 @@ def test_run_libsql_sync_pipeline_runs_sync_when_dry_run_false(monkeypatch):
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=lambda: _CloudConn(),
-        conn_op_lock=_NullLock(),
         dry_run=False,
         progress_callback=None,
         messages={
@@ -130,15 +119,10 @@ def test_run_libsql_sync_pipeline_skips_sync_call_when_dry_run_true():
         def sync(self):
             calls["sync"] += 1
 
-    class _NullLock:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
     stats = _run_libsql_sync_pipeline(
         creds_ok=True,
         creds_skip_reason="",
         conn_factory=lambda: _CloudConn(),
-        conn_op_lock=_NullLock(),
         dry_run=True,
         progress_callback=None,
         messages={

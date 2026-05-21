@@ -46,7 +46,6 @@ def _run_libsql_sync_pipeline(
     creds_ok: bool,
     creds_skip_reason: str,
     conn_factory: Callable[[], Any],
-    conn_op_lock: Any,
     dry_run: bool,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]],
     messages: Dict[str, str],
@@ -99,13 +98,8 @@ def _run_libsql_sync_pipeline(
 
             def _do_sync():
                 try:
-                    # 锁必须由本线程持有：外层只持有锁等 sync_done，
-                    # 超时后释放锁会让 sync 与其他线程并发碰 libsql C 层（access violation）。
                     _backend = get_active_backend()
-                    if conn_op_lock is not None:
-                        with conn_op_lock:
-                            _backend.do_sync_on(conn)
-                    else:
+                    with _backend.op_lock_for(conn):
                         _backend.do_sync_on(conn)
                     sync_result_box[0] = True
                 except Exception as e:
@@ -168,7 +162,6 @@ def sync_databases(
         creds_ok=creds_ok,
         creds_skip_reason=creds_skip_reason,
         conn_factory=_factory,
-        conn_op_lock=connection._main_write_conn_op_lock,
         dry_run=dry_run,
         progress_callback=progress_callback,
         messages={
@@ -212,7 +205,6 @@ def sync_hub_databases(
         creds_ok=creds_ok,
         creds_skip_reason=creds_skip_reason,
         conn_factory=connection._get_hub_conn,
-        conn_op_lock=connection._hub_write_conn_op_lock,
         dry_run=dry_run,
         progress_callback=progress_callback,
         messages={
