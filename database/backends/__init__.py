@@ -14,15 +14,24 @@ except ImportError:
     HAS_LIBSQL = False
 
 
+_backend_singleton: TursoBackend | None = None
+
+
 def get_active_backend() -> TursoBackend:
+    global _backend_singleton
+    if _backend_singleton is not None:
+        return _backend_singleton
+
     from database.utils import _debug_log
 
     if HAS_PYTURSO:
         _debug_log("Backend: pyturso (turso.sync)", level="INFO", module="database.backends")
         from ._pyturso import PytursoBackend
-        return PytursoBackend()
-    if HAS_LIBSQL:
+        _backend_singleton = PytursoBackend()
+    elif HAS_LIBSQL:
         _debug_log("Backend: libsql (embedded replica)", level="INFO", module="database.backends")
         from ._libsql import LibsqlBackend
-        return LibsqlBackend()
-    raise RuntimeError("Neither pyturso nor libsql is available")
+        _backend_singleton = LibsqlBackend()
+    else:
+        raise RuntimeError("Neither pyturso nor libsql is available")
+    return _backend_singleton
