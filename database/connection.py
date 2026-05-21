@@ -577,6 +577,11 @@ def _get_read_conn_impl(
         conn = _get_local_conn(db_path)
         return _wrap_and_track_connection(db_path, conn, True)
 
+    # pyturso: .db 是标准 SQLite 文件，读永远走本地 sqlite3，不需要 cloud singleton
+    if get_active_backend().name == "pyturso":
+        conn = _get_local_read_conn(db_path)
+        return _wrap_and_track_connection(db_path, conn, True)
+
     if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_LIBSQL or HAS_PYTURSO):
         # CRITICAL WalConflict fix:
         # In LibSQL mode, we MUST reuse the singleton connection to avoid deadlocks
@@ -617,12 +622,16 @@ def _get_conn(
     db_path = ctx["db_path"]
 
     if _is_main_db_path(db_path) and ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO):
-        return _get_main_write_conn_singleton(do_sync=do_sync, max_retries=max_retries, retry_delay=retry_delay)
+        if _get_backend().name != "pyturso" or do_sync:
+            return _get_main_write_conn_singleton(do_sync=do_sync, max_retries=max_retries, retry_delay=retry_delay)
+        # pyturso without sync: fall through to local
 
     if _should_use_local_only_connection(db_path):
         return _get_local_conn(db_path)
 
     if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_LIBSQL or HAS_PYTURSO):
+        if _get_backend().name == "pyturso":
+            return _get_local_conn(db_path)
         last_error = None
         for attempt in range(max_retries):
             try:
@@ -714,7 +723,9 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
 
 
 def _get_dedicated_write_conn(db_path: Optional[str] = None) -> Any:
-    _ = db_path
+    path = db_path or _config.DB_PATH
+    if _get_backend().name == "pyturso":
+        return _get_local_conn(path)
     return _get_main_write_conn_singleton(do_sync=False)
 
 
@@ -769,7 +780,10 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
     """
     try:
         if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
-            hub_conn = _get_hub_write_conn_singleton(do_sync=False)
+            if _get_backend().name == "pyturso":
+                hub_conn = _get_hub_local_conn()
+            else:
+                hub_conn = _get_hub_write_conn_singleton(do_sync=False)
         else:
             hub_conn = _get_hub_local_conn()
 
@@ -808,7 +822,10 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
     """
     try:
         if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
-            hub_conn = _get_hub_write_conn_singleton(do_sync=False)
+            if _get_backend().name == "pyturso":
+                hub_conn = _get_hub_local_conn()
+            else:
+                hub_conn = _get_hub_write_conn_singleton(do_sync=False)
         else:
             hub_conn = _get_hub_local_conn()
 

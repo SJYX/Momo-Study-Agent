@@ -144,16 +144,14 @@ class TestReadConnIsolation:
         assert all(c >= 1 for c in read_results)
 
 
-class TestFeatureFlagFallback:
-    """ISOLATED_READ_CONN_ENABLED feature flag 回退验证。"""
+class TestBackendAwareRouting:
+    """pyturso 后端读连接路由验证。"""
 
-    def test_flag_disabled_falls_back_to_write_singleton(self, monkeypatch, tmp_db):
-        """关闭 flag 时应走旧路径（写单例）。"""
-        # 模拟 Embedded Replica 环境
-        monkeypatch.setattr(conn_mod, "HAS_LIBSQL", True)
+    def test_pyturso_returns_local_read_conn(self, monkeypatch, tmp_db):
+        """pyturso 后端应返回独立 sqlite3 只读连接。"""
+        monkeypatch.setattr(conn_mod, "HAS_PYTURSO", True)
         monkeypatch.setattr(conn_mod._config, "DB_PATH", tmp_db)
 
-        # 让 _resolve_conn_context 返回有效的 ER 配置
         fake_ctx = {
             "db_path": tmp_db,
             "is_main_db": True,
@@ -164,45 +162,43 @@ class TestFeatureFlagFallback:
         }
         monkeypatch.setattr(conn_mod, "_resolve_conn_context", lambda *a, **k: fake_ctx)
         monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *a, **k: False)
+
+        # 模拟 pyturso backend
+        mock_backend = MagicMock()
+        mock_backend.name = "pyturso"
+        monkeypatch.setattr(conn_mod, "get_active_backend", lambda: mock_backend)
+
+        conn = conn_mod._get_read_conn_impl(tmp_db)
+        try:
+            # 应该是标准 sqlite3 连接（should_close returns True for non-singletons）
+            assert get_active_backend().should_close(conn)
+        finally:
+            conn.close()
+
+    def test_libsql_returns_singleton(self, monkeypatch, tmp_db):
+        """libsql 后端应返回写单例。"""
+        monkeypatch.setattr(conn_mod, "HAS_LIBSQL", True)
+        monkeypatch.setattr(conn_mod._config, "DB_PATH", tmp_db)
+
+        fake_ctx = {
+            "db_path": tmp_db,
+            "is_main_db": True,
+            "is_test": False,
+            "url": "libsql://fake.turso.io",
+            "token": "fake-token",
+            "force_cloud_mode": False,
+        }
+        monkeypatch.setattr(conn_mod, "_resolve_conn_context", lambda *a, **k: fake_ctx)
+        monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *a, **k: False)
+
+        # 模拟 libsql backend
+        mock_backend = MagicMock()
+        mock_backend.name = "libsql"
+        monkeypatch.setattr(conn_mod, "get_active_backend", lambda: mock_backend)
 
         # 模拟写单例返回
         mock_singleton = MagicMock()
         monkeypatch.setattr(conn_mod, "_get_main_write_conn_singleton", lambda **kw: mock_singleton)
 
-        # 关闭 flag
-        from core.feature_flags import set_enabled, reset_overrides
-        set_enabled("ISOLATED_READ_CONN_ENABLED", False)
-        try:
-            conn = conn_mod._get_read_conn_impl(tmp_db)
-            # 应该返回写单例 mock
-            assert conn is mock_singleton
-        finally:
-            reset_overrides()
-
-    def test_flag_enabled_returns_independent_conn(self, monkeypatch, tmp_db):
-        """开启 flag 时应返回独立 sqlite3 连接。"""
-        monkeypatch.setattr(conn_mod, "HAS_LIBSQL", True)
-        monkeypatch.setattr(conn_mod._config, "DB_PATH", tmp_db)
-
-        fake_ctx = {
-            "db_path": tmp_db,
-            "is_main_db": True,
-            "is_test": False,
-            "url": "libsql://fake.turso.io",
-            "token": "fake-token",
-            "force_cloud_mode": False,
-        }
-        monkeypatch.setattr(conn_mod, "_resolve_conn_context", lambda *a, **k: fake_ctx)
-        monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *a, **k: False)
-
-        from core.feature_flags import set_enabled, reset_overrides
-        set_enabled("ISOLATED_READ_CONN_ENABLED", True)
-        try:
-            conn = conn_mod._get_read_conn_impl(tmp_db)
-            try:
-                # 应该是标准 sqlite3 连接，非写单例
-                assert get_active_backend().should_close(conn)
-            finally:
-                conn.close()
-        finally:
-            reset_overrides()
+        conn = conn_mod._get_read_conn_impl(tmp_db)
+        assert conn is mock_singleton
