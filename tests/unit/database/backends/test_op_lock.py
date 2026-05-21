@@ -1,34 +1,31 @@
 """tests/unit/database/backends/test_op_lock.py: op_lock_for 单元测试。"""
 
-import sqlite3
 import threading
-
-import pytest
+from types import SimpleNamespace
 
 from database.backends._libsql import LibsqlBackend
 from database.backends._pyturso import PytursoBackend
 
 
+def _make_conn(role: str) -> SimpleNamespace:
+    """创建模拟连接对象，支持 _momo_db_role 属性。"""
+    return SimpleNamespace(_momo_db_role=role)
+
+
 def test_pyturso_op_lock_is_noop():
     """PytursoBackend.op_lock_for() 不获取任何锁，直接 yield。"""
     backend = PytursoBackend()
-    conn = sqlite3.connect(":memory:")
-    conn._momo_db_role = "main"
+    conn = _make_conn("main")
 
     with backend.op_lock_for(conn):
         pass
-
-    conn.close()
 
 
 def test_libsql_op_lock_main_and_hub_separate():
     """LibsqlBackend 的 main_lock 和 hub_lock 是独立的。"""
     backend = LibsqlBackend()
-
-    main_conn = sqlite3.connect(":memory:")
-    main_conn._momo_db_role = "main"
-    hub_conn = sqlite3.connect(":memory:")
-    hub_conn._momo_db_role = "hub"
+    main_conn = _make_conn("main")
+    hub_conn = _make_conn("hub")
 
     barrier = threading.Barrier(2)
 
@@ -49,15 +46,11 @@ def test_libsql_op_lock_main_and_hub_separate():
     assert not t1.is_alive()
     assert not t2.is_alive()
 
-    main_conn.close()
-    hub_conn.close()
-
 
 def test_libsql_op_lock_main_serialized():
     """LibsqlBackend 的同一把 main_lock 应序列化并发操作。"""
     backend = LibsqlBackend()
-    conn = sqlite3.connect(":memory:")
-    conn._momo_db_role = "main"
+    conn = _make_conn("main")
 
     results = []
 
@@ -74,15 +67,12 @@ def test_libsql_op_lock_main_serialized():
 
     assert len(results) == 2
     assert results in ([1, 2], [2, 1])
-    conn.close()
 
 
 def test_libsql_default_role_is_main():
-    """没有 _momo_db_role 标记的连接默认走 main_lock。"""
+    """没有 _momo_db_role 标记的对象默认走 main_lock。"""
     backend = LibsqlBackend()
-    conn = sqlite3.connect(":memory:")
+    conn = SimpleNamespace()  # no _momo_db_role
 
     with backend.op_lock_for(conn):
         pass
-
-    conn.close()
