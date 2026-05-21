@@ -1,7 +1,8 @@
 """
 database/session.py: 数据库上下文管理器与装饰器，消除冗余模板代码。
 """
-from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
+from typing import Any, Callable, List, Optional, TypeVar
+from contextlib import contextmanager
 import functools
 import time
 
@@ -20,105 +21,56 @@ except Exception:
 T = TypeVar('T')
 
 class DBSession:
-    """包装了连接与防死锁机制的会话对象。
+    """包装了连接与 backend 并发控制的会话对象。
 
-    读操作（fetchall / fetchone）支持锁超时降级：
-    如果在 lock_timeout 秒内未能获取 _main_write_conn_op_lock，
-    回退到不持锁直接执行 SQL。SQLite WAL 模式下读操作即使不持应用层锁也是安全的，
-    最多读到旧数据，不会损坏或阻塞。
+    所有操作（读/写）通过 backend.op_lock_for() 获取并发保护：
+    - PytursoBackend: no-op（MVCC 并发）
+    - LibsqlBackend: 自动获取 main/hub 锁
 
-    写操作（execute / executemany）始终强制持锁，不降级。
+    不再需要读锁超时降级 —— 直接阻塞等待最安全。
     """
 
-    # 默认读锁超时（秒）；写操作不使用此值
-    DEFAULT_READ_LOCK_TIMEOUT = 2.0
-
-    def __init__(self, conn: Any, lock: Any = None, lock_timeout: float = DEFAULT_READ_LOCK_TIMEOUT):
+    def __init__(self, conn: Any, backend: Any = None):
         self.conn = conn
-        self.lock = lock
-        self.lock_timeout = lock_timeout
+        self._backend = backend
 
-    def _acquire_read_lock(self) -> bool:
-        """尝试在 timeout 内获取读锁。
-
-        Returns:
-            True  — 成功获取锁（调用方需负责 release）
-            False — 超时，已记录 WARNING，调用方应走无锁路径
-        """
-        if self.lock is None:
-            return False
-            
-        # 对于主库/Hub库单例连接，读写复用同一连接对象，并发执行会导致 C 层 crash 或 SQL 事务损坏。
-        # 我们必须死等/阻塞直至锁被释放，绝不能降级为无锁读取。
-        is_singleton = connection._is_main_write_singleton_conn(self.conn) or connection._is_hub_write_singleton_conn(self.conn)
-        if is_singleton:
-            self.lock.acquire()  # 阻塞死等，防止并发冲突
-            return True
-
-        acquired = self.lock.acquire(timeout=self.lock_timeout)
-        if not acquired:
-            _debug_log(
-                f"DBSession 读锁获取超时 ({self.lock_timeout}s)，降级为无锁读取",
-                level="WARNING",
-                module="database.session",
-            )
-        return acquired
+    @contextmanager
+    def _lock_context(self):
+        if self._backend is not None:
+            with self._backend.op_lock_for(self.conn):
+                yield
+        else:
+            yield
 
     def fetchall(self, sql: str, params: tuple = ()) -> List[Any]:
-        acquired = self._acquire_read_lock()
-        try:
+        with self._lock_context():
             cur = self.conn.cursor()
             try:
                 cur.execute(sql, params)
-                res = cur.fetchall()
+                return cur.fetchall()
             finally:
                 cur.close()
-            return res
-        finally:
-            if acquired:
-                self.lock.release()
 
     def fetchone(self, sql: str, params: tuple = ()) -> Optional[Any]:
-        acquired = self._acquire_read_lock()
-        try:
+        with self._lock_context():
             cur = self.conn.cursor()
             try:
                 cur.execute(sql, params)
-                res = cur.fetchone()
+                return cur.fetchone()
             finally:
                 cur.close()
-            return res
-        finally:
-            if acquired:
-                self.lock.release()
-            
+
     def execute(self, sql: str, params: tuple = ()) -> None:
-        if self.lock is not None:
-            with self.lock:
-                cur = self.conn.cursor()
-                try:
-                    cur.execute(sql, params)
-                finally:
-                    cur.close()
-                self.conn.commit()
-        else:
+        with self._lock_context():
             cur = self.conn.cursor()
             try:
                 cur.execute(sql, params)
             finally:
                 cur.close()
             self.conn.commit()
-            
+
     def executemany(self, sql: str, params_list: List[tuple]) -> None:
-        if self.lock is not None:
-            with self.lock:
-                cur = self.conn.cursor()
-                try:
-                    cur.executemany(sql, params_list)
-                finally:
-                    cur.close()
-                self.conn.commit()
-        else:
+        with self._lock_context():
             cur = self.conn.cursor()
             try:
                 cur.executemany(sql, params_list)
@@ -184,9 +136,8 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
             try:
                 started = time.time()
                 c = connection._get_read_conn(db_path)
-                conn_lock = connection._get_singleton_conn_op_lock(c)
-                
-                session = DBSession(c, conn_lock)
+                from database.backends import get_active_backend
+                session = DBSession(c, backend=get_active_backend())
                 kwargs['session'] = session
                 
                 res = func(*args, **kwargs)
@@ -249,8 +200,8 @@ def with_write_session(default_return: Any = None, fallback_on_corruption: bool 
             c = None
             try:
                 c = connection._get_conn(db_path)
-                conn_lock = connection._get_singleton_conn_op_lock(c)
-                session = DBSession(c, conn_lock)
+                from database.backends import get_active_backend
+                session = DBSession(c, backend=get_active_backend())
                 kwargs['session'] = session
                 
                 res = func(*args, **kwargs)
