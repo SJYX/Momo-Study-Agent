@@ -8,7 +8,8 @@ This module must NOT import from database.connection (circular-import risk).
 
 import os
 import time
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 # ── pyturso availability (集中探针) ──
 from database.backends import HAS_PYTURSO
@@ -28,6 +29,11 @@ class PytursoBackend:
     """TursoBackend implementation wrapping turso.sync (pyturso)."""
 
     name = "pyturso"
+
+    @contextmanager
+    def op_lock_for(self, conn: Any) -> Iterator[None]:
+        """pyturso 引擎原生 MVCC，无需外部锁。"""
+        yield
 
     def is_supported(self) -> bool:
         """Check whether turso.sync is importable at runtime."""
@@ -205,6 +211,7 @@ class PytursoBackend:
                     module="database.backends._pyturso",
                 )
 
+        db._momo_db_role = "hub" if "hub" in os.path.basename(db_path).lower() else "main"
         return db
 
     def do_sync_on(self, conn: Any) -> None:
