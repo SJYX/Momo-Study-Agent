@@ -2,6 +2,7 @@
 tests/web/test_sync.py -- /api/sync/* endpoint tests.
 """
 from __future__ import annotations
+import contextlib
 import sqlite3
 from unittest.mock import MagicMock
 import pytest
@@ -12,7 +13,9 @@ from web.backend.routers.sync import router as sync_router
 class TestSyncStatus:
     def test_sync_status_empty(self, app, test_db, monkeypatch, override_ctx):
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(sync_router)
         override_ctx(test_db)
@@ -26,7 +29,9 @@ class TestSyncStatus:
 
     def test_sync_status_with_conflicts(self, app, test_db, monkeypatch, override_ctx):
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         monkeypatch.setattr("database.word_repo.count_by_state", lambda *a, **kw: 1)
         monkeypatch.setattr(
@@ -47,7 +52,9 @@ class TestSyncStatus:
 
     def test_sync_status_conflicts_paged_default_20(self, app, test_db, monkeypatch, override_ctx):
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         monkeypatch.setattr("database.word_repo.count_by_state", lambda *a, **kw: 25)
         monkeypatch.setattr(
@@ -85,7 +92,9 @@ class TestSyncFlush:
 class TestSyncRetry:
     def test_retry_no_conflicts(self, app, test_db, monkeypatch, override_ctx):
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(sync_router)
         override_ctx(test_db)
@@ -98,7 +107,9 @@ class TestSyncRetry:
 
     def test_retry_with_conflicts(self, app, test_db, monkeypatch, mock_workflow, override_ctx):
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         monkeypatch.setattr("database.utils.clean_for_maimemo", lambda x: x)
         monkeypatch.setattr(

@@ -1,15 +1,14 @@
-"""tests/unit/database/test_session_lock_timeout.py: DBSession 读锁超时降级验证。
+"""tests/unit/database/test_session_lock_timeout.py: DBSession backend lock integration.
 
 验证：
-- 锁空闲时正常获取并释放
-- 锁被其他线程长时间持有时，读操作在 timeout 后降级执行而非死等
-- 写操作（execute）始终强制持锁，不降级
+- backend 传入时，op_lock_for 被正确调用
+- backend=None 时，操作直接执行（无锁）
+- read/write 操作均产生正确结果
 """
 from __future__ import annotations
 
 import sqlite3
-import threading
-import time
+import contextlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,138 +26,118 @@ def in_memory_db():
     return conn
 
 
-class TestDBSessionLockTimeout:
-    """DBSession 读锁超时降级行为。"""
+@pytest.fixture
+def mock_backend():
+    """创建一个 mock backend，其 op_lock_for 返回 nullcontext。"""
+    backend = MagicMock()
+    backend.op_lock_for.return_value = contextlib.nullcontext()
+    return backend
 
-    def test_fetchall_acquires_and_releases_lock(self, in_memory_db):
-        """锁空闲时，fetchall 正常获取锁并在完成后释放。"""
-        lock = threading.RLock()
-        session = DBSession(in_memory_db, lock=lock, lock_timeout=1.0)
 
-        rows = session.fetchall("SELECT * FROM test_t")
-        assert len(rows) == 1
+class TestDBSessionWithBackend:
+    """DBSession 使用 backend 并发控制的行为。"""
 
-        # 锁应该已被释放，可以再次获取
-        assert lock.acquire(timeout=0.1)
-        lock.release()
-
-    def test_fetchone_acquires_and_releases_lock(self, in_memory_db):
-        """锁空闲时，fetchone 正常获取锁并在完成后释放。"""
-        lock = threading.RLock()
-        session = DBSession(in_memory_db, lock=lock, lock_timeout=1.0)
-
-        row = session.fetchone("SELECT * FROM test_t WHERE id = 1")
-        assert row is not None
-
-        assert lock.acquire(timeout=0.1)
-        lock.release()
-
-    def test_fetchall_degrades_when_lock_held(self, in_memory_db):
-        """锁被其他线程长时间持有时，fetchall 超时后降级执行，不会死等。"""
-        lock = threading.RLock()
-        session = DBSession(in_memory_db, lock=lock, lock_timeout=0.2)
-
-        # 在另一个线程中持有锁
-        lock_held = threading.Event()
-        release_signal = threading.Event()
-
-        def hold_lock():
-            lock.acquire()
-            lock_held.set()
-            release_signal.wait(timeout=5.0)
-            lock.release()
-
-        holder = threading.Thread(target=hold_lock, daemon=True)
-        holder.start()
-        lock_held.wait(timeout=2.0)
-
-        # fetchall 应在 ~0.2s 后降级执行，不会死等
-        start = time.time()
-        rows = session.fetchall("SELECT * FROM test_t")
-        elapsed = time.time() - start
-
-        # 验证：降级执行成功返回数据
-        assert len(rows) == 1
-        # 验证：超时时间在合理范围内（0.2 ± 0.3 秒容差）
-        assert elapsed < 0.5, f"降级耗时过长: {elapsed:.2f}s"
-
-        release_signal.set()
-        holder.join(timeout=2.0)
-
-    def test_fetchone_degrades_when_lock_held(self, in_memory_db):
-        """锁被其他线程长时间持有时，fetchone 超时后降级执行。"""
-        lock = threading.RLock()
-        session = DBSession(in_memory_db, lock=lock, lock_timeout=0.2)
-
-        lock_held = threading.Event()
-        release_signal = threading.Event()
-
-        def hold_lock():
-            lock.acquire()
-            lock_held.set()
-            release_signal.wait(timeout=5.0)
-            lock.release()
-
-        holder = threading.Thread(target=hold_lock, daemon=True)
-        holder.start()
-        lock_held.wait(timeout=2.0)
-
-        start = time.time()
-        row = session.fetchone("SELECT * FROM test_t WHERE id = 1")
-        elapsed = time.time() - start
-
-        assert row is not None
-        assert elapsed < 0.5, f"降级耗时过长: {elapsed:.2f}s"
-
-        release_signal.set()
-        holder.join(timeout=2.0)
-
-    def test_no_lock_still_works(self, in_memory_db):
-        """lock=None 时，fetchall/fetchone 正常工作（无锁路径）。"""
-        session = DBSession(in_memory_db, lock=None)
+    def test_fetchall_with_backend(self, in_memory_db, mock_backend):
+        """有 backend 时 fetchall 正常工作。"""
+        session = DBSession(in_memory_db, backend=mock_backend)
 
         rows = session.fetchall("SELECT * FROM test_t")
         assert len(rows) == 1
 
+        # 验证 op_lock_for 被调用
+        mock_backend.op_lock_for.assert_called()
+
+    def test_fetchone_with_backend(self, in_memory_db, mock_backend):
+        """有 backend 时 fetchone 正常工作。"""
+        session = DBSession(in_memory_db, backend=mock_backend)
+
+        row = session.fetchone("SELECT * FROM test_t WHERE id = 1")
+        assert row is not None
+        mock_backend.op_lock_for.assert_called()
+
+    def test_execute_with_backend(self, in_memory_db, mock_backend):
+        """有 backend 时 execute 正常工作。"""
+        session = DBSession(in_memory_db, backend=mock_backend)
+
+        session.execute("INSERT INTO test_t VALUES (2, 'world')")
+        row = session.fetchone("SELECT * FROM test_t WHERE id = 2")
+        assert row is not None
+        mock_backend.op_lock_for.assert_called()
+
+    def test_executemany_with_backend(self, in_memory_db, mock_backend):
+        """有 backend 时 executemany 正常工作。"""
+        session = DBSession(in_memory_db, backend=mock_backend)
+
+        session.executemany("INSERT INTO test_t VALUES (?, ?)", [(2, "world"), (3, "foo")])
+        rows = session.fetchall("SELECT * FROM test_t WHERE id > 1")
+        assert len(rows) == 2
+
+
+class TestDBSessionWithoutBackend:
+    """DBSession 在没有 backend 时的行为（无锁路径）。"""
+
+    def test_fetchall_without_backend(self, in_memory_db):
+        """backend=None 时 fetchall 正常工作。"""
+        session = DBSession(in_memory_db, backend=None)
+
+        rows = session.fetchall("SELECT * FROM test_t")
+        assert len(rows) == 1
+
+    def test_fetchone_without_backend(self, in_memory_db):
+        """backend=None 时 fetchone 正常工作。"""
+        session = DBSession(in_memory_db, backend=None)
+
         row = session.fetchone("SELECT * FROM test_t WHERE id = 1")
         assert row is not None
 
-    def test_write_operations_still_require_lock(self, in_memory_db):
-        """execute 写操作在有锁时始终使用 with self.lock，不降级。"""
-        lock = threading.RLock()
-        session = DBSession(in_memory_db, lock=lock, lock_timeout=0.2)
+    def test_execute_without_backend(self, in_memory_db):
+        """backend=None 时 execute 正常工作。"""
+        session = DBSession(in_memory_db, backend=None)
 
-        # 正常写入
         session.execute("INSERT INTO test_t VALUES (2, 'world')")
         row = session.fetchone("SELECT * FROM test_t WHERE id = 2")
         assert row is not None
 
-    def test_custom_lock_timeout(self, in_memory_db):
-        """可自定义锁超时时间。"""
-        lock = threading.RLock()
-        session = DBSession(in_memory_db, lock=lock, lock_timeout=0.05)
+    def test_default_no_backend(self, in_memory_db):
+        """不传 backend 参数时等同于 backend=None。"""
+        session = DBSession(in_memory_db)
 
-        lock_held = threading.Event()
-        release_signal = threading.Event()
-
-        def hold_lock():
-            lock.acquire()
-            lock_held.set()
-            release_signal.wait(timeout=5.0)
-            lock.release()
-
-        holder = threading.Thread(target=hold_lock, daemon=True)
-        holder.start()
-        lock_held.wait(timeout=2.0)
-
-        start = time.time()
         rows = session.fetchall("SELECT * FROM test_t")
-        elapsed = time.time() - start
-
-        # 0.05s timeout 应更快降级
         assert len(rows) == 1
-        assert elapsed < 0.3, f"短超时降级耗时过长: {elapsed:.2f}s"
 
-        release_signal.set()
-        holder.join(timeout=2.0)
-"""tests/unit/database/test_session_lock_timeout.py"""
+        session.execute("INSERT INTO test_t VALUES (2, 'world')")
+        row = session.fetchone("SELECT * FROM test_t WHERE id = 2")
+        assert row is not None
+
+
+class TestDBSessionBackendInteraction:
+    """验证 backend.op_lock_for 的调用细节。"""
+
+    def test_op_lock_for_called_with_conn(self, in_memory_db, mock_backend):
+        """op_lock_for 应传入当前连接。"""
+        session = DBSession(in_memory_db, backend=mock_backend)
+
+        session.fetchall("SELECT * FROM test_t")
+        mock_backend.op_lock_for.assert_called_with(in_memory_db)
+
+    def test_op_lock_for_called_on_each_operation(self, in_memory_db, mock_backend):
+        """每次操作都应调用 op_lock_for。"""
+        session = DBSession(in_memory_db, backend=mock_backend)
+        call_count_before = mock_backend.op_lock_for.call_count
+
+        session.fetchall("SELECT * FROM test_t")
+        session.fetchone("SELECT * FROM test_t WHERE id = 1")
+        session.execute("INSERT INTO test_t VALUES (2, 'world')")
+
+        assert mock_backend.op_lock_for.call_count == call_count_before + 3
+
+    def test_backend_that_returns_failing_context(self, in_memory_db):
+        """如果 backend.op_lock_for 返回的 contextmanager 抛异常，操作应失败。"""
+        backend = MagicMock()
+        def _fail_ctx(conn):
+            raise RuntimeError("lock acquisition failed")
+        backend.op_lock_for.side_effect = _fail_ctx
+
+        session = DBSession(in_memory_db, backend=backend)
+        with pytest.raises(RuntimeError, match="lock acquisition failed"):
+            session.fetchall("SELECT * FROM test_t")

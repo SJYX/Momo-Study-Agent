@@ -3,7 +3,9 @@ tests/web/test_stats.py — GET /api/stats/summary 测试。
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,7 +19,9 @@ class TestStatsSummary:
     def test_stats_empty_db(self, app, test_db, monkeypatch, override_ctx):
         """空数据库应返回全零统计。"""
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(stats_router)
         override_ctx(test_db)
@@ -60,7 +64,9 @@ class TestStatsSummary:
         conn.close()
 
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(stats_router)
         override_ctx(test_db)
@@ -83,7 +89,9 @@ class TestStatsSummary:
     def test_stats_user_id(self, app, test_db, monkeypatch, override_ctx):
         """响应应包含 user_id。"""
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
-        monkeypatch.setattr("database.connection._get_singleton_conn_op_lock", lambda conn: None)
+        _mock_backend = MagicMock()
+        _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
         monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(stats_router)
         override_ctx(test_db)

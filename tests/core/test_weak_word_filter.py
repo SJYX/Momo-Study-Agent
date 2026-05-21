@@ -1,6 +1,8 @@
+import contextlib
 import pytest
 import sqlite3
 import datetime
+from unittest.mock import MagicMock
 from core.weak_word_filter import WeakWordFilter
 
 @pytest.fixture
@@ -80,7 +82,9 @@ def mock_db_manager(monkeypatch):
     monkeypatch.setattr(core.weak_word_filter, "_get_read_conn", mock_get_read_conn)
     import database.connection as db_connection
     monkeypatch.setattr(db_connection, "_get_read_conn", mock_get_read_conn)
-    monkeypatch.setattr(db_connection, "_get_singleton_conn_op_lock", lambda conn: None)
+    _mock_backend = MagicMock()
+    _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+    monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
     monkeypatch.setattr(db_connection, "_is_main_write_singleton_conn", lambda conn: False)
     
     yield shared_db_conn

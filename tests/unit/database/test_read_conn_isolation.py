@@ -3,7 +3,7 @@
 验证：
 - _get_local_read_conn 返回独立 sqlite3 连接（非写单例）
 - 读连接设置了 query_only=ON
-- 读连接不受 _main_write_conn_op_lock 阻塞
+- 读连接与写单例隔离
 - feature flag 关闭时回退到写单例
 - 读连接失败时降级到写单例
 """
@@ -68,8 +68,7 @@ class TestGetLocalReadConn:
         """独立读连接不关联写单例的 op_lock。"""
         conn = conn_mod._get_local_read_conn(tmp_db)
         try:
-            lock = conn_mod._get_singleton_conn_op_lock(conn)
-            assert lock is None, "独立读连接不应关联 _main_write_conn_op_lock"
+            assert not conn_mod._is_main_write_singleton_conn(conn), "独立读连接不应是写连接单例"
         finally:
             conn.close()
 
@@ -202,7 +201,6 @@ class TestFeatureFlagFallback:
             try:
                 # 应该是标准 sqlite3 连接，非写单例
                 assert not conn_mod._is_main_write_singleton_conn(conn)
-                assert conn_mod._get_singleton_conn_op_lock(conn) is None
             finally:
                 conn.close()
         finally:

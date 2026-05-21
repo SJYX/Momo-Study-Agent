@@ -2,7 +2,9 @@
 tests/web/test_words.py -- /api/words/* endpoint tests.
 """
 from __future__ import annotations
+import contextlib
 import sqlite3
+from unittest.mock import MagicMock
 import pytest
 from web.backend import deps
 from web.backend.routers.words import router as words_router
@@ -12,7 +14,9 @@ import database.connection as db_conn
 def _patch_db(app, test_db, monkeypatch, override_ctx):
     """Patch database.connection functions to use the test SQLite DB."""
     monkeypatch.setattr(db_conn, "_get_read_conn", lambda path: sqlite3.connect(test_db))
-    monkeypatch.setattr(db_conn, "_get_singleton_conn_op_lock", lambda conn: None)
+    _mock_backend = MagicMock()
+    _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+    monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
     monkeypatch.setattr(db_conn, "_is_main_write_singleton_conn", lambda conn: False)
     app.include_router(words_router)
     override_ctx(test_db)
