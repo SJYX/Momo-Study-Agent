@@ -182,6 +182,7 @@ def apply_migrations(
     conn: Any,
     *,
     local_conn: Optional[Any] = None,
+    local_only: bool = False,
 ) -> Tuple[int, int]:
     """从 current_version 推进到 target_version。
 

@@ -247,116 +247,39 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
     path = db_path or DB_PATH
     start_time = time.time()
 
-    is_test = "test_" in os.path.basename(path)
-    is_main_db = connection._is_main_db_path(path)
-    url = os.getenv("TURSO_TEST_DB_URL") if is_test else os.getenv("TURSO_DB_URL")
-    token = os.getenv("TURSO_TEST_AUTH_TOKEN") if is_test else os.getenv("TURSO_AUTH_TOKEN")
+    try:
+        main_fp = _main_db_fingerprint(path)
+        marker_exists = _is_db_initialized("main", main_fp)
 
-    if not url:
-        hostname = os.getenv("TURSO_TEST_DB_HOSTNAME") if is_test else os.getenv("TURSO_DB_HOSTNAME")
-        if hostname:
-            url = _normalize_turso_url(hostname)
+        _debug_log("[init_db] 本地模式：获取连接...", module="database.schema")
+        lc = connection._get_local_conn(path)
 
-    is_cloud_configured = bool((connection.HAS_LIBSQL or connection.HAS_PYTURSO) and url and token)
-
-    if is_cloud_configured:
-        try:
-            main_fp = _main_db_fingerprint(path)
-            marker_exists = _is_db_initialized("main", main_fp)
-
-            cloud_start = time.time()
-            _debug_log(f"[init_db] 正在获取云端写连接 (is_main_db={is_main_db})...", level="INFO", module="database.schema")
-            if is_main_db:
-                cc = connection._get_non_singleton_cloud_conn(do_sync=False)
-            else:
-                cc = connection._get_conn(path, do_sync=False)
-            _debug_log(f"[init_db] 云端数据库连接完成 (type={type(cc).__name__})", start_time=cloud_start, level="INFO", module="database.schema")
-
-            if marker_exists:
-                _debug_log("云端数据库已初始化（通过标记文件），跳过建表检查", module="database.schema")
-            else:
-                ccur = cc.cursor()
-                table_exists = _check_table_exists(ccur, "processed_words", "main", cache_scope=main_fp)
-                ccur.close()  # 显式关闭检查游标，避免持锁期间游标状态干扰
-                _debug_log(f"[init_db] processed_words 表存在={table_exists}，准备执行建表事务...", module="database.schema")
-
-                # 获取操作锁
-                from database.backends import get_active_backend
-                with get_active_backend().op_lock_for(cc):
-                    _debug_log("[init_db] 已获取写锁，准备开启事务...", module="database.schema")
-                    wcur = cc.cursor()
-                    try:
-                        # 核心修复：先执行一次 rollback 确保清理掉之前 _check_table_exists 可能开启的隐式读事务
-                        try:
-                            cc.rollback()
-                        except:
-                            pass
-
-                        # 显式开启立即写事务
-                        wcur.execute("BEGIN IMMEDIATE")
-                        _debug_log("[init_db] 已开启显式写事务 (IMMEDIATE)", module="database.schema")
-                        _t_create = time.time()
-                        _create_tables(wcur, skip_migrations=True)
-                        cc.commit()
-                        _debug_log("[init_db] 建表成功并已提交", start_time=_t_create, level="INFO", module="database.schema")
-                    except Exception as e:
-                        try:
-                            cc.rollback()
-                        except:
-                            pass
-                        _debug_log(f"[init_db] 建表异常: {e}", level="ERROR", module="database.schema")
-                        raise
-                    finally:
-                        wcur.close()
-
-                _mark_db_initialized("main", main_fp)
-
-            # 迁移每次启动都执行（幂等）；marker 只跳过建表，不跳过迁移
-            # 版本追踪使用 system_config 表（libsql 同步），不再依赖 PRAGMA user_version。
-            _debug_log("[init_db] 开始应用迁移...", module="database.schema")
-            start_v, end_v = apply_migrations(cc)
-            if start_v != end_v:
-                _debug_log(
-                    f"数据库迁移完成 v{start_v} → v{end_v}",
-                    module="database.schema",
-                )
-            else:
-                _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
-
-        except Exception as e:
-            _debug_log(f"云端数据库初始化失败 (可能网络不通或凭据过期): {e}", start_time=start_time, level="WARNING", module="database.schema")
-        finally:
-            # Close non-singleton cloud connection (used only for DDL/migrations)
-            if is_cloud_configured and is_main_db:
-                try:
-                    cc.close()
-                except Exception:
-                    pass
-    else:
-        try:
-            _debug_log("[init_db] 本地模式：获取连接...", module="database.schema")
-            lc = connection._get_local_conn(path)
+        if not marker_exists:
             lcur = lc.cursor()
-            _t_local_create = time.time()
-            _debug_log("[init_db] 本地模式：开始建表...", module="database.schema")
+            _t_create = time.time()
+            _debug_log("[init_db] 开始建表...", module="database.schema")
             _create_tables(lcur)
             lc.commit()
-            _debug_log("[init_db] 本地模式：建表完成", start_time=_t_local_create, module="database.schema")
+            lcur.close()
+            _mark_db_initialized("main", main_fp)
+            _debug_log("[init_db] 建表成功", start_time=_t_create, level="INFO", module="database.schema")
+        else:
+            _debug_log("数据库已初始化（通过标记文件），跳过建表检查", module="database.schema")
 
-            # 本地连接直连，无并发锁；apply_migrations 在 BEGIN/COMMIT 内自管事务
-            start_v, end_v = apply_migrations(lc)
-            if start_v != end_v:
-                _debug_log(
-                    f"本地数据库迁移完成 v{start_v} → v{end_v}",
-                    module="database.schema",
-                )
-            else:
-                _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
+        _debug_log("[init_db] 开始应用迁移...", module="database.schema")
+        start_v, end_v = apply_migrations(lc, local_only=True)
+        if start_v != end_v:
+            _debug_log(
+                f"数据库迁移完成 v{start_v} → v{end_v}",
+                module="database.schema",
+            )
+        else:
+            _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
 
-            lc.close()
-            _debug_log("本地数据库初始化/迁移完成", start_time=start_time, module="database.schema")
-        except Exception as e:
-            _debug_log(f"本地数据库初始化失败: {e}", start_time=start_time, level="WARNING", module="database.schema")
+        lc.close()
+        _debug_log("数据库初始化完成", start_time=start_time, module="database.schema")
+    except Exception as e:
+        _debug_log(f"数据库初始化失败: {e}", start_time=start_time, level="WARNING", module="database.schema")
 
     _debug_log("[init_db] 主库初始化完毕，开始 Hub 初始化...", module="database.schema")
     hub_start = time.time()
