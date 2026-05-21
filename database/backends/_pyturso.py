@@ -10,13 +10,8 @@ import os
 import time
 from typing import Any
 
-# ── pyturso availability (module-level) ──
-try:
-    import turso.sync  # noqa: F401
-
-    HAS_PYTURSO = True
-except ImportError:
-    HAS_PYTURSO = False
+# ── pyturso availability (集中探针) ──
+from database.backends import HAS_PYTURSO
 
 # ── helpers from database.utils (no circular import) ──
 from database.utils import _debug_log
