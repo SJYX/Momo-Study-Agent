@@ -96,17 +96,21 @@ async def update_word_note(
     # 后台去抖触发云端同步（SyncDebouncer 计时 → 后台线程执行）
     try:
         from database.sync_debouncer import get_sync_debouncer
+        from core.logger import get_logger
+        import threading
 
         def _do_sync():
             from database.backends import get_active_backend
             from database.connection import _get_main_write_conn_singleton
-            conn = _get_main_write_conn_singleton()
-            get_active_backend().do_sync_on(conn)
+            try:
+                conn = _get_main_write_conn_singleton()
+                get_active_backend().do_sync_on(conn)
+            except Exception:
+                get_logger().debug("debounced sync failed", exc_info=True, module="web.words")
 
-        import threading
         get_sync_debouncer().trigger(lambda: threading.Thread(target=_do_sync, daemon=True).start())
     except Exception:
-        pass
+        get_logger().debug("failed to schedule debounced sync", exc_info=True, module="web.words")
 
     return ok_response({"updated": True, "voc_id": voc_id}, user_id=ctx.profile_name)
 
