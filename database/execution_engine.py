@@ -18,7 +18,6 @@ from database.connection import (
     _close_main_write_conn_singleton,
     _close_hub_write_conn_singleton,
     _is_main_db_path,
-    _is_main_write_singleton_conn,
     _get_local_conn,
     HUB_DB_PATH,
 )
@@ -423,7 +422,7 @@ def _release_db_file_handles_for_recovery(db_path: str) -> None:
 def _mark_main_db_needs_sync(db_path: Optional[str] = None, conn: Any = None) -> None:
     global _needs_sync, _last_write_time
     if conn is not None:
-        if not _is_main_write_singleton_conn(conn):
+        if get_active_backend().should_close(conn):
             return
     elif not _is_main_db_path(db_path):
         return
