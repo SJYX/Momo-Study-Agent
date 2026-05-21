@@ -92,8 +92,9 @@ def _attempt_auto_recovery(db_path: str) -> bool:
         if (connection.HAS_LIBSQL or connection.HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
             _debug_log(f"尝试从 Turso 云端重建损坏的数据库: {db_path}", level="INFO", module="database.session")
             repair_conn = connection._get_conn(db_path, allow_local_fallback=False, do_sync=True)
+            from database.backends import get_active_backend
             try:
-                if not connection._is_main_write_singleton_conn(repair_conn):
+                if get_active_backend().should_close(repair_conn):
                     repair_conn.close()
             except Exception:
                 pass
@@ -133,10 +134,10 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
             db_path = kwargs.get('db_path') or _config.DB_PATH
             _recovery_attempted = kwargs.pop('_recovery_attempted', False)
             c = None
+            from database.backends import get_active_backend
             try:
                 started = time.time()
                 c = connection._get_read_conn(db_path)
-                from database.backends import get_active_backend
                 session = DBSession(c, backend=get_active_backend())
                 kwargs['session'] = session
                 
@@ -158,7 +159,7 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
 
                         # 确保关闭损坏的连接后再恢复
                         try:
-                            if c is not None and not connection._is_main_write_singleton_conn(c):
+                            if c is not None and get_active_backend().should_close(c):
                                 c.close()
                         except Exception:
                             pass
@@ -180,7 +181,7 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
                 if not _recovery_attempted or '_recovery_attempted' in kwargs: 
                     # 避免在重试的递归栈里重复关闭同一个连接（外层如果抛了异常才走到这）
                     try:
-                        if c is not None and not connection._is_main_write_singleton_conn(c):
+                        if c is not None and get_active_backend().should_close(c):
                             c.close()
                     except Exception:
                         pass
@@ -198,9 +199,9 @@ def with_write_session(default_return: Any = None, fallback_on_corruption: bool 
                 
             db_path = kwargs.get('db_path') or _config.DB_PATH
             c = None
+            from database.backends import get_active_backend
             try:
                 c = connection._get_conn(db_path)
-                from database.backends import get_active_backend
                 session = DBSession(c, backend=get_active_backend())
                 kwargs['session'] = session
                 
@@ -222,7 +223,7 @@ def with_write_session(default_return: Any = None, fallback_on_corruption: bool 
                 return default_return
             finally:
                 try:
-                    if c is not None and not connection._is_main_write_singleton_conn(c):
+                    if c is not None and get_active_backend().should_close(c):
                         c.close()
                 except Exception:
                     pass
