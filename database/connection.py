@@ -63,13 +63,10 @@ from .utils import (
     _backup_broken_database_file,
     _is_sqlite_data_corruption_error,
     _is_sqlite_malformed_error,
+    _normalize_turso_url,
 )
 
 
-# Runtime cloud credentials (kept mutable to support profile loading workflows).
-TURSO_DB_URL = None
-TURSO_AUTH_TOKEN = None
-TURSO_DB_HOSTNAME = None
 TURSO_TEST_DB_URL = os.getenv("TURSO_TEST_DB_URL")
 TURSO_TEST_AUTH_TOKEN = os.getenv("TURSO_TEST_AUTH_TOKEN")
 TURSO_TEST_DB_HOSTNAME = os.getenv("TURSO_TEST_DB_HOSTNAME")
@@ -126,15 +123,6 @@ def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG
         pass
 
 
-def _normalize_turso_url(hostname: str) -> str:
-    if not hostname:
-        return ""
-    raw = hostname.strip()
-    if raw.startswith("libsql://") or raw.startswith("https://") or raw.startswith("wss://"):
-        return raw
-    if "." in raw or raw == "localhost":
-        return f"libsql://{raw}"
-    return f"libsql://{raw}"
 
 
 def _is_main_db_path(db_path: Optional[str] = None) -> bool:
@@ -814,12 +802,8 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
         return []
 
 
-def set_runtime_cloud_credentials(url: Optional[str], token: Optional[str], hostname: Optional[str] = None) -> None:
-    """Allow outer modules to update runtime main DB cloud credentials safely."""
-    global TURSO_DB_URL, TURSO_AUTH_TOKEN, TURSO_DB_HOSTNAME
-    TURSO_DB_URL = (url or "").strip() or None
-    TURSO_AUTH_TOKEN = (token or "").strip() or None
-    TURSO_DB_HOSTNAME = (hostname or "").strip() or None
+def set_runtime_cloud_credentials(_url: Optional[str], _token: Optional[str], _hostname: Optional[str] = None) -> None:
+    """No-op kept for backward compat — cloud credentials are now read via os.getenv() in _resolve_conn_context."""
 
 # Imported from execution engine to maintain backward compatibility
 from database.execution_engine import (
