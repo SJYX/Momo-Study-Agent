@@ -21,8 +21,8 @@ class TestStatsSummary:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(stats_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -66,8 +66,8 @@ class TestStatsSummary:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(stats_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -91,8 +91,8 @@ class TestStatsSummary:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(stats_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient

@@ -16,8 +16,8 @@ def _patch_db(app, test_db, monkeypatch, override_ctx):
     monkeypatch.setattr(db_conn, "_get_read_conn", lambda path: sqlite3.connect(test_db))
     _mock_backend = MagicMock()
     _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+    _mock_backend.should_close.return_value = True
     monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-    monkeypatch.setattr(db_conn, "_is_main_write_singleton_conn", lambda conn: False)
     app.include_router(words_router)
     override_ctx(test_db)
 

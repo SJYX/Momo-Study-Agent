@@ -15,8 +15,8 @@ class TestSyncStatus:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(sync_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -31,8 +31,8 @@ class TestSyncStatus:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         monkeypatch.setattr("database.word_repo.count_by_state", lambda *a, **kw: 1)
         monkeypatch.setattr(
             "database.word_repo.list_by_state",
@@ -54,8 +54,8 @@ class TestSyncStatus:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         monkeypatch.setattr("database.word_repo.count_by_state", lambda *a, **kw: 25)
         monkeypatch.setattr(
             "database.word_repo.list_by_state",
@@ -94,8 +94,8 @@ class TestSyncRetry:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         app.include_router(sync_router)
         override_ctx(test_db)
         from fastapi.testclient import TestClient
@@ -109,8 +109,8 @@ class TestSyncRetry:
         monkeypatch.setattr("database.connection._get_read_conn", lambda path: sqlite3.connect(test_db))
         _mock_backend = MagicMock()
         _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+        _mock_backend.should_close.return_value = True
         monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-        monkeypatch.setattr("database.connection._is_main_write_singleton_conn", lambda conn: False)
         monkeypatch.setattr("database.utils.clean_for_maimemo", lambda x: x)
         monkeypatch.setattr(
             "database.word_repo.list_by_state",

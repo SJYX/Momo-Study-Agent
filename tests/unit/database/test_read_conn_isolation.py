@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from database import connection as conn_mod
+from database.backends import get_active_backend
 
 
 @pytest.fixture
@@ -51,7 +52,7 @@ class TestGetLocalReadConn:
         """独立读连接不是写单例。"""
         conn = conn_mod._get_local_read_conn(tmp_db)
         try:
-            assert not conn_mod._is_main_write_singleton_conn(conn)
+            assert get_active_backend().should_close(conn)
         finally:
             conn.close()
 
@@ -68,7 +69,7 @@ class TestGetLocalReadConn:
         """独立读连接不关联写单例的 op_lock。"""
         conn = conn_mod._get_local_read_conn(tmp_db)
         try:
-            assert not conn_mod._is_main_write_singleton_conn(conn), "独立读连接不应是写连接单例"
+            assert get_active_backend().should_close(conn)
         finally:
             conn.close()
 
@@ -200,7 +201,7 @@ class TestFeatureFlagFallback:
             conn = conn_mod._get_read_conn_impl(tmp_db)
             try:
                 # 应该是标准 sqlite3 连接，非写单例
-                assert not conn_mod._is_main_write_singleton_conn(conn)
+                assert get_active_backend().should_close(conn)
             finally:
                 conn.close()
         finally:

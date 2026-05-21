@@ -84,8 +84,8 @@ def mock_db_manager(monkeypatch):
     monkeypatch.setattr(db_connection, "_get_read_conn", mock_get_read_conn)
     _mock_backend = MagicMock()
     _mock_backend.op_lock_for.return_value = contextlib.nullcontext()
+    _mock_backend.should_close.return_value = True
     monkeypatch.setattr("database.backends.get_active_backend", lambda: _mock_backend)
-    monkeypatch.setattr(db_connection, "_is_main_write_singleton_conn", lambda conn: False)
     
     yield shared_db_conn
     shared_db_conn.close()
