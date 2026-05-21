@@ -80,8 +80,6 @@ def _normalize_turso_url(hostname: str) -> str:
     raw = hostname.strip()
     if raw.startswith("libsql://") or raw.startswith("https://") or raw.startswith("wss://"):
         return raw
-    if "." in raw or raw == "localhost":
-        return f"libsql://{raw}"
     return f"libsql://{raw}"
 
 
@@ -474,18 +472,6 @@ def _is_sqlite_row_decode_error(error: Exception) -> bool:
 
 def _is_sqlite_data_corruption_error(error: Exception) -> bool:
     return _is_sqlite_malformed_error(error) or _is_sqlite_row_decode_error(error)
-
-
-def _is_replica_metadata_missing_error(error: Exception) -> bool:
-    msg = str(error or "").lower()
-    return "db file exists but metadata file does not" in msg or (
-        "local state is incorrect" in msg and "metadata" in msg
-    ) or (
-        # pyturso: DB file missing but sync metadata exists → needs rebuild
-        "sync engine operation failed" in msg
-        and "metadata" in msg
-        and ("doesn't exist" in msg or "does not exist" in msg or "doesn't exists" in msg or "doesnt exist" in msg or "incorrect" in msg)
-    )
 
 
 def _cleanup_stale_sidecars(db_abs_path: str) -> None:
