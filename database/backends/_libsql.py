@@ -10,8 +10,10 @@ database.connection (circular-import risk).
 import os
 import subprocess
 import sys
+import threading
 import time
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
 
 # ── libsql availability (集中探针) ──
 from database.backends import HAS_LIBSQL
@@ -121,6 +123,27 @@ class LibsqlBackend:
     """TursoBackend implementation wrapping libsql embedded replicas."""
 
     name = "libsql"
+
+    def __init__(self):
+        self._main_lock = threading.Lock()
+        self._hub_lock = threading.Lock()
+
+    @contextmanager
+    def op_lock_for(self, conn: Any) -> Iterator[None]:
+        """根据连接类型分发到 main 或 hub 锁。"""
+        lock = self._resolve_lock(conn)
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+
+    def _resolve_lock(self, conn: Any) -> threading.Lock:
+        """判断 conn 属于 main 还是 hub，返回对应锁。"""
+        role = getattr(conn, "_momo_db_role", None)
+        if role == "hub":
+            return self._hub_lock
+        return self._main_lock
 
     def is_supported(self) -> bool:
         """Check whether the libsql C library is importable at runtime."""
@@ -275,6 +298,7 @@ class LibsqlBackend:
                 if clear_db_syncing is not None:
                     clear_db_syncing()
 
+        conn._momo_db_role = "hub" if "hub" in os.path.basename(db_path).lower() else "main"
         return conn
 
     def do_sync_on(self, conn: Any) -> None:
