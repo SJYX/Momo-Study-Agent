@@ -20,14 +20,22 @@ class MimoClient:
         self.prompt_file = prompt_file or PROMPT_FILE
         self.connect_timeout_s = float(os.getenv("MIMO_CONNECT_TIMEOUT_S", "10"))
         self.read_timeout_s = float(os.getenv("MIMO_READ_TIMEOUT_S", "60"))
-        self.session = requests.Session()
+        self._session = None
 
         if not self.api_key:
             raise ValueError("MIMO_API_KEY is required but not set")
 
+    @property
+    def session(self):
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+
     def close(self):
         """统一清理入口；关闭复用连接池。"""
-        self.session.close()
+        if self._session is not None:
+            self._session.close()
+            self._session = None
 
     def _load_instruction(self) -> str:
         """加载系统提示词"""

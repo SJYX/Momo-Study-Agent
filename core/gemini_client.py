@@ -13,19 +13,28 @@ import sys
 
 class GeminiClient:
     def __init__(self, api_key: str, model_name: str = None, prompt_file: str = None):
-        from google import genai
-        self.client = genai.Client(api_key=api_key)
+        self._api_key = api_key
+        self._client = None
         self.prompt_file = prompt_file or PROMPT_FILE
         self.model_name = model_name or GEMINI_MODEL
 
+    @property
+    def client(self):
+        if self._client is None:
+            from google import genai
+            self._client = genai.Client(api_key=self._api_key)
+        return self._client
+
     def close(self):
         """统一释放底层 HTTP 资源。"""
-        close = getattr(self.client, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
+        if self._client is not None:
+            close = getattr(self._client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            self._client = None
 
     def _load_instruction(self) -> str:
         if not os.path.exists(self.prompt_file):

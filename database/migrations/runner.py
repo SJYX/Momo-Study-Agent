@@ -24,6 +24,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 _MIGRATION_PATTERN = re.compile(r"^V(\d{3})_[a-zA-Z0-9_]+\.py$")
 _VERSION_KEY = "schema_version"
+_MIGRATIONS_DIR_MTIME: float = 0.0
 
 
 class MigrationError(RuntimeError):
@@ -108,6 +109,28 @@ def _validate_schema_integrity(cur: Any, current_version: int) -> bool:
                 return False
         except Exception:
             return False
+    return True
+
+
+def _migrations_unchanged() -> bool:
+    """如果 migration 文件目录未被修改，跳过扫描。"""
+    global _MIGRATIONS_DIR_MTIME
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        current = os.path.getmtime(pkg_dir)
+    except OSError:
+        return False
+    if current == _MIGRATIONS_DIR_MTIME:
+        return True
+    for fname in os.listdir(pkg_dir):
+        if _MIGRATION_PATTERN.match(fname):
+            fpath = os.path.join(pkg_dir, fname)
+            try:
+                if os.path.getmtime(fpath) > _MIGRATIONS_DIR_MTIME:
+                    return False
+            except OSError:
+                return False
+    _MIGRATIONS_DIR_MTIME = current
     return True
 
 
@@ -201,8 +224,9 @@ def apply_migrations(
             start = _read_schema_version(cur)
             _debug_log(f"[迁移] 重置后版本 v{start}，目标 v{target}", level="INFO", module="database.migrations")
 
-        if start >= target:
-            _debug_log(f"[迁移] v{start} 已是最新，跳过", module="database.migrations")
+        # Fast skip: if migration files haven't changed and version is current
+        if start >= target and _migrations_unchanged():
+            _debug_log(f"[迁移] v{start} 已是最新（文件未变），跳过", module="database.migrations")
             return start, start
 
         migrations = [(v, m) for v, m in _discover_migrations() if v > start]
