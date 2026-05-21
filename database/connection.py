@@ -805,29 +805,14 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
 def set_runtime_cloud_credentials(_url: Optional[str], _token: Optional[str], _hostname: Optional[str] = None) -> None:
     """No-op kept for backward compat — cloud credentials are now read via os.getenv() in _resolve_conn_context."""
 
-# Imported from execution engine to maintain backward compatibility
+# Re-exported for external consumers:
+#   - database/_repo_helpers.py accesses 4 names via connection.X
+#   - core/study_flow.py imports init_concurrent_system / cleanup_concurrent_system
 from database.execution_engine import (
-    _write_queue,
-    _writer_daemon_stop_event,
-    _write_queue_stats,
-    _execute_batch_writes_unlocked,
-    _execute_batch_writes,
-    _writer_daemon,
-    _sync_daemon,
-    _start_writer_daemon,
-    _start_sync_daemon,
-    _stop_writer_daemon,
-    _stop_sync_daemon,
     _queue_write_operation,
     _queue_batch_write_operation,
-    init_concurrent_system,
-    cleanup_concurrent_system,
-    _release_db_file_handles_for_recovery,
-    _mark_main_db_needs_sync,
     _execute_write_sql_sync,
     _execute_batch_write_sql_sync,
-    get_write_queue_stats,
-    get_db_sync_status,
-    set_db_syncing,
-    clear_db_syncing,
+    init_concurrent_system,
+    cleanup_concurrent_system,
 )
