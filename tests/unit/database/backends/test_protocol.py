@@ -84,9 +84,10 @@ def test_backend_preference_pyturso_over_libsql(monkeypatch):
     backend = backends_mod.get_active_backend()
     assert isinstance(backend, PytursoBackend)
 
-    # Now neither available → RuntimeError
+    # Now neither available → RuntimeError (reset singleton cache first)
     monkeypatch.setattr(backends_mod, "HAS_PYTURSO", False)
     monkeypatch.setattr(backends_mod, "HAS_LIBSQL", False)
+    backends_mod._backend_singleton = None  # reset cached backend
     with pytest.raises(RuntimeError, match="Neither pyturso nor libsql"):
         backends_mod.get_active_backend()
 
