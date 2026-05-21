@@ -127,6 +127,11 @@ class LibsqlBackend:
     def __init__(self):
         self._main_lock = threading.Lock()
         self._hub_lock = threading.Lock()
+        self._singleton_ids: set[int] = set()
+
+    def should_close(self, conn: Any) -> bool:
+        """Return True if conn is NOT a singleton (safe to close)."""
+        return id(conn) not in self._singleton_ids
 
     @contextmanager
     def op_lock_for(self, conn: Any) -> Iterator[None]:
@@ -156,6 +161,7 @@ class LibsqlBackend:
         token: str,
         *,
         do_sync: bool = False,
+        is_singleton: bool = False,
     ) -> Any:
         """Create an embedded-replica connection via libsql.connect.
 
@@ -299,6 +305,8 @@ class LibsqlBackend:
                     clear_db_syncing()
 
         conn._momo_db_role = "hub" if "hub" in os.path.basename(db_path).lower() else "main"
+        if is_singleton:
+            self._singleton_ids.add(id(conn))
         return conn
 
     def do_sync_on(self, conn: Any) -> None:

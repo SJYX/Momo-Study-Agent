@@ -30,6 +30,13 @@ class PytursoBackend:
 
     name = "pyturso"
 
+    def __init__(self):
+        self._singleton_ids: set[int] = set()
+
+    def should_close(self, conn: Any) -> bool:
+        """Return True if conn is NOT a singleton (safe to close)."""
+        return id(conn) not in self._singleton_ids
+
     @contextmanager
     def op_lock_for(self, conn: Any) -> Iterator[None]:
         """pyturso 引擎原生 MVCC，无需外部锁。"""
@@ -46,6 +53,7 @@ class PytursoBackend:
         token: str,
         *,
         do_sync: bool = False,
+        is_singleton: bool = False,
     ) -> Any:
         """Create a pyturso Turso Sync connection.
 
@@ -212,6 +220,8 @@ class PytursoBackend:
                 )
 
         db._momo_db_role = "hub" if "hub" in os.path.basename(db_path).lower() else "main"
+        if is_singleton:
+            self._singleton_ids.add(id(db))
         return db
 
     def do_sync_on(self, conn: Any) -> None:
