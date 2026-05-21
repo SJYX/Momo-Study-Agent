@@ -123,12 +123,10 @@ _main_write_conn_singleton_path: Optional[str] = None
 _main_write_conn_last_check: float = 0
 _main_write_conn_lock = threading.Lock()
 _main_write_conn_init_lock = threading.Lock()
-_main_write_conn_op_lock = threading.Lock()
 
 _hub_write_conn_singleton: Any = None
 _hub_write_conn_lock = threading.Lock()
 _hub_write_conn_init_lock = threading.Lock()
-_hub_write_conn_op_lock = threading.Lock()
 
 
 # Schema callback registry to avoid circular imports with database/schema.py
@@ -277,18 +275,11 @@ def _is_hub_write_singleton_conn(conn: Any) -> bool:
         return conn is not None and conn is _hub_write_conn_singleton
 
 
-def _get_singleton_conn_op_lock(conn: Any):
-    if _is_main_write_singleton_conn(conn):
-        return _main_write_conn_op_lock
-    if _is_hub_write_singleton_conn(conn):
-        return _hub_write_conn_op_lock
-    return None
-
 
 def _get_local_read_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     """打开一个轻量级只读 sqlite3 连接。
 
-    用于 Embedded Replica 模式下的读操作隔离，避免读请求被 _main_write_conn_op_lock
+    用于 Embedded Replica 模式下的读操作隔离，避免读请求被 backend.op_lock_for()
     阻塞。WAL 模式天然支持 '一写多读' 并行，此连接仅做 SELECT，不会与写单例冲突。
 
     与 _get_local_conn 的区别：
@@ -419,7 +410,7 @@ def _get_main_write_conn_singleton(
     # 2. 第二阶段：如果已有单例，在【锁外】进行健康检查（仅持操作锁）
     if conn is not None:
         try:
-            with _main_write_conn_op_lock:
+            with _get_backend().op_lock_for(conn):
                 now = time.time()
                 if now - _main_write_conn_last_check > 1.0:
                     conn.execute("SELECT 1")
@@ -493,7 +484,7 @@ def _get_hub_write_conn_singleton(
     # 2. 第二阶段：健康检查（锁外进行，仅持操作锁）
     if conn is not None:
         try:
-            with _hub_write_conn_op_lock:
+            with _get_backend().op_lock_for(conn):
                 conn.execute("SELECT 1")
                 if do_sync:
                     _get_backend().do_sync_on(conn)
@@ -582,7 +573,7 @@ def _get_read_conn_impl(
 
     Phase B 读写隔离：
     - Embedded Replica 模式下，读操作优先走独立的 sqlite3 只读连接，
-      避免被 _main_write_conn_op_lock 阻塞。
+      避免被 backend.op_lock_for() 阻塞。
     - 仅当独立连接失败时才回退到写单例。
     - 永远不开额外的 libsql 读连接（WalConflict 约束仍然成立）。
     - 可通过 ISOLATED_READ_CONN_ENABLED=False 回退到旧行为。
@@ -742,15 +733,9 @@ def _run_with_managed_connection(
 ) -> Any:
     owned = optional_conn is None
     target_conn = optional_conn or conn_factory()
-    conn_lock = _get_singleton_conn_op_lock(target_conn)
 
     try:
-        if conn_lock is not None:
-            with conn_lock:
-                result = operation(target_conn)
-                if owned:
-                    target_conn.commit()
-        else:
+        with _get_backend().op_lock_for(target_conn):
             result = operation(target_conn)
             if owned:
                 target_conn.commit()
@@ -796,30 +781,20 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
         else:
             hub_conn = _get_hub_local_conn()
 
-        conn_lock = _get_singleton_conn_op_lock(hub_conn)
-        cur = hub_conn.cursor()
-        try:
-            if conn_lock is not None:
-                with conn_lock:
-                    try:
-                        cur.execute(sql, params)
-                        row = cur.fetchone()
-                    finally:
-                        cur.close()
-                    hub_conn.commit()
-            else:
-                try:
-                    cur.execute(sql, params)
-                    row = cur.fetchone()
-                finally:
-                    cur.close()
-                hub_conn.commit()
-        finally:
-            if conn_lock is None:
-                try:
-                    hub_conn.close()
-                except Exception:
-                    pass
+        is_singleton = _is_hub_write_singleton_conn(hub_conn)
+        with _get_backend().op_lock_for(hub_conn):
+            cur = hub_conn.cursor()
+            try:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+            finally:
+                cur.close()
+            hub_conn.commit()
+        if not is_singleton:
+            try:
+                hub_conn.close()
+            except Exception:
+                pass
         return _row_to_dict(cur, row) if row else None
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
@@ -846,30 +821,20 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
         else:
             hub_conn = _get_hub_local_conn()
 
-        conn_lock = _get_singleton_conn_op_lock(hub_conn)
-        cur = hub_conn.cursor()
-        try:
-            if conn_lock is not None:
-                with conn_lock:
-                    try:
-                        cur.execute(sql, params)
-                        rows = cur.fetchall()
-                    finally:
-                        cur.close()
-                    hub_conn.commit()
-            else:
-                try:
-                    cur.execute(sql, params)
-                    rows = cur.fetchall()
-                finally:
-                    cur.close()
-                hub_conn.commit()
-        finally:
-            if conn_lock is None:
-                try:
-                    hub_conn.close()
-                except Exception:
-                    pass
+        is_singleton = _is_hub_write_singleton_conn(hub_conn)
+        with _get_backend().op_lock_for(hub_conn):
+            cur = hub_conn.cursor()
+            try:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            finally:
+                cur.close()
+            hub_conn.commit()
+        if not is_singleton:
+            try:
+                hub_conn.close()
+            except Exception:
+                pass
         return [_row_to_dict(cur, row) for row in rows]
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
