@@ -21,7 +21,7 @@
 
 `ai_word_notes` 关键状态字段：
 
-- `sync_status`：同步状态（`0=云端未检出自己的释义`, `1=云端释义与本地一致`, `2=云端释义存在但与本地不一致`）
+- `sync_status`：同步状态（`0=未同步`, `1=已同步`, `2=冲突`, `5=失败`）
 - `content_origin`：内容来源（例如 `ai_generated`、`community_reused`、`current_db_reused`、`history_reused`）
 - `content_source_db`：复用来源的数据库标识（或空值，表示新生成）
 - `content_source_scope`：来源范围（例如 `cloud`、`local`、`local_history`）
@@ -45,7 +45,7 @@
 ## 同步策略
 
 - `sync_databases()` 负责用户学习库的本地/云端双向同步。
-- 以主键和时间戳为基础做增量比对。
+- 同步由 Turso 后端驱动执行（`pyturso` 或 `libsql`），应用层不做手工逐表增量比对。
 - `mark_processed()`、`save_ai_word_note()` 和 `save_ai_word_notes_batch()` 会优先写入可用的连接，再回退到本地。
 - Hub 同步是独立职责，不和用户学习库混写。
 
@@ -53,9 +53,10 @@
 
 **关键设计原则：** `sync_status` 仅代表**当前用户对该单词的云端同步状态**，与**内容来源**无关。
 
-- `sync_status=0`：云端未检出自己的释义（无论内容来自何处）
+- `sync_status=0`：待同步（当前仅 `ai_generated` 进入同步队列）
 - `sync_status=1`：云端释义与本地一致
 - `sync_status=2`：云端已存在自己的释义，但内容与本地不一致
+- `sync_status=5`：同步失败（如非法资源 ID 或重试超限）
 
 **多用户查询命中时的处理：**
 
@@ -85,8 +86,19 @@ WHERE sync_status = 0 AND content_origin = 'ai_generated'
 - 新增 ai_generated 笔记默认 `sync_status=0`；co_origin 笔记默认 `sync_status=1`。
 - 同步成功后可调用 `mark_note_synced(voc_id)` 将记录置为 `sync_status=1`。
 - 若云端已存在释义但内容与本地不一致，可将记录标记为 `sync_status=2` 以便后续冲突排查。
+- 对不可重试失败（非法资源 ID）或重试超限场景，标记 `sync_status=5`，避免无限重试。
 - 查重命中的结果应写入 `content_origin` / `content_source_db` / `content_source_scope`，不要复用 `sync_status` 表达来源。
 - 同步执行前可通过 `get_unsynced_notes()` 按时间顺序提取待同步记录（仅 ai_generated 笔记）。
+
+### WordState（展示层 5 态）
+
+Web/业务层不直接暴露 `sync_status` 数字，而是由 `database/word_state.py` 推导 `WordState`：
+
+- `not_started`
+- `local_ready`
+- `synced`
+- `conflict`
+- `failed`
 
 ## 本地并发设置
 

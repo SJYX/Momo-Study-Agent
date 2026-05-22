@@ -33,6 +33,8 @@ class UserContext:
     turso_auth_token: str = ""
     # 运行时缓存 (key -> {data: any, ts: float})
     cache: Dict[str, Any] = field(default_factory=dict)
+    # Phase 2: per-profile DB sync coordinator (event-driven, replaces global _sync_daemon)
+    sync_coordinator: Any = None
 
 
 class UserContextManager:
@@ -163,6 +165,17 @@ class UserContextManager:
             module="user_context",
         )
 
+        # Phase 2: create per-profile sync coordinator (event-driven, replaces global polling)
+        from database.sync_coordinator import ProfileSyncCoordinator, _registry_lock, _coordinators
+        from database.backends import get_active_backend
+        coordinator = ProfileSyncCoordinator(
+            db_path=cfg_snapshot.db_path,
+            backend=get_active_backend(),
+        )
+        abs_db_path = os.path.abspath(cfg_snapshot.db_path)
+        with _registry_lock:
+            _coordinators[abs_db_path] = coordinator
+
         ctx = UserContext(
             profile_name=cfg_snapshot.profile_name,
             logger=logger,
@@ -175,6 +188,7 @@ class UserContextManager:
             env_path=cfg_snapshot.env_path,
             turso_db_url=cfg_snapshot.turso_db_url,
             turso_auth_token=cfg_snapshot.turso_auth_token,
+            sync_coordinator=coordinator,
         )
 
         # 同步执行 DB 初始化（init_db + init_concurrent_system），
@@ -351,6 +365,20 @@ class UserContextManager:
     @staticmethod
     def _cleanup_context(ctx: UserContext) -> None:
         """释放单个 context 的资源。"""
+        # Phase 2: shut down per-profile sync coordinator
+        if ctx.sync_coordinator:
+            try:
+                ctx.sync_coordinator.shutdown()
+            except Exception:
+                pass
+            try:
+                from database.sync_coordinator import _registry_lock, _coordinators
+                import os as _os
+                abs_path = _os.path.abspath(ctx.db_path)
+                with _registry_lock:
+                    _coordinators.pop(abs_path, None)
+            except Exception:
+                pass
         if ctx.logger_bridge and ctx.logger:
             try:
                 ctx.logger_bridge.detach(ctx.logger)

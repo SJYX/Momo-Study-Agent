@@ -63,7 +63,7 @@
 
 - 规则 / 红线全量 → `docs/dev/AI_CONTEXT.md`
 - 架构 / 数据流 / 并发模型 / 同步模型 → `docs/architecture/ARCHITECTURE.md`
-- 表结构 + sync_status 三态 → `docs/architecture/DATABASE_DESIGN.md`
+- 表结构 + sync_status / WordState 状态机 → `docs/architecture/DATABASE_DESIGN.md`
 - 启动分支（配置/云端/管理员） → `docs/architecture/decision_flow.md`
 - 同步机制（前后台策略、队列、退出收尾） → `docs/dev/AUTO_SYNC.md`
 - 运行期 WAL / 游标 / PRAGMA / 重试铁律 → `database/README.md`

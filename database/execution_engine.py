@@ -14,7 +14,6 @@ import config as _config
 # 直接读 `_config.DB_PATH` 让 switch_user 立即生效。HUB_DB_PATH 仍是静态可缓存的。
 from database.connection import (
     _get_dedicated_write_conn,
-    _get_main_write_conn_singleton,
     _close_main_write_conn_singleton,
     _close_hub_write_conn_singleton,
     _is_main_db_path,
@@ -30,11 +29,9 @@ _writer_daemon_thread: Optional[threading.Thread] = None
 _writer_daemon_stop_event = threading.Event()
 _writer_daemon_lock = threading.Lock()
 
-_needs_sync = False
-_last_write_db_path: Optional[str] = None  # 上次写入的 db_path，sync daemon 用它来同步正确的库
-_last_write_time = 0.0
-_sync_daemon_thread: Optional[threading.Thread] = None
-_sync_daemon_stop_event = threading.Event()
+# Phase 2: Sync daemon replaced by per-profile ProfileSyncCoordinator.
+# Writes trigger coordinator.mark_dirty() → 5s debounce timer → push/pull/checkpoint.
+# No global polling, no cross-profile state.
 
 # DB 级别的 Embedded Replica 同步状态（供前端展示）
 _db_syncing = False
@@ -49,8 +46,6 @@ _write_queue_stats = {
 
 # 慢阈值（毫秒）：批写超过此值会被打成 WARNING（Phase 4.5 P95<100ms 对齐）
 _SLOW_BATCH_WRITE_MS = 100
-# 同步线程 sync() 慢阈值：网络往返 + 远端 commit，>500ms 视为慢
-_SLOW_SYNC_MS = 500
 
 def set_db_syncing(phase: str = "") -> None:
     """标记 DB 正在同步（嵌入式副本的 conn.sync() 进行中）。"""
@@ -203,9 +198,11 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
         raise last_error
 
 def _flush_grouped_batch(pending_batch: List[Dict[str, Any]]) -> None:
-    """按 db_path 分组刷写，确保不同 profile 的写入不会串乱。"""
-    global _needs_sync, _last_write_time, _last_write_db_path
+    """按 db_path 分组刷写，确保不同 profile 的写入不会串乱。
+    写入成功后通知 per-profile coordinator 启动 debounce 定时器。
+    """
     from collections import defaultdict
+    from database.sync_coordinator import mark_db_written
 
     groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for item in pending_batch:
@@ -217,9 +214,7 @@ def _flush_grouped_batch(pending_batch: List[Dict[str, Any]]) -> None:
             _execute_batch_writes(write_conn, items)
             _write_queue_stats["total_written"] += len(items)
             _write_queue_stats["last_batch_size"] = len(items)
-            _needs_sync = True
-            _last_write_db_path = db_path
-            _last_write_time = time.time()
+            mark_db_written(db_path)
         except Exception as e:
             _write_queue_stats["total_errors"] += 1
             err_msg = str(e).lower()
@@ -234,9 +229,7 @@ def _flush_grouped_batch(pending_batch: List[Dict[str, Any]]) -> None:
                     write_conn = _get_dedicated_write_conn(db_path)
                     _execute_batch_writes(write_conn, items)
                     _write_queue_stats["total_written"] += len(items)
-                    _needs_sync = True
-                    _last_write_db_path = db_path
-                    _last_write_time = time.time()
+                    mark_db_written(db_path)
                 except Exception as retry_e:
                     _debug_log(f"后台写线程重试失败（db_path={db_path[:30]}...）: {retry_e}", level="ERROR")
             else:
@@ -295,66 +288,10 @@ def _writer_daemon() -> None:
 
 _SYNC_TIMEOUT_S = float(os.getenv("MOMO_SYNC_TIMEOUT_S", "3"))
 
-def _sync_daemon() -> None:
-    global _needs_sync, _last_write_time, _last_write_db_path
-
-    while not _sync_daemon_stop_event.is_set():
-        time.sleep(2.0)
-
-        if not _needs_sync:
-            continue
-        if (time.time() - _last_write_time) <= 5.0:
-            continue
-
-        try:
-            # 用上次写入的 db_path 获取正确的连接，避免多 profile 场景下同步错误的库
-            _sync_db_path = _last_write_db_path or _config.DB_PATH
-            _orig_db_path = _config.DB_PATH
-            if _sync_db_path != _orig_db_path:
-                _config.DB_PATH = _sync_db_path
-            try:
-                conn = _get_main_write_conn_singleton(do_sync=False)
-            finally:
-                if _sync_db_path != _orig_db_path:
-                    _config.DB_PATH = _orig_db_path
-            sync_started_at = time.time()
-            set_db_syncing(phase="idle_sync")
-
-            with get_active_backend().op_lock_for(conn):
-                get_active_backend().do_sync_on(conn)
-
-            _needs_sync = False
-            clear_db_syncing()
-            sync_duration_ms = int((time.time() - sync_started_at) * 1000)
-            is_slow = sync_duration_ms >= _SLOW_SYNC_MS
-            try:
-                logger = get_logger()
-                msg = f"idle_sync done | duration_ms={sync_duration_ms}"
-                kwargs = dict(
-                    module="database.execution_engine",
-                    duration_ms=sync_duration_ms,
-                    is_slow=is_slow,
-                )
-                if is_slow:
-                    logger.warning(msg + " | slow=true", **kwargs)
-                else:
-                    logger.info(msg, **kwargs)
-            except Exception:
-                pass
-            # PLAYBOOK B5：写入指标层
-            try:
-                from core.metrics import get_metrics_collector
-                from core.active_profile_registry import get_active
-                get_metrics_collector().record(
-                    get_active() or "_global",
-                    "db.idle_sync.duration_ms",
-                    float(sync_duration_ms),
-                )
-            except Exception:
-                pass
-        except BaseException as e:
-            clear_db_syncing()
-            _debug_log(f"闲时后台自动同步失败: {e}", level="WARNING")
+# Phase 2: Sync daemon removed. DB sync is now handled by per-profile
+# ProfileSyncCoordinator (database/sync_coordinator.py).
+# Each coordinator uses a threading.Timer for 5s debounce after writes.
+# No global polling loop, no cross-profile state.
 
 def _start_writer_daemon() -> None:
     global _writer_daemon_thread
@@ -365,26 +302,11 @@ def _start_writer_daemon() -> None:
             _writer_daemon_thread.start()
             _debug_log("后台写守护线程已启动", level="INFO")
 
-def _start_sync_daemon() -> None:
-    global _sync_daemon_thread
-    with _writer_daemon_lock:
-        if _sync_daemon_thread is None or not _sync_daemon_thread.is_alive():
-            _sync_daemon_stop_event.clear()
-            _sync_daemon_thread = threading.Thread(target=_sync_daemon, daemon=True, name="MomoDBSync")
-            _sync_daemon_thread.start()
-            _debug_log("后台同步守护线程已启动", level="INFO")
-
 def _stop_writer_daemon(timeout_seconds: float = 2.0) -> None:
     global _writer_daemon_thread
     _writer_daemon_stop_event.set()
     if _writer_daemon_thread and _writer_daemon_thread.is_alive():
         _writer_daemon_thread.join(timeout=timeout_seconds)
-
-def _stop_sync_daemon(timeout_seconds: float = 2.0) -> None:
-    global _sync_daemon_thread
-    _sync_daemon_stop_event.set()
-    if _sync_daemon_thread and _sync_daemon_thread.is_alive():
-        _sync_daemon_thread.join(timeout=timeout_seconds)
 
 def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace", db_path: Optional[str] = None) -> bool:
     """入队单条写操作。db_path 在入队时捕获，防止多 profile 并发时全局 DB_PATH 被覆盖导致交叉写污染。"""
@@ -411,12 +333,12 @@ def _queue_batch_write_operation(sql: str, args_list: List[Tuple], db_path: Opti
 
 def init_concurrent_system() -> None:
     _start_writer_daemon()
-    _start_sync_daemon()
+    # Phase 2: sync daemon removed — per-profile ProfileSyncCoordinator handles DB sync
     _debug_log("并发系统初始化完成", level="INFO")
 
 def cleanup_concurrent_system() -> None:
     _stop_writer_daemon(timeout_seconds=5.0)
-    _stop_sync_daemon(timeout_seconds=2.0)
+    # Phase 2: coordinators are cleaned up per-profile via UserContext._cleanup_context
     _close_main_write_conn_singleton()
     _close_hub_write_conn_singleton()
     _debug_log("并发系统清理完成", level="INFO")
@@ -424,10 +346,7 @@ def cleanup_concurrent_system() -> None:
 def _release_db_file_handles_for_recovery(db_path: str) -> None:
     import os
     abs_path = os.path.abspath(db_path or _config.DB_PATH)
-    try:
-        _stop_sync_daemon(timeout_seconds=1.5)
-    except Exception:
-        pass
+    # Phase 2: no global sync daemon to stop
     try:
         _stop_writer_daemon(timeout_seconds=1.5)
     except Exception:
@@ -442,15 +361,20 @@ def _release_db_file_handles_for_recovery(db_path: str) -> None:
         _debug_log(f"恢复前释放写连接单例失败: {singleton_error}", level="WARNING")
 
 def _mark_main_db_needs_sync(db_path: Optional[str] = None, conn: Any = None) -> None:
-    global _needs_sync, _last_write_time
+    """Notify the per-profile coordinator that a write occurred.
+
+    Used by non-queued write paths (direct SQL via session.py decorators).
+    """
+    from database.sync_coordinator import mark_db_written
+
     if conn is not None:
         if get_active_backend().should_close(conn):
             return
     elif not _is_main_db_path(db_path):
         return
 
-    _needs_sync = True
-    _last_write_time = time.time()
+    path = db_path or _config.DB_PATH
+    mark_db_written(path)
 
 def _execute_write_sql_sync(sql: str, params: tuple = (), db_path: Optional[str] = None, conn: Any = None) -> None:
     owned = conn is None

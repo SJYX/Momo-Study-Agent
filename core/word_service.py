@@ -115,7 +115,7 @@ class WordService:
         - CONFLICT     → 已处理（保留云端释义，等待用户在墨墨手动解冲突）
         - FAILED       → 已处理（不可重试，避免无限消耗 token）
 
-        详见 docs/dev/AI_REVIEW_20260514_TODAY_TASK_PIPELINE.md §8。
+        详见 docs/history/snapshots/AI_REVIEW_20260514_TODAY_TASK_PIPELINE.md §8。
         """
         if not enriched:
             return [], []

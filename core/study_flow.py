@@ -53,6 +53,18 @@ class StudyFlowManager:
         init_db()
         init_concurrent_system()
 
+        # Phase 2: register per-profile DB sync coordinator (event-driven debounce)
+        from database.sync_coordinator import ProfileSyncCoordinator, _registry_lock, _coordinators
+        from database.backends import get_active_backend
+        import config as _cfg
+        self._sync_coordinator = ProfileSyncCoordinator(
+            db_path=_cfg.DB_PATH,
+            backend=get_active_backend(),
+        )
+        abs_db_path = os.path.abspath(_cfg.DB_PATH)
+        with _registry_lock:
+            _coordinators[abs_db_path] = self._sync_coordinator
+
         self.workflow = StudyWorkflow(
             logger=self.logger,
             ai_client=self.ai_client,
@@ -123,6 +135,19 @@ class StudyFlowManager:
                 break
 
     def shutdown(self):
+        # Phase 2: clean up per-profile sync coordinator
+        if getattr(self, "_sync_coordinator", None):
+            try:
+                self._sync_coordinator.shutdown()
+            except Exception:
+                pass
+            try:
+                from database.sync_coordinator import _registry_lock, _coordinators
+                import config as _cfg
+                with _registry_lock:
+                    _coordinators.pop(os.path.abspath(_cfg.DB_PATH), None)
+            except Exception:
+                pass
         try:
             if getattr(self, "workflow", None):
                 self.workflow.shutdown()

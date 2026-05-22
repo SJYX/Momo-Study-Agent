@@ -201,7 +201,7 @@ class TestPartitionByProcessability:
     def test_dry_run_word_treated_as_processed(self, word_service):
         """回归 case：DRY_RUN 词（只在 processed_words，无 ai_word_notes）对应
         LOCAL_READY，应分到 processed。这是 M5 修复的核心
-        （见 docs/dev/AI_REVIEW_20260514_TODAY_TASK_PIPELINE.md §8.3）。
+        （见 docs/history/snapshots/AI_REVIEW_20260514_TODAY_TASK_PIPELINE.md §8.3）。
 
         修复前：partition 会把这种词遗漏（既不在 unprocessed 也不在 processed）。
         修复后：基于 WordState 分组，LOCAL_READY → processed。

@@ -11,7 +11,7 @@
 | 项目地图 / 当前状态摘要 | [`../../CLAUDE.md`](../../CLAUDE.md)（AI 会话首页）/ [`../../AGENTS.md`](../../AGENTS.md)（Codex Agent 入口） |
 | 启动命令 / 环境准备 | [`QUICK_START.md`](QUICK_START.md) |
 | 系统架构与数据流 | [`../architecture/ARCHITECTURE.md`](../architecture/ARCHITECTURE.md) |
-| 表结构 + sync_status 三态 | [`../architecture/DATABASE_DESIGN.md`](../architecture/DATABASE_DESIGN.md) |
+| 表结构 + sync_status / WordState 状态机 | [`../architecture/DATABASE_DESIGN.md`](../architecture/DATABASE_DESIGN.md) |
 | 启动分支决策（用户/云端/管理员） | [`../architecture/decision_flow.md`](../architecture/decision_flow.md) |
 
 ## 主题文档
@@ -29,7 +29,7 @@
 
 | 子领域 | 入口 |
 | --- | --- |
-| Web UI 设计 / 任务推进 | [`web_ui/README.md`](web_ui/README.md) — 含 chapters/、archive/、V1/V2 任务单 |
+| Web UI 设计 / 任务推进 | [`web_ui/README.md`](web_ui/README.md) — Web UI 工作区导航（chapters 任务文档） |
 | 数据库内部协议 | [`../../database/README.md`](../../database/README.md) |
 
 ## 进行中的重构
