@@ -1,17 +1,14 @@
 from ._protocol import TursoBackend
 
-# ── 集中探针：唯一的 HAS_LIBSQL / HAS_PYTURSO 来源 ──
+# ── 集中探针：唯一的 HAS_PYTURSO 来源 ──
 try:
     import turso.sync  # noqa: F401
     HAS_PYTURSO = True
 except ImportError:
     HAS_PYTURSO = False
 
-try:
-    import libsql  # noqa: F401
-    HAS_LIBSQL = True
-except ImportError:
-    HAS_LIBSQL = False
+# libsql backend removed — kept as False for compatibility during cleanup (Phase 2)
+HAS_LIBSQL = False
 
 
 _backend_singleton: TursoBackend | None = None
@@ -28,10 +25,6 @@ def get_active_backend() -> TursoBackend:
         _debug_log("Backend: pyturso (turso.sync)", level="INFO", module="database.backends")
         from ._pyturso import PytursoBackend
         _backend_singleton = PytursoBackend()
-    elif HAS_LIBSQL:
-        _debug_log("Backend: libsql (embedded replica)", level="INFO", module="database.backends")
-        from ._libsql import LibsqlBackend
-        _backend_singleton = LibsqlBackend()
     else:
-        raise RuntimeError("Neither pyturso nor libsql is available")
+        raise RuntimeError("pyturso (turso.sync) is required but not installed")
     return _backend_singleton

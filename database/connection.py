@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 """
-database/connection.py: 负责全局 libsql 单例连接管理、后台双守护线程调度及进程锁控制。
+database/connection.py: 负责全局 turso.sync 单例连接管理、后台双守护线程调度及进程锁控制。
 """
 # -*- coding: utf-8 -*-
 """Database connection infrastructure.
@@ -10,7 +10,7 @@ This module centralizes connection lifecycle, background writer/sync daemons,
 and Embedded Replica connection rules.
 
 Critical WalConflict rule:
-- In Embedded Replica mode, NEVER open extra local libsql read connections.
+- In Embedded Replica mode, NEVER open extra local read connections via the backend.
 - All reads/writes must be funneled through a single process-level singleton
     connection per database file.
 """
@@ -33,7 +33,7 @@ TURSO_HUB_DB_URL = _config.TURSO_HUB_DB_URL
 # 任何 database 子模块的全局；所有需要"当前用户 DB 路径"的位置都直接读
 # `_config.DB_PATH`（config 自己在 switch_user 时更新了模块级值）。
 
-from database.backends import get_active_backend, HAS_LIBSQL, HAS_PYTURSO
+from database.backends import get_active_backend, HAS_PYTURSO
 
 _backend = None  # Lazy init
 _backend_lock = threading.Lock()
@@ -264,7 +264,7 @@ def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
             raise
 
         ctx = _resolve_conn_context(path)
-        if (HAS_LIBSQL or HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
+        if (HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
             try:
                 _debug_log(f"本地数据库损坏后，尝试通过云端副本重建: {path}", level="WARNING")
                 return _get_conn(path, allow_local_fallback=False)
@@ -306,7 +306,7 @@ def _get_hub_local_conn() -> sqlite3.Connection:
         if not backup_path:
             raise
 
-        if (HAS_LIBSQL or HAS_PYTURSO) and TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN:
+        if (HAS_PYTURSO) and TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN:
             try:
                 _debug_log(f"Hub 本地数据库损坏后，尝试通过云端副本重建: {path}", level="WARNING")
                 return _get_hub_write_conn_singleton(do_sync=True)
@@ -378,7 +378,7 @@ def _get_main_write_conn_singleton(
             
             if conn is None:
                 ctx = _resolve_conn_context(_config.DB_PATH)
-                if not (ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO)):
+                if not (ctx.get("url") and ctx.get("token") and (HAS_PYTURSO)):
                     return _get_local_conn(_config.DB_PATH)
 
                 last_error = None
@@ -415,7 +415,7 @@ def _get_hub_write_conn_singleton(
 ) -> Any:
     global _hub_write_conn_singleton
 
-    if not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO)):
+    if not (TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_PYTURSO)):
         return _get_hub_local_conn()
 
     # 1. 第一阶段：获取当前 Hub 单例引用
@@ -483,7 +483,7 @@ def _should_use_local_only_connection(db_path: Optional[str] = None, conn: Any =
         return True
 
     ctx = _resolve_conn_context(path)
-    return not (ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO))
+    return not (ctx.get("url") and ctx.get("token") and (HAS_PYTURSO))
 
 
 def _wrap_and_track_connection(_db_path: str, conn: Any, _read_only: bool) -> Any:
@@ -516,7 +516,7 @@ def _get_read_conn_impl(
     - Embedded Replica 模式下，读操作优先走独立的 sqlite3 只读连接，
       避免被 backend.op_lock_for() 阻塞。
     - 仅当独立连接失败时才回退到写单例。
-    - 永远不开额外的 libsql 读连接（WalConflict 约束仍然成立）。
+    - 永远不开额外的 backend 读连接（WalConflict 约束仍然成立）。
     - 可通过 ISOLATED_READ_CONN_ENABLED=False 回退到旧行为。
     """
     ctx = _resolve_conn_context(db_path)
@@ -531,7 +531,7 @@ def _get_read_conn_impl(
         conn = _get_local_read_conn(db_path)
         return _wrap_and_track_connection(db_path, conn, True)
 
-    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_LIBSQL or HAS_PYTURSO):
+    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_PYTURSO):
         # CRITICAL WalConflict fix:
         # In LibSQL mode, we MUST reuse the singleton connection to avoid deadlocks
         # during background sync, especially on Windows/OneDrive.
@@ -570,7 +570,7 @@ def _get_conn(
     ctx = _resolve_conn_context(db_path)
     db_path = ctx["db_path"]
 
-    if _is_main_db_path(db_path) and ctx.get("url") and ctx.get("token") and (HAS_LIBSQL or HAS_PYTURSO):
+    if _is_main_db_path(db_path) and ctx.get("url") and ctx.get("token") and (HAS_PYTURSO):
         if _get_backend().name != "pyturso" or do_sync:
             return _get_main_write_conn_singleton(do_sync=do_sync, max_retries=max_retries, retry_delay=retry_delay)
         # pyturso without sync: fall through to local
@@ -578,7 +578,7 @@ def _get_conn(
     if _should_use_local_only_connection(db_path):
         return _get_local_conn(db_path)
 
-    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_LIBSQL or HAS_PYTURSO):
+    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_PYTURSO):
         if _get_backend().name == "pyturso":
             return _get_local_conn(db_path)
         last_error = None
@@ -638,10 +638,10 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
 
     if get_force_cloud_mode() and not is_hub_configured():
         raise RuntimeError("强制云端模式已启用，但未配置 TURSO_HUB_DB_URL/TURSO_HUB_AUTH_TOKEN")
-    if get_force_cloud_mode() and not (HAS_LIBSQL or HAS_PYTURSO):
-        raise RuntimeError("强制云端模式已启用，但 libsql 不可用")
+    if get_force_cloud_mode() and not (HAS_PYTURSO):
+        raise RuntimeError("强制云端模式已启用，但 turso.sync (pyturso) 不可用")
 
-    if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
+    if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_PYTURSO):
         _debug_log("[_get_hub_conn] 检测到云端 Hub 配置，尝试连接...")
         last_error = None
         for attempt in range(max_retries):
@@ -725,10 +725,10 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
 
     CRITICAL WalConflict fix:
     - Embedded Replica mode reuses hub write singleton.
-    - No standalone local libsql read connections are created.
+    - No standalone local read connections are created.
     """
     try:
-        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
+        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_PYTURSO):
             if _get_backend().name == "pyturso":
                 hub_conn = _get_hub_local_conn()
             else:
@@ -767,10 +767,10 @@ def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
 
     CRITICAL WalConflict fix:
     - Embedded Replica mode reuses hub write singleton.
-    - No standalone local libsql read connections are created.
+    - No standalone local read connections are created.
     """
     try:
-        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_LIBSQL or HAS_PYTURSO):
+        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_PYTURSO):
             if _get_backend().name == "pyturso":
                 hub_conn = _get_hub_local_conn()
             else:

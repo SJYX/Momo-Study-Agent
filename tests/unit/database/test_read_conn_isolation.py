@@ -175,30 +175,4 @@ class TestBackendAwareRouting:
         finally:
             conn.close()
 
-    def test_libsql_returns_singleton(self, monkeypatch, tmp_db):
-        """libsql 后端应返回写单例。"""
-        monkeypatch.setattr(conn_mod, "HAS_LIBSQL", True)
-        monkeypatch.setattr(conn_mod._config, "DB_PATH", tmp_db)
-
-        fake_ctx = {
-            "db_path": tmp_db,
-            "is_main_db": True,
-            "is_test": False,
-            "url": "libsql://fake.turso.io",
-            "token": "fake-token",
-            "force_cloud_mode": False,
-        }
-        monkeypatch.setattr(conn_mod, "_resolve_conn_context", lambda *a, **k: fake_ctx)
-        monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *a, **k: False)
-
-        # 模拟 libsql backend
-        mock_backend = MagicMock()
-        mock_backend.name = "libsql"
-        monkeypatch.setattr(conn_mod, "get_active_backend", lambda: mock_backend)
-
-        # 模拟写单例返回
-        mock_singleton = MagicMock()
-        monkeypatch.setattr(conn_mod, "_get_main_write_conn_singleton", lambda **kw: mock_singleton)
-
-        conn = conn_mod._get_read_conn_impl(tmp_db)
-        assert conn is mock_singleton
+    # test_libsql_returns_singleton removed — libsql backend no longer exists
