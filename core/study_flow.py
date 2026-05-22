@@ -48,9 +48,10 @@ class StudyFlowManager:
 
         self.ui = CLIUIManager(self.logger)
 
-        # 初始化并发写入/同步系统及数据库表
-        init_concurrent_system()
+        # 初始化数据库表 → 然后启动并发写入/同步系统
+        # 必须先 init_db 建表，再启动守护线程（与 Web 端 user_context.py 顺序一致）
         init_db()
+        init_concurrent_system()
 
         self.workflow = StudyWorkflow(
             logger=self.logger,

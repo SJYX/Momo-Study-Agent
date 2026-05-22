@@ -17,26 +17,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from dotenv import dotenv_values
 
-
-# 从 config.py 复用的 user-scoped 字段集合
-USER_SCOPED_KEYS = (
-    "MOMO_TOKEN",
-    "AI_PROVIDER",
-    "MIMO_API_KEY",
-    "MIMO_API_BASE",
-    "MIMO_MODEL",
-    "GEMINI_API_KEY",
-    "GEMINI_MODEL",
-    "TURSO_DB_URL",
-    "TURSO_AUTH_TOKEN",
-    "TURSO_DB_HOSTNAME",
-    "TURSO_TEST_DB_URL",
-    "TURSO_TEST_AUTH_TOKEN",
-    "TURSO_TEST_DB_HOSTNAME",
+from core.profile_loader import (
+    USER_SCOPED_KEYS,
+    normalize_username as _normalize_username,
+    resolve_profile_env_path as _resolve_profile_env_path,
+    resolve_user_db_paths as _resolve_user_db_paths,
 )
 
 
@@ -65,49 +53,6 @@ class ProfileConfig:
     turso_test_db_hostname: str = ""
 
 
-def _normalize_username(name: str) -> str:
-    return (name or "").strip().lower()
-
-
-def _resolve_profile_env_path(profiles_dir: str, name: str) -> tuple[str, Optional[str]]:
-    """大小写不敏感地找到 <profile>.env，返回 (规范名, 路径或 None)。"""
-    normalized = _normalize_username(name)
-    if not normalized:
-        return normalized, None
-
-    direct = os.path.join(profiles_dir, f"{normalized}.env")
-    if os.path.exists(direct):
-        return normalized, direct
-
-    if os.path.isdir(profiles_dir):
-        for entry in os.listdir(profiles_dir):
-            if not entry.lower().endswith(".env"):
-                continue
-            stem = entry[:-4]
-            if stem.strip().lower() == normalized:
-                return normalized, os.path.join(profiles_dir, entry)
-    return normalized, None
-
-
-def _resolve_user_db_paths(data_dir: str, user: str) -> tuple[str, str]:
-    """复刻 config._resolve_user_db_paths 的兼容查找逻辑。"""
-    db_filename = f"history-{user.lower()}.db"
-    db_path = os.path.join(data_dir, db_filename)
-    old = os.path.join(data_dir, f"history_{user}.db")
-    old_lower = os.path.join(data_dir, f"history_{user.lower()}.db")
-    if not os.path.exists(db_path):
-        if os.path.exists(old):
-            db_path = old
-        elif os.path.exists(old_lower):
-            db_path = old_lower
-
-    test_db_path = os.path.join(data_dir, f"test-{user.lower()}.db")
-    old_test = os.path.join(data_dir, f"test_{user}.db")
-    if not os.path.exists(test_db_path) and os.path.exists(old_test):
-        test_db_path = old_test
-    return db_path, test_db_path
-
-
 def load_profile_config(profile_name: str) -> ProfileConfig:
     """读 <profile>.env 与全局 .env，返回不可变的 ProfileConfig。
 
@@ -121,7 +66,7 @@ def load_profile_config(profile_name: str) -> ProfileConfig:
     data_dir = cfg.DATA_DIR
     profiles_dir = cfg.PROFILES_DIR
 
-    normalized, env_path = _resolve_profile_env_path(profiles_dir, profile_name)
+    normalized, env_path = _resolve_profile_env_path(profile_name, profiles_dir)
     if not normalized:
         normalized = "default"
 
@@ -137,7 +82,7 @@ def load_profile_config(profile_name: str) -> ProfileConfig:
             if v is not None:
                 merged[k] = v
 
-    db_path, test_db_path = _resolve_user_db_paths(data_dir, normalized)
+    db_path, test_db_path = _resolve_user_db_paths(normalized, data_dir)
 
     return ProfileConfig(
         profile_name=normalized,

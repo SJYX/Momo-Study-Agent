@@ -31,6 +31,7 @@ _writer_daemon_stop_event = threading.Event()
 _writer_daemon_lock = threading.Lock()
 
 _needs_sync = False
+_last_write_db_path: Optional[str] = None  # 上次写入的 db_path，sync daemon 用它来同步正确的库
 _last_write_time = 0.0
 _sync_daemon_thread: Optional[threading.Thread] = None
 _sync_daemon_stop_event = threading.Event()
@@ -201,9 +202,48 @@ def _execute_batch_writes(write_conn: Any, batch: List[Dict[str, Any]]) -> None:
     if last_error:
         raise last_error
 
-def _writer_daemon() -> None:
-    global _needs_sync, _last_write_time
+def _flush_grouped_batch(pending_batch: List[Dict[str, Any]]) -> None:
+    """按 db_path 分组刷写，确保不同 profile 的写入不会串乱。"""
+    global _needs_sync, _last_write_time, _last_write_db_path
+    from collections import defaultdict
 
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for item in pending_batch:
+        groups[item.get("db_path", _config.DB_PATH)].append(item)
+
+    for db_path, items in groups.items():
+        try:
+            write_conn = _get_dedicated_write_conn(db_path)
+            _execute_batch_writes(write_conn, items)
+            _write_queue_stats["total_written"] += len(items)
+            _write_queue_stats["last_batch_size"] = len(items)
+            _needs_sync = True
+            _last_write_db_path = db_path
+            _last_write_time = time.time()
+        except Exception as e:
+            _write_queue_stats["total_errors"] += 1
+            err_msg = str(e).lower()
+            is_broken_conn = any(k in err_msg for k in [
+                "invalid state", "txn", "poison", "wal", "stream not found", "hrana"
+            ])
+            if is_broken_conn:
+                _debug_log(f"检测到 Turso 云端连接休眠或底层状态失效（db_path={db_path[:30]}...），正在静默重建单例并重试...", level="INFO")
+                _close_main_write_conn_singleton()
+                time.sleep(0.5)
+                try:
+                    write_conn = _get_dedicated_write_conn(db_path)
+                    _execute_batch_writes(write_conn, items)
+                    _write_queue_stats["total_written"] += len(items)
+                    _needs_sync = True
+                    _last_write_db_path = db_path
+                    _last_write_time = time.time()
+                except Exception as retry_e:
+                    _debug_log(f"后台写线程重试失败（db_path={db_path[:30]}...）: {retry_e}", level="ERROR")
+            else:
+                _debug_log(f"后台写线程批量操作出错（db_path={db_path[:30]}...）: {e}", level="ERROR")
+
+
+def _writer_daemon() -> None:
     batch_threshold = 50
     timeout_seconds = 1.0
 
@@ -233,33 +273,9 @@ def _writer_daemon() -> None:
                 )
 
                 if should_commit and pending_batch:
-                    try:
-                        write_conn = _get_dedicated_write_conn(_config.DB_PATH)
-                        _execute_batch_writes(write_conn, pending_batch)
-                        _write_queue_stats["total_written"] += len(pending_batch)
-                        _write_queue_stats["last_batch_size"] = len(pending_batch)
-                        pending_batch = []
-                        last_commit_time = now
-                        _needs_sync = True
-                        _last_write_time = time.time()
-                    except Exception as e:
-                        _write_queue_stats["total_errors"] += 1
-                        err_msg = str(e).lower()
-                        
-                        is_broken_conn = any(k in err_msg for k in [
-                            "invalid state", "txn", "poison", "wal", "stream not found", "hrana"
-                        ])
-                        
-                        if is_broken_conn:
-                            _debug_log("检测到 Turso 云端连接休眠或底层状态失效，正在静默重建单例并重试...", level="INFO")
-                            _close_main_write_conn_singleton()
-                            time.sleep(0.5)
-                            continue 
-                        else:
-                            _debug_log(f"后台写线程批量操作出错: {e}", level="ERROR")
-                            pending_batch = []
-                            
-                        time.sleep(0.1)
+                    _flush_grouped_batch(pending_batch)
+                    pending_batch = []
+                    last_commit_time = now
             except Exception as e:
                 _write_queue_stats["total_errors"] += 1
                 _debug_log(f"后台写线程外层捕获出错: {e}", level="ERROR")
@@ -267,11 +283,7 @@ def _writer_daemon() -> None:
 
         if pending_batch:
             try:
-                write_conn = _get_dedicated_write_conn(_config.DB_PATH)
-                _execute_batch_writes(write_conn, pending_batch)
-                _write_queue_stats["total_written"] += len(pending_batch)
-                _needs_sync = True
-                _last_write_time = time.time()
+                _flush_grouped_batch(pending_batch)
             except Exception as e:
                 _write_queue_stats["total_errors"] += 1
                 _debug_log(f"后台写线程关机批量操作出错: {e}", level="ERROR")
@@ -284,7 +296,7 @@ def _writer_daemon() -> None:
 _SYNC_TIMEOUT_S = float(os.getenv("MOMO_SYNC_TIMEOUT_S", "3"))
 
 def _sync_daemon() -> None:
-    global _needs_sync, _last_write_time
+    global _needs_sync, _last_write_time, _last_write_db_path
 
     while not _sync_daemon_stop_event.is_set():
         time.sleep(2.0)
@@ -295,7 +307,16 @@ def _sync_daemon() -> None:
             continue
 
         try:
-            conn = _get_main_write_conn_singleton(do_sync=False)
+            # 用上次写入的 db_path 获取正确的连接，避免多 profile 场景下同步错误的库
+            _sync_db_path = _last_write_db_path or _config.DB_PATH
+            _orig_db_path = _config.DB_PATH
+            if _sync_db_path != _orig_db_path:
+                _config.DB_PATH = _sync_db_path
+            try:
+                conn = _get_main_write_conn_singleton(do_sync=False)
+            finally:
+                if _sync_db_path != _orig_db_path:
+                    _config.DB_PATH = _orig_db_path
             sync_started_at = time.time()
             set_db_syncing(phase="idle_sync")
 
@@ -365,9 +386,10 @@ def _stop_sync_daemon(timeout_seconds: float = 2.0) -> None:
     if _sync_daemon_thread and _sync_daemon_thread.is_alive():
         _sync_daemon_thread.join(timeout=timeout_seconds)
 
-def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace") -> bool:
+def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace", db_path: Optional[str] = None) -> bool:
+    """入队单条写操作。db_path 在入队时捕获，防止多 profile 并发时全局 DB_PATH 被覆盖导致交叉写污染。"""
     _start_writer_daemon()
-    item = {"op_type": op_type, "sql": sql, "args": args}
+    item = {"op_type": op_type, "sql": sql, "args": args, "db_path": db_path or _config.DB_PATH}
     try:
         _write_queue.put(item, timeout=2.0)
         return True
@@ -375,11 +397,11 @@ def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or
         _debug_log(f"写队列满，丢弃操作: {sql[:100]}", level="WARNING")
         return False
 
-def _queue_batch_write_operation(sql: str, args_list: List[Tuple]) -> bool:
+def _queue_batch_write_operation(sql: str, args_list: List[Tuple], db_path: Optional[str] = None) -> bool:
     if not args_list:
         return True
     _start_writer_daemon()
-    item = {"op_type": "executemany", "sql": sql, "args_list": args_list}
+    item = {"op_type": "executemany", "sql": sql, "args_list": args_list, "db_path": db_path or _config.DB_PATH}
     try:
         _write_queue.put(item, timeout=2.0)
         return True

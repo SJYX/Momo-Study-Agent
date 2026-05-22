@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 from config import DATA_DIR, DB_PATH
 
 from . import connection
-from .utils import _debug_log, _hash_fingerprint, _hub_db_fingerprint, _main_db_fingerprint, _normalize_turso_url
+from .utils import _debug_log, _hub_db_fingerprint
 
 # Table existence cache (avoid repeated sqlite_master checks)
 _table_exists_cache: Dict[str, bool] = {}
@@ -94,25 +94,6 @@ def _hub_init_state_is_fresh(hub_fp: str) -> bool:
         return False
 
     return (time.time() - last_success_at) <= _HUB_INIT_STATE_TTL_SECONDS
-
-
-def _get_db_init_marker_path(db_type: str, db_fingerprint: Optional[str] = None) -> str:
-    marker_dir = os.path.join(DATA_DIR, "db_init_markers")
-    os.makedirs(marker_dir, exist_ok=True)
-    if db_fingerprint:
-        digest = _hash_fingerprint(db_fingerprint)
-        return os.path.join(marker_dir, f"{db_type}_{digest}_initialized.flag")
-    return os.path.join(marker_dir, f"{db_type}_initialized.flag")
-
-
-def _is_db_initialized(db_type: str, db_fingerprint: Optional[str] = None) -> bool:
-    return os.path.exists(_get_db_init_marker_path(db_type, db_fingerprint))
-
-
-def _mark_db_initialized(db_type: str, db_fingerprint: Optional[str] = None) -> None:
-    marker_path = _get_db_init_marker_path(db_type, db_fingerprint)
-    with open(marker_path, "w", encoding="utf-8") as f:
-        f.write(f"initialized at {time.time()}")
 
 
 def _check_table_exists(cursor: Any, table_name: str, db_type: str = "main", cache_scope: Optional[str] = None) -> bool:
@@ -248,23 +229,19 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
     start_time = time.time()
 
     try:
-        main_fp = _main_db_fingerprint(path)
-        marker_exists = _is_db_initialized("main", main_fp)
-
-        _debug_log("[init_db] 本地模式：获取连接...", module="database.schema")
+        _debug_log("[init_db] 获取本地连接...", module="database.schema")
         lc = connection._get_local_conn(path)
 
-        if not marker_exists:
-            lcur = lc.cursor()
-            _t_create = time.time()
-            _debug_log("[init_db] 开始建表...", module="database.schema")
-            _create_tables(lcur)
-            lc.commit()
-            lcur.close()
-            _mark_db_initialized("main", main_fp)
-            _debug_log("[init_db] 建表成功", start_time=_t_create, level="INFO", module="database.schema")
-        else:
-            _debug_log("数据库已初始化（通过标记文件），跳过建表检查", module="database.schema")
+        # CREATE TABLE IF NOT EXISTS 是幂等的，直接执行。
+        # 在 Embedded Replica 架构下，pyturso bootstrap 会从云端重建完整 DB，
+        # 所以这里的建表仅保障非云端模式（纯本地 sqlite3）的正确性。
+        lcur = lc.cursor()
+        _t_create = time.time()
+        _debug_log("[init_db] 开始建表...", module="database.schema")
+        _create_tables(lcur)
+        lc.commit()
+        lcur.close()
+        _debug_log("[init_db] 建表完成", start_time=_t_create, level="INFO", module="database.schema")
 
         _debug_log("[init_db] 开始应用迁移...", module="database.schema")
         try:
@@ -315,9 +292,6 @@ def init_users_hub_tables() -> bool:
             _debug_log("Hub 数据库已在有效缓存窗口内初始化，跳过重复 schema 校验", module="database.schema")
             return True
 
-        if _is_db_initialized("hub", hub_fp):
-            _debug_log("Hub 数据库已初始化（通过旧标记文件），执行轻量 schema 校验", module="database.schema")
-
         _debug_log("[init_hub] 正在获取 Hub 连接...", module="database.schema")
         hub_conn = connection._get_hub_conn()
         _debug_log("[init_hub] Hub 连接获取成功", module="database.schema")
@@ -331,7 +305,6 @@ def init_users_hub_tables() -> bool:
         
         if all_tables_exist:
             _debug_log("Hub 所有关键表已存在，跳过重复 CREATE TABLE 操作", module="database.schema")
-            _mark_db_initialized("hub", hub_fp)
             _save_hub_init_state(
                 {
                     "hub_fp": hub_fp,
@@ -403,7 +376,6 @@ def init_users_hub_tables() -> bool:
         if get_active_backend().should_close(hub_conn):
             hub_conn.close()
 
-        _mark_db_initialized("hub", hub_fp)
         _save_hub_init_state(
             {
                 "hub_fp": hub_fp,

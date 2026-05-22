@@ -99,8 +99,8 @@ async def switch_active_user(
     try:
         if _deps._context_manager:
             ctx = _deps._context_manager.get(username.lower())
-            # ensure_profile_ready is now non-blocking — starts async warmup
-            # and returns immediately. Context is usable for reads right away.
+            # get() 已同步执行 DB 初始化（init_db + init_concurrent_system）。
+            # ensure_profile_ready 是 no-op（warmup 已在 get 中启动）。
             _deps._context_manager.ensure_profile_ready(ctx)
     except Exception as e:
         return error_response("CONTEXT_ERROR", f"初始化用户上下文失败: {e}", user_id=user)

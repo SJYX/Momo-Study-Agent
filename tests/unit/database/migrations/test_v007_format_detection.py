@@ -18,6 +18,20 @@ def tmp_db(tmp_path):
     return db_path
 
 
+@pytest.fixture
+def tmp_app_db(tmp_path):
+    """Create a valid SQLite .db with our application table."""
+    db_path = str(tmp_path / "app.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE ai_word_notes (voc_id TEXT PRIMARY KEY, spelling TEXT)"
+    )
+    conn.execute("INSERT INTO ai_word_notes VALUES ('v1', 'hello')")
+    conn.commit()
+    conn.close()
+    return db_path
+
+
 class TestDetectFormat:
     def test_no_file_returns_no_file(self, tmp_path):
         from database.migrations.V007_migrate_db_format import _detect_format
@@ -87,14 +101,66 @@ class TestPreConnectMigrate:
         assert result["backup"] is not None
         assert os.path.exists(result["backup"])
 
-    def test_unknown_format_gets_migrated(self, tmp_db):
-        """KEY FIX: unknown format (no sidecar) → backup + delete, NOT treated as turso_sync."""
+    def test_unknown_format_with_app_tables_is_preserved(self, tmp_app_db):
+        """CRITICAL: unknown format + valid app data → PRESERVE, don't delete."""
         from database.migrations.V007_migrate_db_format import pre_connect_migrate
 
-        result = pre_connect_migrate(tmp_db)
+        result = pre_connect_migrate(tmp_app_db)
+        assert result["action"] == "preserved"
+        assert result["format"] == "unknown"
+        # Database file MUST still exist
+        assert os.path.exists(tmp_app_db)
+        # Data must be intact
+        conn = sqlite3.connect(tmp_app_db)
+        row = conn.execute("SELECT spelling FROM ai_word_notes WHERE voc_id='v1'").fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == "hello"
+
+    def test_unknown_format_with_empty_tables_is_preserved(self, tmp_path):
+        """Unknown format + has tables but no data → still PRESERVE (structure exists)."""
+        from database.migrations.V007_migrate_db_format import pre_connect_migrate
+
+        db_path = str(tmp_path / "empty_app.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE ai_word_notes (voc_id TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        result = pre_connect_migrate(db_path)
+        assert result["action"] == "preserved"
+        assert os.path.exists(db_path)
+
+    def test_unknown_format_empty_db_gets_migrated(self, tmp_path):
+        """Unknown format + valid SQLite but no user tables → migrate (quarantine)."""
+        from database.migrations.V007_migrate_db_format import pre_connect_migrate
+
+        # Create a truly empty SQLite file (no user tables at all)
+        db_path = str(tmp_path / "empty.db")
+        conn = sqlite3.connect(db_path)
+        conn.commit()
+        conn.close()
+
+        result = pre_connect_migrate(db_path)
         assert result["action"] == "migrated"
         assert result["format"] == "unknown"
-        assert not os.path.exists(tmp_db)
+        # Original file should be gone (renamed to quarantine)
+        assert not os.path.exists(db_path)
+        assert result["backup"] is not None
+        assert os.path.exists(result["backup"])
+
+    def test_unknown_format_corrupt_file_gets_migrated(self, tmp_path):
+        """Unknown format + corrupt file → migrate (quarantine)."""
+        from database.migrations.V007_migrate_db_format import pre_connect_migrate
+
+        db_path = str(tmp_path / "corrupt.db")
+        with open(db_path, "wb") as f:
+            f.write(b"not sqlite at all")
+
+        result = pre_connect_migrate(db_path)
+        assert result["action"] == "migrated"
+        assert result["format"] == "unknown"
+        assert not os.path.exists(db_path)
         assert result["backup"] is not None
 
     def test_no_preinit_schema_called(self, tmp_db):

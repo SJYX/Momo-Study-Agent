@@ -177,8 +177,10 @@ class UserContextManager:
             turso_auth_token=cfg_snapshot.turso_auth_token,
         )
 
-        # warmup 仍然同步执行（T5 会异步化）
-        self.ensure_profile_ready(ctx)
+        # 同步执行 DB 初始化（init_db + init_concurrent_system），
+        # 确保 context 返回时数据库已就绪，避免并发请求写入未初始化的 DB。
+        # 笔记扫描入队（异步段）放入后台线程。
+        self._warmup_sync_and_kick_async(ctx)
 
         return ctx
 
@@ -187,9 +189,8 @@ class UserContextManager:
         with self._lock:
             return self._warmup_state.get(profile_name, "not_started")
 
-    def ensure_profile_ready(self, ctx: UserContext) -> None:
-        """异步启动 warmup（DB schema 初始化 + 写并发系统 + 笔记扫描入队），
-        不阻塞调用方。PUT /api/users/active 可立即返回 200。"""
+    def _warmup_sync_and_kick_async(self, ctx: UserContext) -> None:
+        """同步执行 warmup 同步段（DB schema + 并发系统），然后异步启动笔记扫描。"""
         profile = (ctx.profile_name or "").strip().lower()
         with self._lock:
             state = self._warmup_state.get(profile, "not_started")
@@ -197,14 +198,30 @@ class UserContextManager:
                 return
             self._warmup_state[profile] = "in_progress"
 
-        # 整个 warmup（同步 + 异步）放入后台线程，PUT 立即返回
+        # 同步段：阻塞直到 DB 初始化完成
+        try:
+            self._warmup_sync(ctx)
+        except Exception as exc:
+            try:
+                ctx.logger.warning(
+                    f"[Web] profile '{profile}' 同步 warmup 失败: {exc}",
+                    module="user_context",
+                )
+            except Exception:
+                pass
+
+        # 异步段：笔记扫描放入后台线程
         thread = threading.Thread(
-            target=self._warmup_full,
+            target=self._warmup_async_safe,
             args=(ctx, profile),
-            name=f"warmup-full-{profile}",
+            name=f"warmup-async-{profile}",
             daemon=True,
         )
         thread.start()
+
+    def ensure_profile_ready(self, ctx: UserContext) -> None:
+        """兼容入口：调用 _warmup_sync_and_kick_async。"""
+        self._warmup_sync_and_kick_async(ctx)
 
     def _warmup_sync(self, ctx: UserContext) -> None:
         """阻塞段：DB schema 初始化 + 写连接单例 + 写并发系统启动。必须先于任何任务完成。"""
@@ -224,34 +241,6 @@ class UserContextManager:
         # 导致数据库被删除重建，引发损坏。
 
         init_concurrent_system()
-
-    def _warmup_full(self, ctx: UserContext, profile: str) -> None:
-        """完整 warmup：同步段（DB 初始化 + 写并发系统）+ 异步段（笔记扫描入队）。
-        在后台线程中运行，不阻塞 PUT 响应。"""
-        try:
-            self._warmup_sync(ctx)
-        except Exception as exc:
-            try:
-                ctx.logger.warning(
-                    f"[Web] profile '{profile}' 同步 warmup 失败: {exc}",
-                    module="user_context",
-                )
-            except Exception:
-                pass
-
-        try:
-            self._warmup_async(ctx)
-        except Exception as exc:
-            try:
-                ctx.logger.warning(
-                    f"[Web] profile '{profile}' 异步 warmup 失败: {exc}",
-                    module="user_context",
-                )
-            except Exception:
-                pass
-
-        with self._lock:
-            self._warmup_state[profile] = "done"
 
     def _warmup_async_safe(self, ctx: UserContext, profile: str) -> None:
         """异步段：扫描未同步笔记并入队。失败不影响 ctx 可用性。"""

@@ -7,14 +7,23 @@ because pyturso requires exclusive access and cannot coexist with an open connec
 Strategy:
   1. Detect format via sidecar file inspection
   2. If already turso_sync or no file → no-op
-  3. If libsql ER format or unknown → backup .db + delete all files → let pyturso bootstrap from remote
+  3. If libsql ER format → backup (rename) + delete → let pyturso bootstrap from remote
+  4. If unknown format → probe SQLite for app tables:
+     - Has app tables → preserve in place (valid local DB, pyturso can use it)
+     - No tables / corrupt → backup (rename) + delete
 
 Called from `PytursoBackend.connect()` before `turso.sync.connect()`.
+
+Safety guarantees:
+  - NEVER delete a file that contains application data (ai_word_notes table)
+  - Use rename instead of copy+delete for atomic backup
+  - "unknown" format with real data is preserved, not destroyed
 """
 from __future__ import annotations
 import os
 import shutil
-from typing import Any
+import sqlite3
+from typing import Any, Optional
 
 
 def _detect_format(db_path: str) -> str:
@@ -43,19 +52,110 @@ def _detect_format(db_path: str) -> str:
             pass
         return "libsql_embedded_replica"
 
-    # 无 sidecar → 无法确定格式，不应冒险当作 turso_sync
+    # 无 sidecar → 无法确定格式，需要进一步探针检测
     return "unknown"
 
 
+def _has_application_tables(db_path: str) -> bool:
+    """Check if a SQLite file contains our application tables.
+
+    Uses a lightweight query against sqlite_master — safe even if the file
+    is corrupted (sqlite3.connect will raise, caught by caller).
+
+    Returns True if at least one application table exists.
+    """
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", timeout=2.0, uri=True)
+        try:
+            cur = conn.cursor()
+            # Check for our primary application table
+            cur.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='ai_word_notes' LIMIT 1"
+            )
+            has_main_table = cur.fetchone() is not None
+
+            if not has_main_table:
+                # Fallback: check for any user-created tables (not sqlite_ internal)
+                cur.execute(
+                    "SELECT COUNT(*) FROM sqlite_master "
+                    "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+                row = cur.fetchone()
+                table_count = int(row[0]) if row else 0
+                return table_count > 0
+
+            return True
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def _is_valid_sqlite_file(db_path: str) -> bool:
+    """Quick check: does the file start with the SQLite magic header?"""
+    try:
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            return False
+        with open(db_path, "rb") as f:
+            header = f.read(16)
+        return bool(header and header.startswith(b"SQLite format 3"))
+    except Exception:
+        return False
+
+
+def _safely_quarantine(db_path: str, reason: str = "") -> str:
+    """Rename the database file to a quarantine path instead of deleting.
+
+    Uses atomic os.replace to avoid leaving half-deleted files.
+
+    Returns: quarantine path
+    """
+    import time
+    ts = int(time.time())
+    quarantine_path = f"{db_path}.quarantined_{ts}.bak"
+
+    # Clean up any previous quarantine with same pattern (keep latest)
+    import glob
+    for old in glob.glob(f"{db_path}.quarantined_*.bak"):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+
+    # Atomic rename
+    os.replace(db_path, quarantine_path)
+
+    # Also remove sidecar files
+    for suffix in ("-info", "-wal", "-shm"):
+        sidecar = db_path + suffix
+        if os.path.exists(sidecar):
+            try:
+                os.remove(sidecar)
+            except OSError:
+                pass
+
+    return quarantine_path
+
+
 def _migrate_libsql_to_turso(db_path: str) -> str:
-    """Backup old file + delete all db files. Let pyturso bootstrap from remote.
+    """Backup old file (via rename) + delete sidecar files. Let pyturso bootstrap from remote.
 
     Returns: backup_path
     """
     backup_path = db_path + ".pre_pyturso.bak"
-    shutil.copy2(db_path, backup_path)
 
-    for suffix in ("", "-info", "-wal", "-shm"):
+    # Remove old backup if exists (idempotent)
+    if os.path.exists(backup_path):
+        try:
+            os.remove(backup_path)
+        except OSError:
+            pass
+
+    # Atomic rename instead of copy+delete
+    os.replace(db_path, backup_path)
+
+    for suffix in ("-info", "-wal", "-shm"):
         target = db_path + suffix
         if os.path.exists(target):
             try:
@@ -81,7 +181,13 @@ def pre_connect_migrate(db_path: str) -> dict:
     This is the primary entry point called from `PytursoBackend.connect()`.
 
     Returns dict with migration results:
-        {"action": "migrated"|"skipped"|"no_file", "backup": path|None, "format": str}
+        {"action": "migrated"|"skipped"|"no_file"|"preserved", "backup": path|None, "format": str}
+
+    Actions:
+        no_file   — file doesn't exist, nothing to do
+        skipped   — already turso_sync format, no action needed
+        migrated  — was libsql ER format, backed up + deleted for pyturso bootstrap
+        preserved — was unknown format but contains valid app data, kept in place
     """
     fmt = _detect_format(db_path)
 
@@ -91,9 +197,31 @@ def pre_connect_migrate(db_path: str) -> dict:
     if fmt == "turso_sync":
         return {"action": "skipped", "backup": None, "format": fmt}
 
-    # libsql_embedded_replica 或 unknown → 备份 + 删除，让 pyturso 从远端重新拉
-    if fmt in ("libsql_embedded_replica", "unknown"):
+    if fmt == "libsql_embedded_replica":
+        # libsql ER format is incompatible with pyturso — must migrate
         backup = _migrate_libsql_to_turso(db_path)
         return {"action": "migrated", "backup": backup, "format": fmt}
+
+    if fmt == "unknown":
+        # CRITICAL: Don't blindly delete. Probe the file for application data.
+        #
+        # Scenario 1: Local-only user created via Web wizard (no cloud, no sidecar).
+        #   → Has ai_word_notes table → PRESERVE. pyturso can use raw SQLite files.
+        #
+        # Scenario 2: Corrupt or empty file with no sidecar.
+        #   → No tables / not valid SQLite → quarantine + delete.
+        #
+        # Scenario 3: Old libsql ER whose sidecar was deleted.
+        #   → No app tables → quarantine (safer than instant delete).
+        if _is_valid_sqlite_file(db_path) and _has_application_tables(db_path):
+            # Valid local database with real data — keep it in place.
+            # pyturso.sync.connect() can use existing SQLite files without a sidecar;
+            # it will create the sidecar on first connect.
+            return {"action": "preserved", "backup": None, "format": fmt}
+
+        # No useful data — quarantine (rename) instead of instant delete.
+        # This gives users a recovery path if the probe was wrong.
+        quarantine = _safely_quarantine(db_path, reason="unknown_format_no_data")
+        return {"action": "migrated", "backup": quarantine, "format": fmt}
 
     return {"action": "skipped", "backup": None, "format": fmt}

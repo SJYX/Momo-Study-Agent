@@ -126,8 +126,10 @@ def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG
 
 
 def _is_main_db_path(db_path: Optional[str] = None) -> bool:
-    target = os.path.abspath(db_path or _config.DB_PATH)
-    return target == os.path.abspath(_config.DB_PATH)
+    # Snapshot DB_PATH once to avoid TOCTOU race with prepare_for_task() patching
+    current_db_path = _config.DB_PATH
+    target = os.path.abspath(db_path or current_db_path)
+    return target == os.path.abspath(current_db_path)
 
 
 def _is_hub_db_path(db_path: Optional[str] = None) -> bool:
