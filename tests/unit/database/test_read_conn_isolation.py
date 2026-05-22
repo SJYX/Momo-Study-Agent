@@ -52,7 +52,7 @@ class TestGetLocalReadConn:
         """独立读连接不是写单例。"""
         conn = conn_mod._get_local_read_conn(tmp_db)
         try:
-            assert get_active_backend().should_close(conn)
+            assert conn is not conn_mod._main_write_conn_singleton
         finally:
             conn.close()
 
@@ -62,14 +62,6 @@ class TestGetLocalReadConn:
         try:
             with pytest.raises(sqlite3.OperationalError):
                 conn.execute("INSERT INTO test_t VALUES (2, 'world')")
-        finally:
-            conn.close()
-
-    def test_no_op_lock_returned(self, tmp_db):
-        """独立读连接不关联写单例的 op_lock。"""
-        conn = conn_mod._get_local_read_conn(tmp_db)
-        try:
-            assert get_active_backend().should_close(conn)
         finally:
             conn.close()
 
@@ -170,8 +162,9 @@ class TestBackendAwareRouting:
 
         conn = conn_mod._get_read_conn_impl(tmp_db)
         try:
-            # 应该是标准 sqlite3 连接（should_close returns True for non-singletons）
-            assert get_active_backend().should_close(conn)
+            # 应该是标准 sqlite3 连接
+            assert isinstance(conn, sqlite3.Connection)
+            assert conn is not conn_mod._main_write_conn_singleton
         finally:
             conn.close()
 

@@ -152,11 +152,9 @@ def find_words_in_community_batch(
     if remaining_ids:
         c = None
         try:
-            from database.backends import get_active_backend
             c = connection._get_read_conn(_config.DB_PATH)
-            with get_active_backend().op_lock_for(c):
-                with _safe_cursor(c) as cur:
-                    mapped_rows = _query_notes_from_cursor(cur, remaining_ids)
+            with _safe_cursor(c) as cur:
+                mapped_rows = _query_notes_from_cursor(cur, remaining_ids)
             _absorb_lookup_results(
                 mapped_rows,
                 source_label="当前数据库",
@@ -168,7 +166,7 @@ def find_words_in_community_batch(
         except Exception:  # noqa: BLE001 - 当前库读失败让位给云端补查
             pass
         finally:
-            if c is not None and get_active_backend().should_close(c):
+            if c is not None:
                 try:
                     c.close()
                 except Exception:  # noqa: BLE001

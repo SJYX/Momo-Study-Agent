@@ -24,7 +24,7 @@ dependencies = [
     "pytest>=7.4.0",
     "pytest-mock>=3.12.0",
     "json-repair>=0.25.0",
-    "libsql-client>=0.3.0",
+    "pyturso>=0.1.0",
     "PyYAML>=6.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -143,7 +143,7 @@ warn_no_return = true
 [[tool.mypy.overrides]]
 module = [
     "google.genai.*",
-    "libsql.*",
+    "turso.*",
     "json_repair.*",
 ]
 ignore_missing_imports = true

@@ -30,14 +30,6 @@ def test_get_active_backend_returns_turso_backend():
     assert isinstance(backend, PytursoBackend)
 
 
-# ── 2. is_supported reflects module-level flag ──
-
-
-def test_pyturso_is_supported_reflects_has_pyturso():
-    """PytursoBackend().is_supported() 返回的值与 HAS_PYTURSO 一致。"""
-    assert PytursoBackend().is_supported() is HAS_PYTURSO
-
-
 # ── 3. do_sync_on duck-type safety ──
 
 

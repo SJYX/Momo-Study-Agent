@@ -138,14 +138,7 @@ def _is_hub_db_path(db_path: Optional[str] = None) -> bool:
 
 
 def _is_replica_metadata_missing_error(error: Exception) -> bool:
-    msg = str(error or "").lower()
-    return "db file exists but metadata file does not" in msg or (
-        "local state is incorrect" in msg and "metadata" in msg
-    ) or (
-        "sync engine operation failed" in msg
-        and "metadata" in msg
-        and ("doesn't exist" in msg or "does not exist" in msg or "doesn't exists" in msg or "doesnt exist" in msg or "incorrect" in msg)
-    )
+    return False
 
 
 def _resolve_conn_context(db_path: Optional[str] = None) -> Dict[str, Any]:
@@ -219,8 +212,8 @@ def _close_hub_write_conn_singleton() -> None:
 def _get_local_read_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     """打开一个轻量级只读 sqlite3 连接。
 
-    用于 Embedded Replica 模式下的读操作隔离，避免读请求被 backend.op_lock_for()
-    阻塞。WAL 模式天然支持 '一写多读' 并行，此连接仅做 SELECT，不会与写单例冲突。
+    用于 Embedded Replica 模式下的读操作隔离。
+    WAL 模式天然支持 '一写多读' 并行，此连接仅做 SELECT，不会与写单例冲突。
 
     与 _get_local_conn 的区别：
     - 设置 PRAGMA query_only=ON 防止意外写入
@@ -350,13 +343,12 @@ def _get_main_write_conn_singleton(
     # 2. 第二阶段：如果已有单例，在【锁外】进行健康检查（仅持操作锁）
     if conn is not None:
         try:
-            with _get_backend().op_lock_for(conn):
-                now = time.time()
-                if now - _main_write_conn_last_check > 1.0:
-                    conn.execute("SELECT 1")
-                    _main_write_conn_last_check = now
-                if do_sync:
-                    _get_backend().do_sync_on(conn)
+            now = time.time()
+            if now - _main_write_conn_last_check > 1.0:
+                conn.execute("SELECT 1")
+                _main_write_conn_last_check = now
+            if do_sync:
+                _get_backend().do_sync_on(conn)
         except BaseException as health_error:
             _debug_log(f"主库写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _main_write_conn_lock:
@@ -386,7 +378,7 @@ def _get_main_write_conn_singleton(
                     if attempt > 0:
                         _debug_log(f"主库写连接单例 重试 {attempt+1}/{max_retries}…", level="INFO")
                     try:
-                        conn = _get_backend().connect(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync, is_singleton=True)
+                        conn = _get_backend().connect(_config.DB_PATH, ctx["url"], ctx["token"], do_sync=do_sync)
                         with _main_write_conn_lock:
                             _main_write_conn_singleton = conn
                             _main_write_conn_singleton_path = os.path.abspath(_config.DB_PATH)
@@ -394,7 +386,7 @@ def _get_main_write_conn_singleton(
                         break
                     except Exception as e:
                         last_error = e
-                        if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                        if _is_sqlite_malformed_error(e):
                             _backup_broken_database_file(_config.DB_PATH, "主库副本状态损坏，已备份后重试")
                         if attempt < max_retries - 1:
                             time.sleep(retry_delay)
@@ -425,10 +417,9 @@ def _get_hub_write_conn_singleton(
     # 2. 第二阶段：健康检查（锁外进行，仅持操作锁）
     if conn is not None:
         try:
-            with _get_backend().op_lock_for(conn):
-                conn.execute("SELECT 1")
-                if do_sync:
-                    _get_backend().do_sync_on(conn)
+            conn.execute("SELECT 1")
+            if do_sync:
+                _get_backend().do_sync_on(conn)
         except BaseException as health_error:
             _debug_log(f"Hub 写连接单例健康检查失败，准备重建: {health_error}", level="WARNING")
             with _hub_write_conn_lock:
@@ -452,7 +443,7 @@ def _get_hub_write_conn_singleton(
                 for attempt in range(max_retries):
                     try:
                         _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1}/{max_retries}，连接 Hub...")
-                        conn = _get_backend().connect(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync, is_singleton=True)
+                        conn = _get_backend().connect(HUB_DB_PATH, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=do_sync)
                         _debug_log("[_get_hub_write_conn_singleton] backend.connect 返回成功")
                         with _hub_write_conn_lock:
                             _hub_write_conn_singleton = conn
@@ -461,7 +452,7 @@ def _get_hub_write_conn_singleton(
                     except Exception as e:
                         last_error = e
                         _debug_log(f"[_get_hub_write_conn_singleton] 尝试 {attempt+1} 失败: {e}", level="WARNING")
-                        if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
+                        if _is_sqlite_malformed_error(e):
                             _backup_broken_database_file(HUB_DB_PATH, "Hub 副本状态损坏，已备份后重试")
                         if attempt < max_retries - 1:
                             time.sleep(retry_delay)
@@ -512,12 +503,8 @@ def _get_read_conn_impl(
 ) -> Any:
     """Resolve read connection.
 
-    Phase B 读写隔离：
-    - Embedded Replica 模式下，读操作优先走独立的 sqlite3 只读连接，
-      避免被 backend.op_lock_for() 阻塞。
-    - 仅当独立连接失败时才回退到写单例。
-    - 永远不开额外的 backend 读连接（WalConflict 约束仍然成立）。
-    - 可通过 ISOLATED_READ_CONN_ENABLED=False 回退到旧行为。
+    In pyturso mode, we always read from the local sqlite3 read-only connection
+    to achieve best concurrency under WAL.
     """
     ctx = _resolve_conn_context(db_path)
     db_path = ctx["db_path"]
@@ -526,38 +513,17 @@ def _get_read_conn_impl(
         conn = _get_local_conn(db_path)
         return _wrap_and_track_connection(db_path, conn, True)
 
-    # pyturso: .db 是标准 SQLite 文件，读永远走本地 sqlite3，不需要 cloud singleton
-    if get_active_backend().name == "pyturso":
+    try:
         conn = _get_local_read_conn(db_path)
         return _wrap_and_track_connection(db_path, conn, True)
-
-    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_PYTURSO):
-        # CRITICAL WalConflict fix:
-        # In LibSQL mode, we MUST reuse the singleton connection to avoid deadlocks
-        # during background sync, especially on Windows/OneDrive.
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                conn = _get_main_write_conn_singleton(do_sync=False, max_retries=max_retries, retry_delay=retry_delay)
-                return _wrap_and_track_connection(db_path, conn, True)
-            except Exception as e:
-                last_error = e
-                if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                    _backup_broken_database_file(db_path, f"{_get_backend().name} 副本本地状态损坏，已备份并重试")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                break
-
-        if ctx["force_cloud_mode"]:
-            raise RuntimeError(f"强制云端模式读连接失败 (已尝试 {max_retries} 次): {last_error}")
-
+    except Exception as e:
+        _debug_log(f"打开本地只读连接失败，尝试回退到 standard 连接: {e}", level="WARNING")
 
     if allow_local_fallback and (not ctx["force_cloud_mode"] or ctx["is_test"]):
         conn = _get_local_conn(db_path)
         return _wrap_and_track_connection(db_path, conn, True)
 
-    raise RuntimeError("强制云端模式已启用，但无法连接到云端数据库")
+    raise RuntimeError("无法连接到只读数据库")
 
 
 def _get_conn(
@@ -570,38 +536,12 @@ def _get_conn(
     ctx = _resolve_conn_context(db_path)
     db_path = ctx["db_path"]
 
-    if _is_main_db_path(db_path) and ctx.get("url") and ctx.get("token") and (HAS_PYTURSO):
-        if _get_backend().name != "pyturso" or do_sync:
-            return _get_main_write_conn_singleton(do_sync=do_sync, max_retries=max_retries, retry_delay=retry_delay)
-        # pyturso without sync: fall through to local
+    # 只有当 do_sync=True 时，才获取云端同步单例连接
+    if do_sync and _is_main_db_path(db_path) and ctx.get("url") and ctx.get("token") and (HAS_PYTURSO):
+        return _get_main_write_conn_singleton(do_sync=do_sync, max_retries=max_retries, retry_delay=retry_delay)
 
-    if _should_use_local_only_connection(db_path):
-        return _get_local_conn(db_path)
-
-    if (ctx["is_main_db"] or ctx["is_test"]) and ctx["url"] and ctx["token"] and (HAS_PYTURSO):
-        if _get_backend().name == "pyturso":
-            return _get_local_conn(db_path)
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                conn = _get_backend().connect(db_path, ctx["url"], ctx["token"], do_sync=do_sync)
-                return _wrap_and_track_connection(db_path, conn, False)
-            except Exception as e:
-                last_error = e
-                if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                    _backup_broken_database_file(db_path, f"{_get_backend().name} 副本本地状态损坏，已备份并重试")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                break
-
-        if ctx["force_cloud_mode"]:
-            raise RuntimeError(f"强制云端模式连接失败 (已尝试 {max_retries} 次): {last_error}")
-
-    if allow_local_fallback and (not ctx["force_cloud_mode"] or ctx["is_test"]):
-        return _get_local_conn(db_path)
-
-    raise RuntimeError("强制云端模式已启用，但无法连接到云端数据库")
+    # 否则在常规业务读写时，直接使用本地连接即可
+    return _get_local_conn(db_path)
 
 
 def _get_cloud_conn(url: str, token: str, db_path: str = None, max_retries: int = 3):
@@ -687,16 +627,14 @@ def _run_with_managed_connection(
     target_conn = optional_conn or conn_factory()
 
     try:
-        with _get_backend().op_lock_for(target_conn):
-            result = operation(target_conn)
-            if owned:
-                target_conn.commit()
+        result = operation(target_conn)
+        if owned:
+            target_conn.commit()
         return result
     finally:
         if owned:
             try:
-                if _get_backend().should_close(target_conn):
-                    target_conn.close()
+                target_conn.close()
             except Exception:
                 pass
 
@@ -721,34 +659,20 @@ def _row_to_dict(cursor: Any, row: Any) -> Dict[str, Any]:
 
 
 def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
-    """Hub single-row read.
-
-    CRITICAL WalConflict fix:
-    - Embedded Replica mode reuses hub write singleton.
-    - No standalone local read connections are created.
-    """
+    """Hub single-row read."""
     try:
-        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_PYTURSO):
-            if _get_backend().name == "pyturso":
-                hub_conn = _get_hub_local_conn()
-            else:
-                hub_conn = _get_hub_write_conn_singleton(do_sync=False)
-        else:
-            hub_conn = _get_hub_local_conn()
-
-        with _get_backend().op_lock_for(hub_conn):
-            cur = hub_conn.cursor()
-            try:
-                cur.execute(sql, params)
-                row = cur.fetchone()
-            finally:
-                cur.close()
-            hub_conn.commit()
-        if _get_backend().should_close(hub_conn):
-            try:
-                hub_conn.close()
-            except Exception:
-                pass
+        hub_conn = _get_hub_local_conn()
+        cur = hub_conn.cursor()
+        try:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        hub_conn.commit()
+        try:
+            hub_conn.close()
+        except Exception:
+            pass
         return _row_to_dict(cur, row) if row else None
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):
@@ -763,34 +687,20 @@ def _hub_fetch_one_dict(sql: str, params: tuple = ()) -> Optional[dict]:
 
 
 def _hub_fetch_all_dicts(sql: str, params: tuple = ()) -> List[dict]:
-    """Hub multi-row read.
-
-    CRITICAL WalConflict fix:
-    - Embedded Replica mode reuses hub write singleton.
-    - No standalone local read connections are created.
-    """
+    """Hub multi-row read."""
     try:
-        if TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN and (HAS_PYTURSO):
-            if _get_backend().name == "pyturso":
-                hub_conn = _get_hub_local_conn()
-            else:
-                hub_conn = _get_hub_write_conn_singleton(do_sync=False)
-        else:
-            hub_conn = _get_hub_local_conn()
-
-        with _get_backend().op_lock_for(hub_conn):
-            cur = hub_conn.cursor()
-            try:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
-            finally:
-                cur.close()
-            hub_conn.commit()
-        if _get_backend().should_close(hub_conn):
-            try:
-                hub_conn.close()
-            except Exception:
-                pass
+        hub_conn = _get_hub_local_conn()
+        cur = hub_conn.cursor()
+        try:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+        hub_conn.commit()
+        try:
+            hub_conn.close()
+        except Exception:
+            pass
         return [_row_to_dict(cur, row) for row in rows]
     except Exception as e:
         if _is_sqlite_data_corruption_error(e):

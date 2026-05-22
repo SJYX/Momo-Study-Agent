@@ -96,7 +96,7 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
     - `TURSO_DB_URL` 仅用于个人学习数据。
     - 禁止凭据落入个人库，禁止学习记录落入 Hub。
 2. 禁用 SQLite Row 对象（Turso 兼容性约束）。
-    - Turso 的 `libsql.Connection` 对象不支持 `sqlite3.Row` 对象和 `row_factory` 赋值（详见 DEC-003）。
+    - Turso 的 pyturso (以及旧的 libsql) Connection 对象不支持 `sqlite3.Row` 对象和 `row_factory` 赋值（详见 DEC-003）。
     - 查询结果统一走 `_row_to_dict(cursor, row)` 映射为字典。
 3. 严禁业务线程直连写库，必须使用读写分离的高并发架构。
     - 读操作：必须使用线程专属的 `_get_thread_local_read_conn()` （防争抢与连接损坏）。

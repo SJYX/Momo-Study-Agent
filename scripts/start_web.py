@@ -213,7 +213,7 @@ def _run_production(args: argparse.Namespace) -> None:
             if ret is not None:
                 if ret != 0:
                     print(f"\n⚠️ 子进程异常退出 (exit code={ret})")
-                    print("   可能原因: libsql C/Rust 层崩溃")
+                    print("   可能原因: pyturso C/Rust 层崩溃")
                     print("   请检查 Windows 事件查看器 → Windows 日志 → 应用程序 → python.exe")
                     print(f"   pid={proc.pid}, ret={ret}")
                 sys.exit(ret)

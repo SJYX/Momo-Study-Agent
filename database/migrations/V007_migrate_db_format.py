@@ -31,8 +31,7 @@ def _detect_format(db_path: str) -> str:
 
     Returns:
         "turso_sync" — pyturso database (sidecar contains "turso-sync-py")
-        "libsql_embedded_replica" — libsql ER format (sidecar exists but not pyturso)
-        "unknown" — file exists but format cannot be determined (no sidecar or corrupt)
+        "unknown" — file exists but format cannot be determined (no sidecar or non-pyturso sidecar)
         "no_file" — file doesn't exist yet
     """
     if not os.path.exists(db_path):
@@ -50,9 +49,8 @@ def _detect_format(db_path: str) -> str:
                 return "turso_sync"
         except OSError:
             pass
-        return "libsql_embedded_replica"
 
-    # 无 sidecar → 无法确定格式，需要进一步探针检测
+    # 无 sidecar 或不属于 pyturso 的 sidecar → 均判定为 unknown 格式
     return "unknown"
 
 
@@ -138,32 +136,7 @@ def _safely_quarantine(db_path: str, reason: str = "") -> str:
     return quarantine_path
 
 
-def _migrate_libsql_to_turso(db_path: str) -> str:
-    """Backup old file (via rename) + delete sidecar files. Let pyturso bootstrap from remote.
 
-    Returns: backup_path
-    """
-    backup_path = db_path + ".pre_pyturso.bak"
-
-    # Remove old backup if exists (idempotent)
-    if os.path.exists(backup_path):
-        try:
-            os.remove(backup_path)
-        except OSError:
-            pass
-
-    # Atomic rename instead of copy+delete
-    os.replace(db_path, backup_path)
-
-    for suffix in ("-info", "-wal", "-shm"):
-        target = db_path + suffix
-        if os.path.exists(target):
-            try:
-                os.remove(target)
-            except OSError:
-                pass
-
-    return backup_path
 
 
 def apply(cur: Any) -> None:
@@ -197,10 +170,7 @@ def pre_connect_migrate(db_path: str) -> dict:
     if fmt == "turso_sync":
         return {"action": "skipped", "backup": None, "format": fmt}
 
-    if fmt == "libsql_embedded_replica":
-        # libsql ER format is incompatible with pyturso — must migrate
-        backup = _migrate_libsql_to_turso(db_path)
-        return {"action": "migrated", "backup": backup, "format": fmt}
+
 
     if fmt == "unknown":
         # CRITICAL: Don't blindly delete. Probe the file for application data.

@@ -89,23 +89,6 @@ class ProfileSyncCoordinator:
                 self._timer.cancel()
                 self._timer = None
 
-    def _wait_for_writes_drained(self, timeout: float = 3.0) -> bool:
-        """Wait for the writer daemon's write queue to drain before starting sync.
-
-        pyturso sync (push→pull→checkpoint) and writer daemon (BEGIN IMMEDIATE)
-        race for the write lock on the same DB file. We wait for the queue to
-        be empty so the writer daemon has finished its current batch.
-
-        Returns True if queue drained within timeout, False if still has items.
-        """
-        from database.execution_engine import _write_queue
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if _write_queue.empty():
-                return True
-            time.sleep(0.1)
-        return False
-
     def _check_and_sync(self) -> None:
         """Timer callback: check if debounce has passed, then sync.
 
@@ -113,9 +96,6 @@ class ProfileSyncCoordinator:
         If another _do_sync is running, this callback simply exits —
         the running sync will pick up the latest writes, and any
         subsequent mark_dirty() will start a fresh timer.
-
-        Before syncing, waits for the writer daemon queue to drain to
-        avoid disk I/O errors from concurrent write lock contention.
         """
         now = time.time()
 
@@ -133,14 +113,6 @@ class ProfileSyncCoordinator:
             return
 
         try:
-            # Wait for writer queue to drain before starting sync
-            if not self._wait_for_writes_drained(timeout=3.0):
-                from database.utils import _debug_log
-                _debug_log(
-                    f"写队列未排空，延迟同步 (db={os.path.basename(self.db_path)})",
-                    level="WARNING",
-                    module="database.sync_coordinator",
-                )
             self._do_sync()
         finally:
             self._sync_lock.release()
@@ -177,8 +149,7 @@ class ProfileSyncCoordinator:
             from database.execution_engine import set_db_syncing, clear_db_syncing
             set_db_syncing(phase="idle_sync")
             try:
-                with backend.op_lock_for(conn):
-                    backend.do_sync_on(conn)
+                backend.do_sync_on(conn)
             finally:
                 clear_db_syncing()
 

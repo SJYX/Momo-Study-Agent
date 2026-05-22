@@ -1,6 +1,5 @@
 import os
-import asyncio
-from libsql_client import create_client
+import turso
 
 def load_env():
     env = {}
@@ -12,33 +11,52 @@ def load_env():
                     env[k.strip()] = v.strip().strip('"').strip("'")
     return env
 
-async def test_connection(name, url, token):
-    # 尝试使用 https:// 强制走 HTTP 协议，避开 WebSocket 握手问题
-    url = url.replace("libsql://", "https://")
-    print(f"[PING] Testing connection to {name} via {url}...")
+def test_connection(name, url, token):
     if not url or not token:
         print(f"[FAIL] Missing credentials for {name}")
         return False
+    url = url.replace("libsql://", "https://")
+    print(f"[PING] Testing connection to {name} via {url}...")
+    
+    db_path = f"test_ping_{name.replace(' ', '_')}.db"
+    
+    def _cleanup():
+        for path in (db_path, db_path + "-info", db_path + "-wal", db_path + "-shm"):
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
+    _cleanup()
+    
     try:
-        async with create_client(url=url, auth_token=token) as client:
-            res = await client.execute("SELECT 1")
-            print(f"[SUCCESS] {name} connected! Result: {res.rows[0][0]}")
-            return True
+        db = turso.sync.connect(
+            db_path,
+            remote_url=url,
+            auth_token=token,
+        )
+        res = db.execute("SELECT 1")
+        row = res.fetchone()
+        val = row[0] if row else None
+        print(f"[SUCCESS] {name} connected! Result: {val}")
+        db.close()
+        return True
     except Exception as e:
         print(f"[FAIL] {name} failed: {e}")
         return False
+    finally:
+        _cleanup()
 
-async def main():
+def main():
     ENV = load_env()
     u_url = ENV.get("TURSO_TEST_DB_URL")
     u_token = ENV.get("TURSO_TEST_AUTH_TOKEN")
     h_url = ENV.get("TURSO_TEST_HUB_DB_URL")
     h_token = ENV.get("TURSO_TEST_HUB_AUTH_TOKEN")
     
-    await asyncio.gather(
-        test_connection("User Test DB", u_url, u_token),
-        test_connection("Hub Test DB", h_url, h_token)
-    )
+    test_connection("User Test DB", u_url, u_token)
+    test_connection("Hub Test DB", h_url, h_token)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -245,14 +245,11 @@ class UserContextManager:
         from database.schema import init_db
 
         try:
-            init_db()
+            init_db(ctx.db_path)
         except Exception as e:
             _debug_log(f"[_warmup_sync] init_db 异常（已捕获，继续启动）: {e}", level="WARNING", module="web.user_context")
 
         # pyturso 不需要 libsql 的 "重建连接" workaround。
-        # pyturso.sync.connect() 产生的连接状态稳定，关闭再重开会触发
-        # V007 误判格式（pyturso 的 .db-info 侧边文件被识别为 libsql ER），
-        # 导致数据库被删除重建，引发损坏。
 
         init_concurrent_system()
 

@@ -109,8 +109,8 @@ Dependencies:
 
 ### 2. 连接级防御（Singleton Connection）
 
-- **全局单例**：对同一个本地副本 `.db` 文件，全局只能保持**唯一一个**持久化 `libsql` 连接对象。
-- **禁止私自建连**：业务代码绝对禁止直接调用 `libsql.connect(DB_PATH)`。所有读写必须走 `connection.py` 提供的单例接口（如 `_get_read_conn`）。
+- **全局单例**：对同一个本地副本 `.db` 文件，全局只能保持**唯一一个**持久化 `pyturso` 连接对象。
+- **禁止私自建连**：业务代码绝对禁止直接调用 `turso.sync.connect(DB_PATH)`。所有读写必须走 `connection.py` 提供的单例接口（如 `_get_read_conn`）。
 
 ### 3. 游标与读锁协议 🌟（最易犯错点）
 
@@ -151,7 +151,7 @@ if conn_lock is not None:
 
 ### 6. 本地 WAL 并发配置（生产值）
 
-所有本地 libsql / sqlite3 连接初始化时必须设置：
+所有本地 pyturso / sqlite3 连接初始化时必须设置：
 
 | PRAGMA | 值 | 作用 |
 | --- | --- | --- |
@@ -176,9 +176,9 @@ This rule is mandatory.
 
 In Embedded Replica mode, for the same replica file:
 
-- Do NOT open extra libsql connections for read paths.
+- Do NOT open extra pyturso connections for read paths.
 - Do NOT keep thread-local read connections.
-- Do NOT create any additional `libsql.connect(local_replica_path)` handles alongside the active syncing singleton.
+- Do NOT create any additional `turso.sync.connect(local_replica_path)` handles alongside the active syncing singleton.
 
 ### Required Behavior
 
@@ -191,18 +191,18 @@ In Embedded Replica mode, for the same replica file:
 
 ### Forbidden Patterns
 
-- ThreadLocal read connection caches for libsql replicas
-- `_get_libsql_local_read_conn(...)` style APIs for primary replica files
+- ThreadLocal read connection caches for pyturso replicas
+- `_get_pyturso_local_read_conn(...)` style APIs for primary replica files
 - Any code path that opens a second live connection to the same syncing replica file
 
 ## WalConflict Root Cause Summary
 
-`WalConflict` appears when multiple libsql connection instances compete on the same replica file while one is actively syncing WAL frames. The Rust core enforces strict file-level synchronization assumptions that are violated by multi-instance access.
+`WalConflict` appears when multiple pyturso connection instances compete on the same replica file while one is actively syncing WAL frames. The Rust core enforces strict file-level synchronization assumptions that are violated by multi-instance access.
 
 The fix is architectural, not just retry-based:
 
 - one replica file
-- one live libsql connection singleton
+- one live pyturso connection singleton
 - all operations serialized via connection-level locks and/or queueing
 
 ## Dependency Direction (No Circular Imports)
@@ -228,7 +228,7 @@ Avoid reverse imports (e.g. `connection` importing `hub_users` or `momo_words`).
 Before merging DB-related changes, verify:
 
 - No new ThreadLocal read connection logic exists for Embedded Replicas.
-- No helper opens extra libsql local connections to active replica files.
+- No helper opens extra pyturso local connections to active replica files.
 - `_get_read_conn_impl` still funnels to main singleton in cloud mode.
 - Hub reads still use hub singleton.
 - New business modules only depend on `connection/utils/schema` and do not redefine connection logic.

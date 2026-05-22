@@ -32,6 +32,13 @@ class SyncDebouncer:
                 self._timer = None
         fn()
 
+    def shutdown(self) -> None:
+        """取消待执行的 timer。"""
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
 
 # ── 全局单例 ──
 
@@ -46,3 +53,12 @@ def get_sync_debouncer() -> SyncDebouncer:
             if _instance is None:
                 _instance = SyncDebouncer(delay=1.5)
     return _instance
+
+
+def reset_sync_debouncer() -> None:
+    global _instance
+    with _instance_lock:
+        if _instance is not None:
+            _instance.shutdown()
+            _instance = None
+

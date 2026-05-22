@@ -16,62 +16,46 @@ from core.logger import get_logger
 T = TypeVar('T')
 
 class DBSession:
-    """包装了连接与 backend 并发控制的会话对象。
+    """包装了连接与 backend 的会话对象。
 
-    所有操作（读/写）通过 backend.op_lock_for() 获取并发保护：
-    - PytursoBackend: no-op（MVCC 并发）
-    - LibsqlBackend: 自动获取 main/hub 锁
-
-    不再需要读锁超时降级 —— 直接阻塞等待最安全。
+    PytursoBackend 使用原生 MVCC 并发，无需外部锁。
     """
 
     def __init__(self, conn: Any, backend: Any = None):
         self.conn = conn
         self._backend = backend
 
-    @contextmanager
-    def _lock_context(self):
-        if self._backend is not None:
-            with self._backend.op_lock_for(self.conn):
-                yield
-        else:
-            yield
-
     def fetchall(self, sql: str, params: tuple = ()) -> List[Any]:
-        with self._lock_context():
-            cur = self.conn.cursor()
-            try:
-                cur.execute(sql, params)
-                return cur.fetchall()
-            finally:
-                cur.close()
+        cur = self.conn.cursor()
+        try:
+            cur.execute(sql, params)
+            return cur.fetchall()
+        finally:
+            cur.close()
 
     def fetchone(self, sql: str, params: tuple = ()) -> Optional[Any]:
-        with self._lock_context():
-            cur = self.conn.cursor()
-            try:
-                cur.execute(sql, params)
-                return cur.fetchone()
-            finally:
-                cur.close()
+        cur = self.conn.cursor()
+        try:
+            cur.execute(sql, params)
+            return cur.fetchone()
+        finally:
+            cur.close()
 
     def execute(self, sql: str, params: tuple = ()) -> None:
-        with self._lock_context():
-            cur = self.conn.cursor()
-            try:
-                cur.execute(sql, params)
-            finally:
-                cur.close()
-            self.conn.commit()
+        cur = self.conn.cursor()
+        try:
+            cur.execute(sql, params)
+        finally:
+            cur.close()
+        self.conn.commit()
 
     def executemany(self, sql: str, params_list: List[tuple]) -> None:
-        with self._lock_context():
-            cur = self.conn.cursor()
-            try:
-                cur.executemany(sql, params_list)
-            finally:
-                cur.close()
-            self.conn.commit()
+        cur = self.conn.cursor()
+        try:
+            cur.executemany(sql, params_list)
+        finally:
+            cur.close()
+        self.conn.commit()
 
 
 def _attempt_auto_recovery(db_path: str) -> bool:
@@ -84,13 +68,11 @@ def _attempt_auto_recovery(db_path: str) -> bool:
             _debug_log("损坏库备份未完成（源文件可能被占用），继续尝试云端/本地重建", level="WARNING", module="database.session")
 
         ctx = connection._resolve_conn_context(db_path)
-        if (connection.HAS_LIBSQL or connection.HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
+        if (connection.HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
             _debug_log(f"尝试从 Turso 云端重建损坏的数据库: {db_path}", level="INFO", module="database.session")
             repair_conn = connection._get_conn(db_path, allow_local_fallback=False, do_sync=True)
-            from database.backends import get_active_backend
             try:
-                if get_active_backend().should_close(repair_conn):
-                    repair_conn.close()
+                repair_conn.close()
             except Exception:
                 pass
             return True
@@ -154,7 +136,7 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
 
                         # 确保关闭损坏的连接后再恢复
                         try:
-                            if c is not None and get_active_backend().should_close(c):
+                            if c is not None:
                                 c.close()
                         except Exception:
                             pass
@@ -176,7 +158,7 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
                 if not _recovery_attempted or '_recovery_attempted' in kwargs: 
                     # 避免在重试的递归栈里重复关闭同一个连接（外层如果抛了异常才走到这）
                     try:
-                        if c is not None and get_active_backend().should_close(c):
+                        if c is not None:
                             c.close()
                     except Exception:
                         pass
@@ -218,7 +200,7 @@ def with_write_session(default_return: Any = None, fallback_on_corruption: bool 
                 return default_return
             finally:
                 try:
-                    if c is not None and get_active_backend().should_close(c):
+                    if c is not None:
                         c.close()
                 except Exception:
                     pass

@@ -116,16 +116,14 @@ async def db_replica_health(
         from database.connection import _get_read_conn
         from database.backends import get_active_backend
         rconn = _get_read_conn(_cfg.DB_PATH)
-        with get_active_backend().op_lock_for(rconn):
-            rcur = rconn.cursor()
-            try:
-                rcur.execute("PRAGMA user_version")
-                row = rcur.fetchone()
-                schema_version = int(row[0]) if row else 0
-            finally:
-                rcur.close()
-        if get_active_backend().should_close(rconn):
-            rconn.close()
+        rcur = rconn.cursor()
+        try:
+            rcur.execute("PRAGMA user_version")
+            row = rcur.fetchone()
+            schema_version = int(row[0]) if row else 0
+        finally:
+            rcur.close()
+        rconn.close()
         # 文件大小
         if os.path.exists(_cfg.DB_PATH):
             db_size_mb = round(os.path.getsize(_cfg.DB_PATH) / (1024 * 1024), 2)

@@ -52,33 +52,34 @@ def fake_dispatch(monkeypatch):
     return calls
 
 
-def test_dispatch_write_uses_local_path_when_local_only(fake_dispatch):
+def test_dispatch_write_always_uses_local_path(monkeypatch, fake_dispatch):
+    """无论 _should_use_local_only_connection 返回 True 还是 False，均应直写本地。"""
+    monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *_a, **_k: True)
     ok = dispatch_write("INSERT INTO t VALUES (?)", ("x",))
     assert ok is True
     assert fake_dispatch["local_single"] == 1
     assert fake_dispatch["queue_single"] == 0
 
-
-def test_dispatch_write_falls_back_to_queue(monkeypatch, fake_dispatch):
-    """当 _should_use_local_only_connection 返回 False 时走入队路径。"""
     monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *_a, **_k: False)
-    ok = dispatch_write("INSERT INTO t VALUES (?)", ("x",))
+    ok = dispatch_write("INSERT INTO t VALUES (?)", ("y",))
     assert ok is True
-    assert fake_dispatch["queue_single"] == 1
-    assert fake_dispatch["local_single"] == 0
+    assert fake_dispatch["local_single"] == 2
+    assert fake_dispatch["queue_single"] == 0
 
 
-def test_dispatch_batch_write_local_path(fake_dispatch):
+def test_dispatch_batch_write_always_uses_local_path(monkeypatch, fake_dispatch):
+    """无论 _should_use_local_only_connection 返回 True 还是 False，批量写入均应直写本地。"""
+    monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *_a, **_k: True)
     ok = dispatch_batch_write("INSERT INTO t VALUES (?)", [("a",), ("b",)])
     assert ok is True
     assert fake_dispatch["local_batch"] == 1
+    assert fake_dispatch["queue_batch"] == 0
 
-
-def test_dispatch_batch_write_queue_path(monkeypatch, fake_dispatch):
     monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *_a, **_k: False)
-    ok = dispatch_batch_write("INSERT INTO t VALUES (?)", [("a",), ("b",)])
+    ok = dispatch_batch_write("INSERT INTO t VALUES (?)", [("c",), ("d",)])
     assert ok is True
-    assert fake_dispatch["queue_batch"] == 1
+    assert fake_dispatch["local_batch"] == 2
+    assert fake_dispatch["queue_batch"] == 0
 
 
 def test_save_ai_word_note_swallows_db_error_and_returns_false(monkeypatch):
@@ -94,7 +95,7 @@ def test_save_ai_word_note_swallows_db_error_and_returns_false(monkeypatch):
 def test_save_ai_word_note_swallows_unexpected_exception_and_returns_false(monkeypatch):
     """未分类的异常仍兜底返回 False（且会附 traceback 到日志，但不抛）。"""
     def boom(*_a, **_k):
-        raise RuntimeError("libsql segfault simulation")
+        raise RuntimeError("pyturso segfault simulation")
 
     monkeypatch.setattr("database.notes_repo.dispatch_write", boom)
     ok = save_ai_word_note("v1", {"spelling": "x"})

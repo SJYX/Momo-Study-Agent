@@ -19,7 +19,7 @@ def memory_sqlite_db():
     适用：不需要跨连接共享数据的纯 SQL 单元/集成测试。
 
     不适用：
-    - 需要 libsql Embedded Replica 的测试（用文件 DB + cloud_integ_env fixture）
+    - 需要 pyturso / Turso Sync 的测试（用文件 DB + cloud_integ_env fixture）
     - 需要多连接共享同一 DB 的并发场景（用 shared_memory_sqlite_uri）
     - 测试触发 connection.py 内部建连逻辑的（用 tmp_path 文件 DB，让代码走真实路径）
     """

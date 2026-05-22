@@ -196,9 +196,7 @@ def log_test_run(
     )
     c.commit()
     rid = cur.lastrowid
-    from database.backends import get_active_backend
-    if get_active_backend().should_close(c):
-        c.close()
+    c.close()
     return rid
 
 

@@ -33,6 +33,11 @@ def test_full_cloud_sync_loop(cloud_integ_env, monkeypatch):
 
     # 3. 执行同步 (Fixture 已确保此时环境为强制云端且 HTTPS 已开启)
     print(f"\n[STEP] Starting Sync to Cloud...")
+    from database import connection
+    print("DEBUG ENV TURSO_DB_URL:", os.getenv("TURSO_DB_URL"))
+    print("DEBUG ENV TURSO_AUTH_TOKEN:", os.getenv("TURSO_AUTH_TOKEN"))
+    print("DEBUG CONTEXT:", connection._resolve_conn_context(local_db))
+    print("DEBUG IS MAIN DB PATH:", connection._is_main_db_path(local_db))
     import time
     start_time = time.time()
     stats = sync_databases(local_db)

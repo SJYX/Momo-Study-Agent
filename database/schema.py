@@ -225,16 +225,24 @@ def init_db(db_path: Optional[str] = None) -> None:
 def _init_db_impl(db_path: Optional[str] = None) -> None:
     from database.migrations import apply_migrations, _NeedCloudMigrations
 
-    path = db_path or DB_PATH
+    import config as _cfg
+    path = db_path or _cfg.DB_PATH
     start_time = time.time()
 
     try:
-        _debug_log("[init_db] 获取本地连接...", module="database.schema")
-        lc = connection._get_local_conn(path)
+        from database.connection import _resolve_conn_context, _get_conn
+        ctx = _resolve_conn_context(path)
+        is_cloud = bool(ctx.get("url") and ctx.get("token"))
+
+        if is_cloud:
+            _debug_log(f"[init_db] 检测到云端数据库配置，开始建立云端同步连接以进行拉取...", module="database.schema")
+            lc = _get_conn(path, do_sync=True)
+            _debug_log(f"[init_db] 云端同步连接建立成功，已完成初始拉取", module="database.schema")
+        else:
+            _debug_log("[init_db] 获取本地连接...", module="database.schema")
+            lc = connection._get_local_conn(path)
 
         # CREATE TABLE IF NOT EXISTS 是幂等的，直接执行。
-        # 在 Embedded Replica 架构下，pyturso bootstrap 会从云端重建完整 DB，
-        # 所以这里的建表仅保障非云端模式（纯本地 sqlite3）的正确性。
         lcur = lc.cursor()
         _t_create = time.time()
         _debug_log("[init_db] 开始建表...", module="database.schema")
@@ -250,11 +258,8 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
             # 有新迁移需要执行，需要连云
             _debug_log(f"[init_db] 检测到新迁移 v{e.current}→v{e.target}，使用云端连接...", module="database.schema")
             from database.backends import get_active_backend
-            from database.connection import _resolve_conn_context
-            import config as _cfg
-            ctx = _resolve_conn_context(_cfg.DB_PATH)
             if ctx.get("url") and ctx.get("token"):
-                cc = get_active_backend().connect(_cfg.DB_PATH, ctx["url"], ctx["token"], do_sync=False)
+                cc = get_active_backend().connect(path, ctx["url"], ctx["token"], do_sync=False)
                 try:
                     start_v, end_v = apply_migrations(cc)
                 finally:
@@ -270,7 +275,18 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
         else:
             _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
 
-        lc.close()
+        if is_cloud:
+            from database.backends import get_active_backend
+            get_active_backend().do_sync_on(lc)
+            _debug_log("[init_db] 初始云端同步及落盘已完成", module="database.schema")
+
+        # 如果是本地连接，我们关闭它；如果是单例写连接，则不关闭
+        import database.connection as conn_mod
+        if lc is not conn_mod._main_write_conn_singleton:
+            try:
+                lc.close()
+            except Exception:
+                pass
         _debug_log("数据库初始化完成", start_time=start_time, module="database.schema")
     except Exception as e:
         _debug_log(f"数据库初始化失败: {e}", start_time=start_time, level="WARNING", module="database.schema")
@@ -313,8 +329,8 @@ def init_users_hub_tables() -> bool:
                     "last_checked_at": time.time(),
                 }
             )
-            if get_active_backend().should_close(hub_conn):
-                hub_conn.close()
+            hub_conn.commit()
+            hub_conn.close()
             return True
 
         table_exists = _check_table_exists(cur, "users", "hub", cache_scope=hub_fp)
@@ -324,8 +340,7 @@ def init_users_hub_tables() -> bool:
         _backend = get_active_backend()
 
         def _exec(sql: str, args: Optional[tuple] = None) -> None:
-            with _backend.op_lock_for(hub_conn):
-                cur.execute(sql, args or ())
+            cur.execute(sql, args or ())
 
         _exec(
             "CREATE TABLE IF NOT EXISTS users ("
@@ -370,11 +385,9 @@ def init_users_hub_tables() -> bool:
             "gemini_api_key_enc TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(user_id))"
         )
 
-        with _backend.op_lock_for(hub_conn):
-            hub_conn.commit()
+        hub_conn.commit()
 
-        if get_active_backend().should_close(hub_conn):
-            hub_conn.close()
+        hub_conn.close()
 
         _save_hub_init_state(
             {

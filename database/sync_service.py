@@ -99,8 +99,7 @@ def _run_sync_pipeline(
             def _do_sync():
                 try:
                     _backend = get_active_backend()
-                    with _backend.op_lock_for(conn):
-                        _backend.do_sync_on(conn)
+                    _backend.do_sync_on(conn)
                     sync_result_box[0] = True
                 except Exception as e:
                     sync_err_box[0] = e
@@ -147,7 +146,7 @@ def sync_databases(
     from config import DB_PATH
 
     path = db_path or DB_PATH
-    creds_ok = bool(os.getenv("TURSO_DB_URL") and os.getenv("TURSO_AUTH_TOKEN") and (connection.HAS_LIBSQL or connection.HAS_PYTURSO))
+    creds_ok = bool(os.getenv("TURSO_DB_URL") and os.getenv("TURSO_AUTH_TOKEN") and connection.HAS_PYTURSO)
     if not (os.getenv("TURSO_DB_URL") and os.getenv("TURSO_AUTH_TOKEN")):
         creds_skip_reason = "missing-cloud-credentials"
     else:
@@ -184,7 +183,7 @@ def sync_hub_databases(
 ) -> Dict[str, Any]:
     hub_url = os.getenv("TURSO_HUB_DB_URL")
     hub_token = os.getenv("TURSO_HUB_AUTH_TOKEN")
-    creds_ok = bool(hub_url and hub_token and (connection.HAS_LIBSQL or connection.HAS_PYTURSO))
+    creds_ok = bool(hub_url and hub_token and connection.HAS_PYTURSO)
     creds_skip_reason = (
         "missing-hub-cloud-credentials"
         if not (hub_url and hub_token)

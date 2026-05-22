@@ -127,7 +127,7 @@ def check_dependencies():
         "python-dotenv": "dotenv",
         "pytest": "pytest",
         "json-repair": "json_repair",
-        "libsql-client": "libsql",
+        "pyturso": "turso",
     }
 
     dev_packages = {

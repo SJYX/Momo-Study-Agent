@@ -56,16 +56,11 @@ def dispatch_write(
     queue_full_log: Optional[Callable[[str], None]] = None,
     queue_full_message: str = "写入入队失败: 写队列已满",
 ) -> bool:
-    """Dispatch a single write to either local-direct path or the write queue."""
+    """Dispatch a single write synchronously to the local database, bypassing the queue."""
     from . import connection
 
-    if connection._should_use_local_only_connection(db_path, conn):
-        connection._execute_write_sql_sync(sql, args, db_path=db_path, conn=conn)
-        return True
-    ok = connection._queue_write_operation(sql, args, op_type=op_type)
-    if not ok and queue_full_log is not None:
-        queue_full_log(queue_full_message)
-    return ok
+    connection._execute_write_sql_sync(sql, args, db_path=db_path, conn=conn)
+    return True
 
 
 def dispatch_batch_write(
@@ -77,13 +72,9 @@ def dispatch_batch_write(
     queue_full_log: Optional[Callable[[str], None]] = None,
     queue_full_message: str = "批量写入入队失败: 写队列已满",
 ) -> bool:
-    """Dispatch a batch write to either local-direct path or the write queue."""
+    """Dispatch a batch write synchronously to the local database, bypassing the queue."""
     from . import connection
 
-    if connection._should_use_local_only_connection(db_path, conn):
-        connection._execute_batch_write_sql_sync(sql, args_list, db_path=db_path, conn=conn)
-        return True
-    ok = connection._queue_batch_write_operation(sql, args_list)
-    if not ok and queue_full_log is not None:
-        queue_full_log(queue_full_message)
-    return ok
+    connection._execute_batch_write_sql_sync(sql, args_list, db_path=db_path, conn=conn)
+    return True
+

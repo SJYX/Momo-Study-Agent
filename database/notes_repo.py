@@ -486,73 +486,71 @@ def atomic_save_iteration_and_update_note(
         db_path = db_path or _config.DB_PATH
         write_conn = _get_conn(db_path)
 
-        with get_active_backend().op_lock_for(write_conn):
-            cur = write_conn.cursor()
+        cur = write_conn.cursor()
+        try:
+            cur.execute("BEGIN IMMEDIATE")
+            
+            # 构建迭代数据
+            data: Dict[str, Any] = dict(iteration_payload or {})
+            meta: Dict[str, Any] = dict(metadata or {})
+            batch_id = meta.get("batch_id")
+            m_ctx = json.dumps(meta.get("maimemo_context", {}), ensure_ascii=False) if meta.get("maimemo_context") else None
+            tags = data.get("tags")
+            tags_json = json.dumps(tags, ensure_ascii=False) if tags is not None else None
+            raw_response = data.get("raw_response") or data.get("raw_full_text") or json.dumps(data, ensure_ascii=False)
+            
+            # 1. INSERT 迭代记录
+            iteration_args = (
+                str(voc_id),
+                data.get("spelling"),
+                data.get("stage"),
+                data.get("it_level"),
+                data.get("score"),
+                data.get("justification"),
+                tags_json,
+                data.get("refined_content"),
+                data.get("candidate_notes"),
+                raw_response,
+                m_ctx,
+                batch_id,
+            )
+            cur.execute(AI_WORD_ITERATION_INSERT_SQL, iteration_args)
+            
+            # 2. UPDATE 笔记状态
+            if memory_aid is not None:
+                note_sql = "UPDATE ai_word_notes SET it_level = ?, it_history = ?, memory_aid = ?, updated_at = ? WHERE voc_id = ?"
+                note_args = (int(level), history_json, memory_aid, get_timestamp_with_tz(), str(voc_id))
+            else:
+                note_sql = "UPDATE ai_word_notes SET it_level = ?, it_history = ?, updated_at = ? WHERE voc_id = ?"
+                note_args = (int(level), history_json, get_timestamp_with_tz(), str(voc_id))
+            
+            cur.execute(note_sql, note_args)
+            
+            # 提交事务
+            write_conn.commit()
+            
+            _debug_log(
+                f"atomic_save_iteration_and_update_note: {voc_id} 原子更新成功（迭代level={level}）",
+                level="DEBUG",
+                module="database.momo_words",
+            )
+            
+            return True
+        except Exception as e:
             try:
-                cur.execute("BEGIN IMMEDIATE")
-                
-                # 构建迭代数据
-                data: Dict[str, Any] = dict(iteration_payload or {})
-                meta: Dict[str, Any] = dict(metadata or {})
-                batch_id = meta.get("batch_id")
-                m_ctx = json.dumps(meta.get("maimemo_context", {}), ensure_ascii=False) if meta.get("maimemo_context") else None
-                tags = data.get("tags")
-                tags_json = json.dumps(tags, ensure_ascii=False) if tags is not None else None
-                raw_response = data.get("raw_response") or data.get("raw_full_text") or json.dumps(data, ensure_ascii=False)
-                
-                # 1. INSERT 迭代记录
-                iteration_args = (
-                    str(voc_id),
-                    data.get("spelling"),
-                    data.get("stage"),
-                    data.get("it_level"),
-                    data.get("score"),
-                    data.get("justification"),
-                    tags_json,
-                    data.get("refined_content"),
-                    data.get("candidate_notes"),
-                    raw_response,
-                    m_ctx,
-                    batch_id,
-                )
-                cur.execute(AI_WORD_ITERATION_INSERT_SQL, iteration_args)
-                
-                # 2. UPDATE 笔记状态
-                if memory_aid is not None:
-                    note_sql = "UPDATE ai_word_notes SET it_level = ?, it_history = ?, memory_aid = ?, updated_at = ? WHERE voc_id = ?"
-                    note_args = (int(level), history_json, memory_aid, get_timestamp_with_tz(), str(voc_id))
-                else:
-                    note_sql = "UPDATE ai_word_notes SET it_level = ?, it_history = ?, updated_at = ? WHERE voc_id = ?"
-                    note_args = (int(level), history_json, get_timestamp_with_tz(), str(voc_id))
-                
-                cur.execute(note_sql, note_args)
-                
-                # 提交事务
-                write_conn.commit()
-                
-                _debug_log(
-                    f"atomic_save_iteration_and_update_note: {voc_id} 原子更新成功（迭代level={level}）",
-                    level="DEBUG",
-                    module="database.momo_words",
-                )
-                
-                return True
-            except Exception as e:
-                try:
-                    write_conn.rollback()
-                except Exception:
-                    pass
-                _log_repo_failure("atomic_save_iteration_and_update_note", e)
-                return False
+                write_conn.rollback()
+            except Exception:
+                pass
+            _log_repo_failure("atomic_save_iteration_and_update_note", e)
+            return False
+        finally:
+            try:
+                cur.close()
             finally:
                 try:
-                    cur.close()
-                finally:
-                    if get_active_backend().should_close(write_conn):
-                        try:
-                            write_conn.close()
-                        except Exception:
-                            pass
+                    write_conn.close()
+                except Exception:
+                    pass
     except Exception as e:
         _log_repo_failure("atomic_save_iteration_and_update_note[outer]", e)
         return False

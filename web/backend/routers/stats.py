@@ -43,31 +43,29 @@ def _fetch_summary_data(db_path: str) -> dict:
             row = cur.fetchone()
             return row[0] if row else 0
 
-        with get_active_backend().op_lock_for(conn):
-            try:
-                total_words = _q("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
-                processed_words = _q("SELECT COUNT(*) FROM processed_words")
-                ai_batches = _q("SELECT COUNT(*) FROM ai_batches")
-                total_tokens = _q("SELECT COALESCE(SUM(total_tokens), 0) FROM ai_batches")
-                avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
-                ai_notes_count = _q("SELECT COUNT(*) FROM ai_word_notes")
-                weak_words = _q("""
-                    SELECT COUNT(*) FROM (
-                        SELECT h.voc_id
-                        FROM word_progress_history h
-                        JOIN (
-                            SELECT voc_id, MAX(created_at) as mc
-                            FROM word_progress_history GROUP BY voc_id
-                        ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.mc
-                        WHERE h.familiarity_short < 3.0
-                    )
-                """)
-            finally:
-                cur.close()
-            conn.commit()
+        try:
+            total_words = _q("SELECT COUNT(DISTINCT voc_id) FROM word_progress_history")
+            processed_words = _q("SELECT COUNT(*) FROM processed_words")
+            ai_batches = _q("SELECT COUNT(*) FROM ai_batches")
+            total_tokens = _q("SELECT COALESCE(SUM(total_tokens), 0) FROM ai_batches")
+            avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
+            ai_notes_count = _q("SELECT COUNT(*) FROM ai_word_notes")
+            weak_words = _q("""
+                SELECT COUNT(*) FROM (
+                    SELECT h.voc_id
+                    FROM word_progress_history h
+                    JOIN (
+                        SELECT voc_id, MAX(created_at) as mc
+                        FROM word_progress_history GROUP BY voc_id
+                    ) latest ON h.voc_id = latest.voc_id AND h.created_at = latest.mc
+                    WHERE h.familiarity_short < 3.0
+                )
+            """)
+        finally:
+            cur.close()
+        conn.commit()
     finally:
-        if get_active_backend().should_close(conn):
-            conn.close()
+        conn.close()
 
     try:
         sync_queue_depth = count_by_state(WordState.LOCAL_READY, db_path=db_path)
@@ -105,14 +103,12 @@ def _fetch_ops_db_data(db_path: str) -> dict:
         conn1 = _get_read_conn(db_path)
         cur1 = conn1.cursor()
         try:
-            with get_active_backend().op_lock_for(conn1):
-                cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
-                row = cur1.fetchone()
+            cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+            row = cur1.fetchone()
             sync_queue_depth = int((row or [0])[0] or 0)
         finally:
             cur1.close()
-        if get_active_backend().should_close(conn1):
-            conn1.close()
+        conn1.close()
     except Exception:
         sync_queue_depth = 0
 
@@ -126,13 +122,11 @@ def _fetch_ops_db_data(db_path: str) -> dict:
                 row = cur.fetchone()
                 return row[0] if row else 0
 
-            with get_active_backend().op_lock_for(conn):
-                avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
-                cur.close()
+            avg_latency = _q("SELECT COALESCE(AVG(total_latency_ms), 0) FROM ai_batches")
+            cur.close()
             conn.commit()
         finally:
-            if get_active_backend().should_close(conn):
-                conn.close()
+            conn.close()
     except Exception:
         avg_latency = 0.0
 

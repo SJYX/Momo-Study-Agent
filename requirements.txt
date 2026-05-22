@@ -4,7 +4,6 @@ python-dotenv
 pytest
 pytest-mock
 json-repair
-libsql-experimental  # 宽限期：P6 合并后保留 1 个版本周期
 pyturso>=0.1.0
 PyYAML
 fastapi>=0.115.0

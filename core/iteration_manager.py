@@ -163,18 +163,15 @@ class IterationManager:
 
     def _get_last_recorded_fam(self, voc_id: str) -> float:
         """获取该单词在最后一次 it_level 变更时的熟悉度基准。"""
-        from database.backends import get_active_backend
         conn = _get_read_conn(_config.DB_PATH)
-        with get_active_backend().op_lock_for(conn):
-            cur = conn.cursor()
-            try:
-                cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-                row = cur.fetchone()
-            finally:
-                cur.close()
-            conn.commit()
-        if get_active_backend().should_close(conn):
-            conn.close()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT it_history FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        conn.commit()
+        conn.close()
         if row and row[0]:
             history = json.loads(row[0])
             if history:
@@ -317,17 +314,14 @@ class IterationManager:
             "baseline_fam": current_fam,
         }
 
-        from database.backends import get_active_backend
         conn = _get_read_conn(_config.DB_PATH)
-        with get_active_backend().op_lock_for(conn):
-            cur = conn.cursor()
-            try:
-                cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
-                row = cur.fetchone()
-            finally:
-                cur.close()
-        if get_active_backend().should_close(conn):
-            conn.close()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT it_history, memory_aid FROM ai_word_notes WHERE voc_id = ?", (voc_id,))
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        conn.close()
 
         old_history = json.loads(row[0]) if row and row[0] else []
         old_memory_aid = row[1] if row and len(row) > 1 else ""

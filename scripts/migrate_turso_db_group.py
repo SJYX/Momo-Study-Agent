@@ -104,11 +104,12 @@ def _sync_snapshot_worker(
 ) -> None:
     conn = None
     try:
-        import libsql  # type: ignore
+        import turso
 
-        conn = libsql.connect(local_db_path, sync_url=sync_url, auth_token=auth_token, timeout=timeout)
-        if hasattr(conn, "sync"):
-            conn.sync()
+        final_url = sync_url.replace("libsql://", "https://")
+        conn = turso.sync.connect(local_db_path, remote_url=final_url, auth_token=auth_token)
+        conn.pull()
+        conn.checkpoint()
         result_queue.put((True, ""))
     except Exception as exc:
         result_queue.put((False, str(exc)))
@@ -374,10 +375,10 @@ class TursoGroupMigrator:
     def download_database_snapshot(self, db_name: str, out_file: Path) -> Path:
         """Download remote database to a local sqlite file using Embedded Replica sync."""
         try:
-            import libsql  # type: ignore
+            import turso
         except Exception as exc:
             raise RuntimeError(
-                "local sqlite file missing and libsql is not available for auto-download"
+                "local sqlite file missing and pyturso (turso) is not available for auto-download"
             ) from exc
 
         db = self.get_database(db_name)
@@ -404,7 +405,7 @@ class TursoGroupMigrator:
                 try:
                     print(f"{db_name}: downloading snapshot started", file=sys.stderr, flush=True)
                     sync_started = time.monotonic()
-                    _trace(f"{db_name}: libsql.connect(...), then sync()")
+                    _trace(f"{db_name}: turso.sync.connect(...), then pull/checkpoint")
 
                     ctx = multiprocessing.get_context("spawn")
                     result_queue = ctx.Queue()
