@@ -7,7 +7,7 @@ because pyturso requires exclusive access and cannot coexist with an open connec
 Strategy:
   1. Detect format via sidecar file inspection
   2. If already turso_sync or no file → no-op
-  3. If libsql ER format → backup (rename) + delete → let pyturso bootstrap from remote
+  3. If libsql ER format (legacy) → backup (rename) + delete → let pyturso bootstrap from remote
   4. If unknown format → probe SQLite for app tables AND data readability:
      - Has readable app tables → preserve in place (valid local DB, pyturso can use it)
      - Has tables but all malformed → quarantine (failed bootstrap residue)
@@ -170,7 +170,7 @@ def pre_connect_migrate(db_path: str) -> dict:
     Actions:
         no_file   — file doesn't exist, nothing to do
         skipped   — already turso_sync format, no action needed
-        migrated  — was libsql ER format, backed up + deleted for pyturso bootstrap
+        migrated  — was libsql ER format (legacy), backed up + deleted for pyturso bootstrap
         preserved — was unknown format but contains valid app data, kept in place
     """
     fmt = _detect_format(db_path)
@@ -192,7 +192,7 @@ def pre_connect_migrate(db_path: str) -> dict:
         # Scenario 2: Corrupt or empty file with no sidecar.
         #   → No tables / not valid SQLite → quarantine + delete.
         #
-        # Scenario 3: Old libsql ER whose sidecar was deleted.
+        # Scenario 3: Old libsql ER (legacy) whose sidecar was deleted.
         #   → No app tables → quarantine (safer than instant delete).
         if _is_valid_sqlite_file(db_path) and _has_application_tables(db_path):
             # Valid local database with real data — keep it in place.

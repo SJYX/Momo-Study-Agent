@@ -3,14 +3,14 @@ database/migrations/runner.py: 迁移 runner。
 
 版本追踪策略（Phase 6.2 enhanced）：
 - **主存储**：``system_config`` 表中 ``key='schema_version'`` 的行。
-  此表通过 libsql sync 在所有客户端间同步，是跨设备的 SSoT。
+  此表通过 pyturso push/pull 在所有客户端间同步，是跨设备的 SSoT。
 - **兼容回退**：首次读取时若 system_config 无 schema_version 行，
   尝试读 ``PRAGMA user_version``（旧代码遗留值），写入 system_config 后废弃。
 - ``PRAGMA user_version`` 不再用于版本追踪（Turso 云端禁止此语句）。
 
 多客户端安全：
-- DDL/DML 在主连接上执行（云端 libsql 支持 ALTER TABLE / UPDATE）。
-- 版本号写入 system_config 表，通过 libsql sync 传播到所有客户端。
+- DDL/DML 在主连接上执行（pyturso 远端支持 ALTER TABLE / UPDATE）。
+- 版本号写入 system_config 表，通过 pyturso 同步传播到所有客户端。
 - 新设备启动时读到云端已有的 schema_version → 跳过已执行的迁移。
 - 所有迁移文件幂等，多客户端重复执行安全。
 """
@@ -47,7 +47,7 @@ def _read_schema_version(cur: Any) -> int:
 
     回退链：system_config → PRAGMA user_version（兼容旧库） → 0。
     """
-    # 优先从 system_config 读取（通过 libsql 同步）
+    # 优先从 system_config 读取（通过 pyturso 同步）
     try:
         cur.execute(
             f"SELECT value FROM system_config WHERE key = '{_VERSION_KEY}'"
@@ -90,7 +90,7 @@ def _is_pragma_rejected(error: Exception) -> bool:
 
 
 def _is_wal_conflict(error: Exception) -> bool:
-    """检测 libsql 嵌入式副本在 commit 时的云端同步冲突。
+    """检测 pyturso 同步连接在 commit 时的云端同步冲突。
 
     WalConflict 表示 DDL/DML 已在本地成功应用，但同步到云端时遇到冲突。
     此时不应 rollback（会丢失本地变更），应继续写版本号。
@@ -197,11 +197,11 @@ def apply_migrations(
     返回 (start_version, end_version)。
 
     Args:
-        conn: 主连接（云端 libsql 或本地 sqlite3）。DDL/DML 在此连接上执行。
+        conn: 主连接（pyturso 或本地 sqlite3）。DDL/DML 在此连接上执行。
         local_conn: 本地 sqlite3 连接（保留兼容，版本追踪已迁移到 system_config）。
 
     多客户端安全：
-    - 版本号存储在 system_config 表（libsql 同步），设备间共享状态。
+    - 版本号存储在 system_config 表（pyturso 同步），设备间共享状态。
     - DDL/DML 在 conn 上执行（Turso 支持 ALTER TABLE / UPDATE）。
     - 每个迁移独立事务，DDL/DML 和版本更新分离。
     - 所有迁移文件幂等，多客户端重复执行安全。
@@ -275,7 +275,7 @@ def apply_migrations(
                         pass
                     raise MigrationError(f"迁移 V{version:03d} ({module_name}) DDL/DML 失败: {e}") from e
 
-            # Phase 2: 版本号写入 system_config（通过 libsql 同步到所有客户端）
+            # Phase 2: 版本号写入 system_config（通过 pyturso 同步到所有客户端）
             _t_verw = time.time()
             try:
                 _write_schema_version(cur, conn, version)
