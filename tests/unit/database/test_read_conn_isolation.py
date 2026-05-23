@@ -168,4 +168,4 @@ class TestBackendAwareRouting:
         finally:
             conn.close()
 
-    # test_libsql_returns_singleton removed — libsql backend no longer exists
+    # test_returns_singleton removed — legacy backend no longer exists

@@ -410,10 +410,10 @@ class SyncRetryResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /api/ops/db/replica-health  — Embedded Replica 健康快照
+# /api/ops/db/replica-health  — DB replica 健康快照
 # ---------------------------------------------------------------------------
 class DbReplicaHealthResponse(BaseModel):
-    """Embedded Replica 健康快照 — 连接状态 + 同步性能 + 数据一致性。"""
+    """DB replica 健康快照 — 连接状态 + 同步性能 + 数据一致性。"""
     # 连接健康
     connection_alive: bool = False
     is_cloud: bool = False
