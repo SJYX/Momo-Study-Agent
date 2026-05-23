@@ -57,8 +57,8 @@ class TestSwitchActiveUser:
         monkeypatch.setattr(dp, "_fallback_user", "testuser")
         monkeypatch.setattr(dp, "reload_user_services", lambda: None)
         import database.connection as db_conn
-        monkeypatch.setattr(db_conn, "cleanup_concurrent_system", lambda: None)
-        monkeypatch.setattr(db_conn, "init_concurrent_system", lambda: None)
+        monkeypatch.setattr(db_conn, "cleanup_db_session_resources", lambda: None)
+        monkeypatch.setattr(db_conn, "init_db_session_resources", lambda: None)
         body = client.put("/api/users/active?username=alice").json()
         assert body["ok"] is True
 

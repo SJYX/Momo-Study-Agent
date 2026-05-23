@@ -22,7 +22,7 @@ from core.maimemo_api import MaiMemoAPI
 from core.study_workflow import StudyWorkflow
 from core.sync_priority import Priority
 from core.ui_manager import CLIUIManager
-from database.connection import cleanup_concurrent_system, init_concurrent_system
+from database.connection import cleanup_db_session_resources, init_db_session_resources
 from database.momo_words import get_unsynced_notes
 from database.schema import init_db
 from database.utils import clean_for_maimemo
@@ -51,7 +51,7 @@ class StudyFlowManager:
         # 初始化数据库表 → 然后启动并发写入/同步系统
         # 必须先 init_db 建表，再启动守护线程（与 Web 端 user_context.py 顺序一致）
         init_db()
-        init_concurrent_system()
+        init_db_session_resources()
 
         # Phase 2: register per-profile DB sync coordinator (event-driven debounce)
         from database.sync_coordinator import ProfileSyncCoordinator, _registry_lock, _coordinators
@@ -156,7 +156,7 @@ class StudyFlowManager:
             if hasattr(self.ai_client, "close"):
                 self.ai_client.close()
         finally:
-            cleanup_concurrent_system()
+            cleanup_db_session_resources()
 
 
 __all__ = ["StudyFlowManager"]

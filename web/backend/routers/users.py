@@ -99,7 +99,7 @@ async def switch_active_user(
     try:
         if _deps._context_manager:
             ctx = _deps._context_manager.get(username.lower())
-            # get() 已同步执行 DB 初始化（init_db + init_concurrent_system）。
+            # get() 已同步执行 DB 初始化（init_db + init_db_session_resources）。
             # ensure_profile_ready 是 no-op（warmup 已在 get 中启动）。
             _deps._context_manager.ensure_profile_ready(ctx)
     except Exception as e:

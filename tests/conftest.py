@@ -27,7 +27,7 @@ def _clear_all_resources():
             db_connection._hub_write_conn_singleton = None
 
     try:
-        db_engine.cleanup_concurrent_system()
+        db_engine.cleanup_db_session_resources()
     except Exception:
         pass
 
