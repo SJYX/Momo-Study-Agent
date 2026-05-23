@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 def row_value(row: Any, idx: int, col: str) -> Any:
-    """Extract a scalar from a DB row, supporting raw tuples and named-row objects (libsql/sqlite3)."""
+    """Extract a scalar from a DB row, supporting raw tuples and named-row objects (pyturso/sqlite3)."""
     if isinstance(row, (tuple, list)):
         return row[idx]
     try:
@@ -24,7 +24,7 @@ def row_value(row: Any, idx: int, col: str) -> Any:
 
 
 def row_to_dict(row: Any, fallback_columns: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
-    """Convert a DB row to a dict; supports libsql Row, sqlite3.Row, raw tuple, asdict()-able rows."""
+    """Convert a DB row to a dict; supports pyturso Row, sqlite3.Row, raw tuple, asdict()-able rows."""
     if not row:
         return None
     if hasattr(row, "keys"):

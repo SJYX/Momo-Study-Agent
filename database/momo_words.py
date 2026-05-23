@@ -6,7 +6,7 @@ database/momo_words.py: 兼容门面与少量杂项工具。
 - notes_repo.py        AI 笔记/批次/迭代历史 CRUD 与同步标记
 - progress_repo.py     processed_words / word_progress_history
 - community_lookup.py  跨本地历史 + 当前库 + 云端副本批量查找
-- sync_service.py      Embedded Replica 帧级同步管线
+- sync_service.py      pyturso push/pull 同步管线
 
 本文件保留：
 1) 跨域工具：system_config KV、Prompt 文件归档、本地库初始化、测试日志/测试库写入。
