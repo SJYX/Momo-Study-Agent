@@ -30,7 +30,11 @@ _db_sync_progress: Dict[str, Any] = {}  # {"started_at": float, "phase": str}
 _SLOW_BATCH_WRITE_MS = 100
 
 def set_db_syncing(phase: str = "") -> None:
-    """标记 DB 正在同步（嵌入式副本的 conn.sync() 进行中）。"""
+    """标记 DB 正在同步（pyturso push/pull 进行中）。
+
+    由 sync_coordinator.py 在闲时同步开始/结束时调用,
+    由 web/backend/app.py 的 /api/health endpoint 读取。
+    """
     global _db_syncing, _db_sync_progress
     _db_syncing = True
     _db_sync_progress = {"started_at": time.time(), "phase": phase}
@@ -63,16 +67,16 @@ def _debug_log(msg: str, level: str = "DEBUG") -> None:
         pass
 
 
-def init_concurrent_system() -> None:
-    """并发系统初始化。在 pyturso 本地同步直写模式下仅输出日志。"""
-    _debug_log("并发系统初始化完成（本地直写模式已就绪）", level="INFO")
+def init_db_session_resources() -> None:
+    """DB session 资源初始化。在 pyturso 本地同步直写模式下仅输出日志（无实际并发系统启动）。"""
+    _debug_log("DB session 资源就绪（本地同步直写模式）", level="INFO")
 
 
-def cleanup_concurrent_system() -> None:
-    """并发系统清理，释放底层单例写连接句柄。"""
+def cleanup_db_session_resources() -> None:
+    """DB session 资源清理：关闭主库与 Hub 的写连接 singleton 句柄。"""
     _close_main_write_conn_singleton()
     _close_hub_write_conn_singleton()
-    _debug_log("并发系统清理完成", level="INFO")
+    _debug_log("DB session 资源清理完成", level="INFO")
 
 
 def _release_db_file_handles_for_recovery(db_path: str) -> None:
@@ -104,6 +108,17 @@ def _mark_main_db_needs_sync(db_path: Optional[str] = None, conn: Any = None) ->
 
 
 def _execute_write_sql_sync(sql: str, params: tuple = (), db_path: Optional[str] = None, conn: Any = None) -> None:
+    """执行单条写 SQL (pyturso 同步直写)。
+
+    pyturso 下所有写入都走这条路径:直接 conn.execute() + conn.commit(),
+    没有队列、没有 batching、没有 retry。失败由调用方 (repo 层) 兜底。
+
+    Args:
+        sql:    SQL 字符串
+        params: 参数 tuple
+        db_path: 目标 DB 路径,None 则用 _config.DB_PATH
+        conn:   可选已有连接;None 则现开 _get_local_conn 并在结束时 close
+    """
     owned = conn is None
     target_conn = conn or _get_local_conn(db_path or _config.DB_PATH)
     try:
@@ -128,6 +143,17 @@ def _execute_batch_write_sql_sync(
     db_path: Optional[str] = None,
     conn: Any = None,
 ) -> None:
+    """执行批量写 SQL (pyturso 同步直写,批量版本)。
+
+    单次事务跑完 args_list 里全部 row,失败整批回滚。
+    超过 _SLOW_BATCH_WRITE_MS (默认 100ms) 会打 WARNING。
+
+    Args:
+        sql:       SQL 字符串(含 ? 占位符)
+        args_list: 参数 tuple 列表;空列表则直接返回
+        db_path:   目标 DB 路径,None 则用 _config.DB_PATH
+        conn:      可选已有连接;None 则现开 _get_local_conn 并在结束时 close
+    """
     if not args_list:
         return
 

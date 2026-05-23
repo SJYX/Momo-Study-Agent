@@ -600,6 +600,15 @@ def _get_hub_conn(max_retries: int = 3, retry_delay: float = 1.0) -> Any:
 
 
 def _get_dedicated_write_conn(db_path: Optional[str] = None) -> Any:
+    """打开一个独立的写连接。
+
+    pyturso 模式 (当前唯一支持): 永远走 _get_local_conn 现开新连接,
+    不复用 write singleton。这是因为 pyturso 用 MVCC,多个并发连接到
+    同一 DB 文件是安全的;libsql 时代为了避开 WAL 互斥才必须用 singleton。
+
+    Args:
+        db_path: 目标 DB 路径,None 则用 _config.DB_PATH
+    """
     path = db_path or _config.DB_PATH
     if _get_backend().name == "pyturso":
         return _get_local_conn(path)
@@ -707,10 +716,10 @@ def set_runtime_cloud_credentials(_url: Optional[str], _token: Optional[str], _h
 
 # Re-exported for external consumers:
 #   - database/_repo_helpers.py accesses 2 names via connection.X
-#   - core/study_flow.py imports init_concurrent_system / cleanup_concurrent_system
+#   - core/study_flow.py imports init_db_session_resources / cleanup_db_session_resources
 from database.execution_engine import (
     _execute_write_sql_sync,
     _execute_batch_write_sql_sync,
-    init_concurrent_system,
-    cleanup_concurrent_system,
+    init_db_session_resources,
+    cleanup_db_session_resources,
 )
