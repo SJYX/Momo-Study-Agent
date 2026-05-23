@@ -2,8 +2,6 @@ import pytest
 import json
 import os
 from core.mimo_client import MimoClient
-from database.connection import _get_cloud_conn
-import sqlite3
 
 class FakeResponse:
     def __init__(self, json_data):
@@ -65,28 +63,6 @@ def test_mimo_client_robustness_object_format(monkeypatch):
     assert len(results) == 2
     assert results[0]["spelling"] == "cherry"
     assert results[1]["spelling"] == "date"
-
-def test_db_manager_get_cloud_conn_self_healing_regression(tmp_path, monkeypatch):
-    """验证 _get_cloud_conn 的自愈功能：首次连接失败后重连成功。"""
-    import database.connection as db_connection
-    db_path = tmp_path / "replica_test.db"
-    db_path.write_text("corrupt-content", encoding="utf-8")
-
-    call_state = {"count": 0}
-
-    class FakePytursoBackend:
-        name = "pyturso"
-        def connect(self, db_path, url, token, do_sync=False):
-            call_state["count"] += 1
-            if call_state["count"] == 1:
-                raise sqlite3.DatabaseError("database disk image is malformed")
-            return sqlite3.connect(":memory:")
-
-    monkeypatch.setattr(db_connection, "_get_backend", lambda: FakePytursoBackend())
-
-    conn = db_connection._get_cloud_conn("https://test", "token", db_path=str(db_path))
-    assert conn is not None
-    assert call_state["count"] == 2 # 第一次失败后应重连
 
 if __name__ == "__main__":
     pytest.main([__file__])

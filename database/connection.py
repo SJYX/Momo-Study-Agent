@@ -557,31 +557,6 @@ def _get_conn(
     return _get_local_conn(db_path)
 
 
-def _get_cloud_conn(url: str, token: str, db_path: str = None, max_retries: int = 3):
-    """Compatibility helper: establish Embedded Replica connection for a specific cloud target."""
-    if not url or not token:
-        raise ValueError("Turso URL and token are required")
-
-    local_path = db_path or _config.DB_PATH
-
-    if _is_main_db_path(local_path):
-        return _get_main_write_conn_singleton(do_sync=False)
-
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            return _get_backend().connect(local_path, url, token, do_sync=True)
-        except Exception as e:
-            last_error = e
-            if _is_replica_metadata_missing_error(e) or _is_sqlite_malformed_error(e):
-                _backup_broken_database_file(local_path, f"{_get_backend().name} 副本状态损坏，已备份后重试")
-            if attempt < max_retries - 1:
-                time.sleep(0.5)
-                continue
-            break
-    raise last_error or RuntimeError(f"无法建立云端连接: {url}")
-
-
 def is_hub_configured() -> bool:
     return bool(TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN)
 
