@@ -19,7 +19,7 @@ from core.active_profile_registry import is_active
 from core.metrics import get_metrics_collector
 from web.backend.schemas import (
     ApiResponse,
-    DbReplicaHealthResponse,
+    DbSyncHealthResponse,
     MetricPercentiles,
     OpsMetricsResetResponse,
     OpsMetricsResponse,
@@ -80,11 +80,11 @@ async def reset_ops_metrics(
     return ok_response({"profile": prof, "cleared": True}, user_id=prof)
 
 
-@router.get("/db/replica-health", response_model=ApiResponse[DbReplicaHealthResponse])
-async def db_replica_health(
+@router.get("/db/sync-health", response_model=ApiResponse[DbSyncHealthResponse])
+async def db_sync_health(
     profile: Optional[str] = Query(default=None),
 ):
-    """DB replica 健康快照：连接 + 同步性能 + 数据一致性。"""
+    """DB 同步健康快照 (pyturso push/pull)：连接 + 同步性能 + 数据一致性。"""
     import os
 
     from database.execution_engine import get_db_sync_status, _write_queue_stats
@@ -130,7 +130,7 @@ async def db_replica_health(
     except Exception:
         pass
 
-    return ok_response(DbReplicaHealthResponse(
+    return ok_response(DbSyncHealthResponse(
         connection_alive=conn_alive,
         is_cloud=is_cloud,
         db_path=db_path,

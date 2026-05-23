@@ -410,10 +410,10 @@ class SyncRetryResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /api/ops/db/replica-health  — DB replica 健康快照
+# /api/ops/db/sync-health  — DB 同步健康快照 (pyturso push/pull)
 # ---------------------------------------------------------------------------
-class DbReplicaHealthResponse(BaseModel):
-    """DB replica 健康快照 — 连接状态 + 同步性能 + 数据一致性。"""
+class DbSyncHealthResponse(BaseModel):
+    """DB 同步健康快照 — 连接状态 + 同步性能 + 数据一致性。"""
     # 连接健康
     connection_alive: bool = False
     is_cloud: bool = False
