@@ -63,16 +63,6 @@ def _debug_log(msg: str, level: str = "DEBUG") -> None:
         pass
 
 
-def _queue_write_operation(sql: str, args: Tuple = (), op_type: str = "insert_or_replace", db_path: Optional[str] = None) -> bool:
-    """入队单条写操作。已弃用，因为在 pyturso 下所有写入同步直写。"""
-    return False
-
-
-def _queue_batch_write_operation(sql: str, args_list: List[Tuple], db_path: Optional[str] = None) -> bool:
-    """入队批量写操作。已弃用，因为在 pyturso 下所有写入同步直写。"""
-    return False
-
-
 def init_concurrent_system() -> None:
     """并发系统初始化。在 pyturso 本地同步直写模式下仅输出日志。"""
     _debug_log("并发系统初始化完成（本地直写模式已就绪）", level="INFO")

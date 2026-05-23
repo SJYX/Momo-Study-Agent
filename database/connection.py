@@ -706,11 +706,9 @@ def set_runtime_cloud_credentials(_url: Optional[str], _token: Optional[str], _h
     """No-op kept for backward compat — cloud credentials are now read via os.getenv() in _resolve_conn_context."""
 
 # Re-exported for external consumers:
-#   - database/_repo_helpers.py accesses 4 names via connection.X
+#   - database/_repo_helpers.py accesses 2 names via connection.X
 #   - core/study_flow.py imports init_concurrent_system / cleanup_concurrent_system
 from database.execution_engine import (
-    _queue_write_operation,
-    _queue_batch_write_operation,
     _execute_write_sql_sync,
     _execute_batch_write_sql_sync,
     init_concurrent_system,
