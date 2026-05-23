@@ -60,7 +60,7 @@ export const queryKeys = {
     ['ops_monitor', profile, window] as const,
   statsSummary: (profile: string = activeProfile()) =>
     ['stats_summary', profile] as const,
-  dbReplicaHealth: (profile: string = activeProfile()) =>
-    ['db_replica_health', profile] as const,
+  dbSyncHealth: (profile: string = activeProfile()) =>
+    ['db_sync_health', profile] as const,
   session: () => ['session'] as const,
 } as const

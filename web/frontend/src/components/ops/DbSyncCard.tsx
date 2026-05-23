@@ -1,5 +1,5 @@
 /**
- * components/ops/DbReplicaCard.tsx — Embedded Replica 健康卡片。
+ * components/ops/DbSyncCard.tsx — DB 同步健康卡片 (pyturso push/pull)。
  *
  * 展示：连接状态、同步性能 p50/p95、写队列、schema 版本、DB 大小。
  */
@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { apiClient } from '../../api/client'
 import { queryKeys } from '../../queries/queryClient'
-import type { DbReplicaHealthResponse } from '../../api/types'
+import type { DbSyncHealthResponse } from '../../api/types'
 
 function StatRow({ label, value, color = 'text-text-primary' }: {
   label: string; value: string | number; color?: string
@@ -30,12 +30,12 @@ function formatMs(ms: number | null): string {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
-export default function DbReplicaCard({ profile }: { profile: string }) {
+export default function DbSyncCard({ profile }: { profile: string }) {
   const { data, error, isFetching } = useQuery({
-    queryKey: queryKeys.dbReplicaHealth(profile),
+    queryKey: queryKeys.dbSyncHealth(profile),
     queryFn: async () => {
-      const res = await apiClient<DbReplicaHealthResponse>(
-        `/api/ops/db/replica-health?profile=${encodeURIComponent(profile)}`,
+      const res = await apiClient<DbSyncHealthResponse>(
+        `/api/ops/db/sync-health?profile=${encodeURIComponent(profile)}`,
       )
       return res.data
     },
@@ -49,7 +49,7 @@ export default function DbReplicaCard({ profile }: { profile: string }) {
       <div className="bg-surface-card rounded-card border border-border-default shadow-card p-4">
         <div className="flex items-center gap-2 mb-3">
           <Database size={16} />
-          <h3 className="font-medium text-sm text-text-primary">DB 副本健康</h3>
+          <h3 className="font-medium text-sm text-text-primary">DB 同步健康</h3>
         </div>
         <div className="text-error text-sm">加载失败: {String(error)}</div>
       </div>
@@ -61,7 +61,7 @@ export default function DbReplicaCard({ profile }: { profile: string }) {
       <div className="bg-surface-card rounded-card border border-border-default shadow-card p-4">
         <div className="flex items-center gap-2 mb-3">
           <Database size={16} />
-          <h3 className="font-medium text-sm text-text-primary">DB 副本健康</h3>
+          <h3 className="font-medium text-sm text-text-primary">DB 同步健康</h3>
         </div>
         <div className="flex items-center justify-center py-6">
           <Loader2 size={16} className="animate-spin text-text-muted" />
@@ -77,7 +77,7 @@ export default function DbReplicaCard({ profile }: { profile: string }) {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Database size={16} className="text-text-secondary" />
-          <h3 className="text-base font-medium text-text-primary">DB 副本健康</h3>
+          <h3 className="text-base font-medium text-text-primary">DB 同步健康</h3>
         </div>
         <div className="flex items-center gap-1.5">
           {isFetching && <Loader2 size={12} className="animate-spin text-text-muted" />}

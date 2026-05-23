@@ -24,7 +24,7 @@ import { isEnabled } from '../utils/featureFlags'
 import { opsDataToCsv } from '../utils/opsCsv'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
-import DbReplicaCard from '../components/ops/DbReplicaCard'
+import DbSyncCard from '../components/ops/DbSyncCard'
 import type { OpsStatsResponse, TaskListItem, FailureHotspot, PreflightCheck } from '../api/types'
 import OpsMonitorV2 from './OpsMonitorV2'
 
@@ -323,8 +323,8 @@ export default function OpsMonitor() {
           </Card>
         )}
 
-        {/* 卡片5：DB 副本健康 */}
-        <DbReplicaCard profile={activeProfile ?? ''} />
+        {/* 卡片5：DB 同步健康 */}
+        <DbSyncCard profile={activeProfile ?? ''} />
       </div>
     </div>
   )

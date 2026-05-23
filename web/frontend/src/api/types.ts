@@ -294,7 +294,7 @@ export interface SyncRetryResponse {
   message?: string | null
 }
 
-export interface DbReplicaHealthResponse {
+export interface DbSyncHealthResponse {
   connection_alive: boolean
   is_cloud: boolean
   db_path: string

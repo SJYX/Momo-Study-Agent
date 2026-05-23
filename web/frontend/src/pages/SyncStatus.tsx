@@ -10,7 +10,7 @@ import { useOnActiveUserChanged } from '../hooks/useOnActiveUserChanged'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
 import DegradedBanner from '../components/ui/DegradedBanner'
-import type { SyncStatusResponse, DbReplicaHealthResponse } from '../api/types'
+import type { SyncStatusResponse, DbSyncHealthResponse } from '../api/types'
 import { RefreshCcw, Loader2, AlertTriangle, RotateCcw, AlertOctagon, Wifi, WifiOff, Database, Clock } from 'lucide-react'
 
 export default function SyncStatus() {
@@ -29,10 +29,10 @@ export default function SyncStatus() {
     queryClient.invalidateQueries({ queryKey: ['sync_status'] })
   })
 
-  const { data: replicaHealth } = useQuery({
-    queryKey: queryKeys.dbReplicaHealth(),
+  const { data: syncHealth } = useQuery({
+    queryKey: queryKeys.dbSyncHealth(),
     queryFn: async () => {
-      const r = await apiClient<DbReplicaHealthResponse>('/api/ops/db/replica-health')
+      const r = await apiClient<DbSyncHealthResponse>('/api/ops/db/sync-health')
       return r.data
     },
     refetchInterval: 15000,
@@ -127,38 +127,38 @@ export default function SyncStatus() {
         reason={data?.degraded_reason}
       />
 
-      {/* DB 副本健康状态条 */}
-      {replicaHealth && (
+      {/* DB 同步健康状态条 */}
+      {syncHealth && (
         <div className={`flex flex-wrap items-center gap-4 px-4 py-2.5 rounded-card mb-4 text-sm border ${
-          replicaHealth.connection_alive ? 'bg-success-soft border-success/20' : 'bg-error-soft border-error/20'
+          syncHealth.connection_alive ? 'bg-success-soft border-success/20' : 'bg-error-soft border-error/20'
         }`}>
           <div className="flex items-center gap-1.5">
-            {replicaHealth.connection_alive ? (
+            {syncHealth.connection_alive ? (
               <Wifi size={14} className="text-success" />
             ) : (
               <WifiOff size={14} className="text-error" />
             )}
-            <span className={replicaHealth.connection_alive ? 'text-success font-medium' : 'text-error font-medium'}>
-              {replicaHealth.connection_alive ? 'DB 已连接' : 'DB 断开'}
+            <span className={syncHealth.connection_alive ? 'text-success font-medium' : 'text-error font-medium'}>
+              {syncHealth.connection_alive ? 'DB 已连接' : 'DB 断开'}
             </span>
           </div>
           <span className="text-border-default">|</span>
           <div className="flex items-center gap-1.5">
             <Database size={14} className="text-text-muted" />
             <span className="text-text-secondary">
-              {replicaHealth.is_cloud ? '云端' : '本地'} · Schema v{replicaHealth.schema_version} · {replicaHealth.db_size_mb}MB
+              {syncHealth.is_cloud ? '云端' : '本地'} · Schema v{syncHealth.schema_version} · {syncHealth.db_size_mb}MB
             </span>
           </div>
           <span className="text-border-default">|</span>
           <div className="flex items-center gap-1.5">
             <Clock size={14} className="text-text-muted" />
             <span className="text-text-secondary">
-              Sync P50: {replicaHealth.sync_p50_ms !== null ? `${replicaHealth.sync_p50_ms.toFixed(1)}ms` : '-'} ·
-              P95: {replicaHealth.sync_p95_ms !== null ? `${replicaHealth.sync_p95_ms.toFixed(1)}ms` : '-'} ·
-              {replicaHealth.sync_count} 次
+              Sync P50: {syncHealth.sync_p50_ms !== null ? `${syncHealth.sync_p50_ms.toFixed(1)}ms` : '-'} ·
+              P95: {syncHealth.sync_p95_ms !== null ? `${syncHealth.sync_p95_ms.toFixed(1)}ms` : '-'} ·
+              {syncHealth.sync_count} 次
             </span>
           </div>
-          {replicaHealth.sync_in_progress && (
+          {syncHealth.sync_in_progress && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-pill text-xs font-medium bg-warning-soft text-warning ml-auto">
               <Loader2 size={12} className="animate-spin" />
               同步中
