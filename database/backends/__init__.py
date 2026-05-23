@@ -7,8 +7,7 @@ try:
 except ImportError:
     HAS_PYTURSO = False
 
-# libsql backend removed — kept as False for compatibility during cleanup (Phase 2)
-HAS_LIBSQL = False
+# libsql backend permanently removed in commit 8d74bb6; pyturso is the only supported backend
 
 
 _backend_singleton: TursoBackend | None = None
