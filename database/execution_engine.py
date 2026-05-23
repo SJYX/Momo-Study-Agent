@@ -22,7 +22,7 @@ from database.connection import (
 from core.logger import get_logger
 from database.backends import get_active_backend
 
-# DB 级别的 Embedded Replica 同步状态（供前端展示）
+# DB 级别的同步状态（pyturso push/pull 进行中标志,供前端展示）
 _db_syncing = False
 _db_sync_progress: Dict[str, Any] = {}  # {"started_at": float, "phase": str}
 

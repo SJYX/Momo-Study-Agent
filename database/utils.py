@@ -74,7 +74,7 @@ def _debug_log(msg: str, start_time: Optional[float] = None, level: str = "DEBUG
 
 
 def _normalize_turso_url(hostname: str) -> str:
-    """Normalize Turso endpoint to sync_url format expected by libsql."""
+    """Normalize Turso endpoint to libsql:// scheme expected by pyturso."""
     if not hostname:
         return ""
     raw = hostname.strip()
@@ -475,14 +475,14 @@ def _is_sqlite_data_corruption_error(error: Exception) -> bool:
 
 
 def _cleanup_stale_sidecars(db_abs_path: str) -> None:
-    """Remove libsql sidecar files (.db-info, .db-wal, .db-shm) for a missing/broken db.
+    """Remove pyturso sidecar files (.db-info, .db-wal, .db-shm) for a missing/broken db.
 
-    After the .db file is moved away, stale sidecar files cause libsql to
-    believe the local replica is already at the correct version, skipping the
-    initial cloud pull and leaving an empty database.  Removing them lets
-    libsql re-initialise metadata on next connect.
+    After the .db file is moved away, stale sidecar files cause pyturso to
+    believe the local DB is already at the correct version, skipping the
+    initial cloud bootstrap and leaving an empty database.  Removing them lets
+    pyturso re-initialise metadata on next connect.
     """
-    # include pyturso/libsql sidecars and both dashed and dotted legacy forms
+    # include pyturso sidecars and both dashed and dotted legacy forms (libsql historic)
     for suffix in (".db-info", ".db-wal", ".db-shm", ".db-changes"):
         sidecar = db_abs_path + suffix[len(".db"):]  # e.g. "…/foo.db-info"
         # also consider legacy dotted form where '-' is replaced by '.' (foo.db.info)
@@ -500,8 +500,8 @@ def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional
     """Backup broken local db file and clean stale sidecar metadata.
 
     Sidecar files (.db-info, .db-wal, .db-shm) must be removed together with
-    the .db file; otherwise libsql reads the old version metadata, skips the
-    cloud pull, and leaves an empty local database.
+    the .db file; otherwise pyturso reads the old version metadata, skips the
+    cloud bootstrap, and leaves an empty local database.
     """
     try:
         abs_path = os.path.abspath(db_path)
@@ -558,7 +558,7 @@ def _backup_broken_database_file(db_path: str, warning_message: str) -> Optional
                 _debug_log(f"备份损坏数据库失败: {copy_error}", level="WARNING")
                 return None
 
-        # .db 已移走，必须同时清理 sidecar——否则 pyturso/libsql 读到旧元数据
+        # .db 已移走，必须同时清理 sidecar——否则 pyturso 读到旧元数据
         # 会跳过云端 pull，导致重建的空 .db 被当作"已同步"。
         _cleanup_stale_sidecars(abs_path)
 
