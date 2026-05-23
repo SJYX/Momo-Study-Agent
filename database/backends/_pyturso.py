@@ -7,6 +7,7 @@ This module must NOT import from database.connection (circular-import risk).
 """
 
 import os
+import threading
 import time
 from typing import Any
 
@@ -36,24 +37,34 @@ class PytursoBackend:
         token: str,
         *,
         do_sync: bool = False,
+        do_pull: bool = True,
     ) -> Any:
         """Create a pyturso Turso Sync connection.
 
-        Lifecycle per official Turso Sync docs:
-          1. V007 format migration (before pyturso opens the file)
-          2. turso.sync.connect() — auto-bootstraps from remote when local db is empty
-             (bootstrap_if_empty=True default; NO explicit pull needed after connect)
-          3. For existing databases: pull() to fetch latest remote changes
-          4. If do_sync: push -> pull -> checkpoint (full sync cycle)
+        与官方示例 (docs/api/turso_api.md / pyturso README) 一致的最小流程:
+          1. V007 format migration (清理掉非 turso 格式的旧文件)
+          2. turso.sync.connect() — pyturso 自动从远端 bootstrap, 并在 connect 内部
+             建出 -info 边车 + sync 元数据。这一步对 10MB+ 的库可能耗时 60-150s
+             (pyturso 内部会等服务端 long-poll 完成), 这是正常的, 不是卡死。
+          3. (可选) db.pull() — 拉远端最新增量。对刚 bootstrap 的库通常是 no-op,
+             因为 connect 时已经同步过了。
+
+        关于 do_pull:
+          - True (默认): 每次 connect 都额外 pull 一次。建议给写连接/单例用。
+          - False: 跳过额外 pull。建议给频繁打开的读连接用 (节省一次 RPC)。
+            ⚠️ 不会引起边车缺失——pyturso connect 内部自己负责建边车。
+
+        关于 checkpoint(): 这个流程里不调用。checkpoint 是用来压缩本地 WAL 控制
+        磁盘占用的, 与 sync 状态/可读性无关。WAL 压缩留给 do_sync_on() 或更上层
+        显式调用决定。
         """
         if not HAS_PYTURSO:
             raise RuntimeError("pyturso is not available")
 
         import turso
 
-        final_url = url.replace("libsql://", "https://")
         _debug_log(
-            f"[pyturso] db_path={db_path}, url={final_url[:50]}...",
+            f"[pyturso] db_path={db_path}, url={url[:50]}...",
             module="database.backends._pyturso",
         )
 
@@ -81,8 +92,6 @@ class PytursoBackend:
                 module="database.backends._pyturso",
             )
 
-        # Track whether db file exists BEFORE connect — determines if bootstrap runs.
-        # Use a stricter check: file must exist, be non-empty, and look like a SQLite file.
         def _is_valid_sqlite(fp: str) -> bool:
             try:
                 if not os.path.exists(fp) or os.path.getsize(fp) == 0:
@@ -95,15 +104,38 @@ class PytursoBackend:
 
         db_existed_before = _is_valid_sqlite(db_path)
 
-        # ── Step 2: Create pyturso sync connection ──
-        # Official docs: "On the first run, the local database is automatically
-        # bootstrapped from the remote." No explicit pull needed after connect.
+        # ── Step 2: turso.sync.connect() — 全部由 pyturso 处理 ──
+        # 对于首次 bootstrap 大库 (>10MB), pyturso 在写完数据页后还会等服务端
+        # long-poll, 通常 60-150s 才返回, 这是 pyturso 当前实现的正常行为
+        # (见 issue tracker 和 docs/sync/usage)。开后台线程汇报进度避免用户误以为卡死。
         _t0 = time.time()
-        db = turso.sync.connect(
-            db_path,
-            remote_url=final_url,
-            auth_token=token,
-        )
+        _connect_done = threading.Event()
+
+        def _bootstrap_progress():
+            while not _connect_done.wait(timeout=5.0):
+                try:
+                    size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+                except OSError:
+                    size = 0
+                elapsed = time.time() - _t0
+                _debug_log(
+                    f"[{db_label}] bootstrap 进行中... 已 {elapsed:.0f}s,"
+                    f" .db 文件 {size / 1024 / 1024:.2f} MB"
+                    + ("" if db_existed_before else " (首次 bootstrap 可能耗时 60-150s)"),
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
+
+        _progress_thread = threading.Thread(target=_bootstrap_progress, daemon=True)
+        _progress_thread.start()
+        try:
+            db = turso.sync.connect(
+                db_path,
+                remote_url=url,
+                auth_token=token,
+            )
+        finally:
+            _connect_done.set()
         _elapsed = time.time() - _t0
         _debug_log(
             f"[{db_label}] turso.sync.connect 完成 (耗时 {_elapsed:.1f}s)",
@@ -121,51 +153,12 @@ class PytursoBackend:
                 module="database.backends._pyturso",
             )
 
-        # ── Step 2.5: Checkpoint to flush bootstrap WAL data to main db file ──
-        # pyturso's connect() may leave bootstrap data in WAL without checkpointing.
-        # Without this, the .db file has invalid btree pages (corruption).
-        # Also creates the .db-info sidecar that pyturso uses for sync state.
-        try:
-            db.checkpoint()
-            _debug_log(
-                f"[{db_label}] connect 后 checkpoint 完成",
-                level="INFO",
-                module="database.backends._pyturso",
-            )
-        except Exception as e:
-            _debug_log(
-                f"[{db_label}] connect 后 checkpoint 失败（非致命）: {e}",
-                level="WARNING",
-                module="database.backends._pyturso",
-            )
-
-        # ── Step 3: Pull for existing databases (bootstrap already handled new ones) ──
-        if db_existed_before and not do_sync:
+        # ── Step 3: 可选的 pull (拉增量) ──
+        # 对刚 bootstrap 的库通常是 no-op (connect 已经同步过); 对已有 .db 的库
+        # 用来拉远端增量。失败一律非致命——本地数据可读, 等下次 sync 再补。
+        if do_pull and not do_sync:
             try:
-                _debug_log(
-                    f"[{db_label}] 数据库已存在，pull 远端最新变更…",
-                    level="INFO",
-                    module="database.backends._pyturso",
-                )
                 changed = db.pull()
-
-                # 若 pull 真正应用了远端变更，立即 checkpoint 将 WAL 数据落盘到主文件，
-                # 避免返回后未落盘导致外部工具打开 .db 时出现 corrupted/empty 情况。
-                try:
-                    if changed:
-                        db.checkpoint()
-                        _debug_log(
-                            f"[{db_label}] pull 之后执行 checkpoint 落盘成功",
-                            level="INFO",
-                            module="database.backends._pyturso",
-                        )
-                except Exception as e:
-                    _debug_log(
-                        f"[{db_label}] pull 后 checkpoint 失败（非致命）: {e}",
-                        level="WARNING",
-                        module="database.backends._pyturso",
-                    )
-
                 _debug_log(
                     f"[{db_label}] pull 完成 (changed={changed})",
                     level="INFO",
@@ -173,7 +166,7 @@ class PytursoBackend:
                 )
             except Exception as e:
                 _debug_log(
-                    f"[{db_label}] pull 失败（非致命）: {e}",
+                    f"[{db_label}] pull 失败（非致命，本地仍可用）: {e}",
                     level="WARNING",
                     module="database.backends._pyturso",
                 )
@@ -183,9 +176,8 @@ class PytursoBackend:
             try:
                 db.push()
                 db.pull()
-                db.checkpoint()
                 _debug_log(
-                    f"[{db_label}] 同步完成 (push→pull→checkpoint)",
+                    f"[{db_label}] 同步完成 (push→pull)",
                     level="INFO",
                     module="database.backends._pyturso",
                 )

@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import Sidebar from './components/layout/Sidebar'
 import TaskDrawer from './components/tasks/TaskDrawer'
+import SyncGate from './components/SyncGate'
 import { useProfileChangeEffect } from './hooks/useProfileChangeEffect'
 
 function App() {
@@ -13,6 +14,7 @@ function App() {
         <Outlet />
       </main>
       <TaskDrawer />
+      <SyncGate />
     </div>
   )
 }

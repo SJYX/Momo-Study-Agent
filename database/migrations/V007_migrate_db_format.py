@@ -8,16 +8,17 @@ Strategy:
   1. Detect format via sidecar file inspection
   2. If already turso_sync or no file → no-op
   3. If libsql ER format → backup (rename) + delete → let pyturso bootstrap from remote
-  4. If unknown format → probe SQLite for app tables:
-     - Has app tables → preserve in place (valid local DB, pyturso can use it)
+  4. If unknown format → probe SQLite for app tables AND data readability:
+     - Has readable app tables → preserve in place (valid local DB, pyturso can use it)
+     - Has tables but all malformed → quarantine (failed bootstrap residue)
      - No tables / corrupt → backup (rename) + delete
 
 Called from `PytursoBackend.connect()` before `turso.sync.connect()`.
 
 Safety guarantees:
-  - NEVER delete a file that contains application data (ai_word_notes table)
+  - NEVER delete a file that contains readable application data
   - Use rename instead of copy+delete for atomic backup
-  - "unknown" format with real data is preserved, not destroyed
+  - Deep-probe: checks COUNT(*) on each table, not just sqlite_master
 """
 from __future__ import annotations
 import os
@@ -55,33 +56,43 @@ def _detect_format(db_path: str) -> str:
 
 
 def _has_application_tables(db_path: str) -> bool:
-    """Check if a SQLite file contains our application tables.
+    """Check if a SQLite file contains our application tables AND ALL are readable.
 
-    Uses a lightweight query against sqlite_master — safe even if the file
-    is corrupted (sqlite3.connect will raise, caught by caller).
+    Two-phase probe:
+      1. Check sqlite_master for application tables (lightweight)
+      2. Verify ALL tables are readable via COUNT(*) (deep probe)
 
-    Returns True if at least one application table exists.
+    Returns True only if tables exist AND every single one is readable.
+    If ANY table is malformed (btreeInitPage errors), returns False —
+    the file is a corrupted bootstrap artifact and should be quarantined.
     """
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", timeout=2.0, uri=True)
         try:
             cur = conn.cursor()
-            # Check for our primary application table
-            cur.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type='table' AND name='ai_word_notes' LIMIT 1"
-            )
-            has_main_table = cur.fetchone() is not None
 
-            if not has_main_table:
-                # Fallback: check for any user-created tables (not sqlite_ internal)
-                cur.execute(
-                    "SELECT COUNT(*) FROM sqlite_master "
-                    "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                )
-                row = cur.fetchone()
-                table_count = int(row[0]) if row else 0
-                return table_count > 0
+            # Phase 1: 检查 sqlite_master 中是否有应用表
+            cur.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY name"
+            )
+            app_tables = [r[0] for r in cur.fetchall()]
+
+            if not app_tables:
+                return False
+
+            # Phase 2: 深度探测——ALL 表必须可读
+            # 任何一张表 malformed → 整个文件是损坏的 bootstrap 产物
+            for table_name in app_tables:
+                try:
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM [{table_name}]"  # noqa: S608
+                    )
+                    cur.fetchone()
+                except Exception:
+                    # 任意核心表不可读 → 判定为损坏
+                    return False
 
             return True
         finally:

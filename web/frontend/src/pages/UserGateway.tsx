@@ -10,6 +10,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProfileStore } from '../stores/profile'
+import { useSyncGateStore } from '../stores/syncGate'
 import { apiClient, apiPost, apiPut } from '../api/client'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
@@ -96,6 +97,9 @@ export default function UserGateway() {
 
   const finishAndEnter = (name: string) => {
     setActiveProfile(name)
+    // 立即开启 SyncGate 遮罩, 它会自己轮询 /api/health/ready 直到 DB 就绪。
+    // 不等业务 API 失败再触发, 这样切用户的瞬间就有反馈。
+    useSyncGateStore.getState().setSyncing(true, name)
     // Fire-and-forget: warmup is async, navigate immediately
     apiPut(`/api/users/active?username=${encodeURIComponent(name)}`).catch(() => {})
     navigate('/', { replace: true })
@@ -103,6 +107,8 @@ export default function UserGateway() {
 
   const handleSelectExisting = (username: string) => {
     setActiveProfile(username)
+    // 同上: 立即遮罩, 不依赖业务 API 失败触发
+    useSyncGateStore.getState().setSyncing(true, username)
     // Fire-and-forget: warmup is async, navigate immediately
     apiPut(`/api/users/active?username=${encodeURIComponent(username)}`).catch(() => {})
     navigate('/', { replace: true })

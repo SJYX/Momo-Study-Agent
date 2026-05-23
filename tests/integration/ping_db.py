@@ -15,7 +15,6 @@ def test_connection(name, url, token):
     if not url or not token:
         print(f"[FAIL] Missing credentials for {name}")
         return False
-    url = url.replace("libsql://", "https://")
     print(f"[PING] Testing connection to {name} via {url}...")
     
     db_path = f"test_ping_{name.replace(' ', '_')}.db"

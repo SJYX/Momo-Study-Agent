@@ -43,7 +43,10 @@ class UserContextManager:
     def __init__(self):
         self._contexts: Dict[str, UserContext] = {}
         self._lock = threading.Lock()
-        # warmup 三态：not_started → in_progress → done
+        # warmup 状态机:
+        #   not_started → db_init_in_progress → db_init_done → done
+        # db_init_in_progress 时, 该 profile 的 DB 还在建立 (pyturso bootstrap 可能要 80-141s)。
+        # API 路由层应该在 db_init_in_progress 时返回 503 让前端等待。
         self._warmup_state: Dict[str, str] = {}
         self._first_warmup_done: Dict[str, bool] = {}
         self._init_locks: Dict[str, threading.Lock] = {}  # Profile 级别的初始化锁
@@ -191,50 +194,86 @@ class UserContextManager:
             sync_coordinator=coordinator,
         )
 
-        # 同步执行 DB 初始化（init_db + init_concurrent_system），
-        # 确保 context 返回时数据库已就绪，避免并发请求写入未初始化的 DB。
-        # 笔记扫描入队（异步段）放入后台线程。
+        # ⚠️ DB init (init_db + init_concurrent_system) 在后台线程跑——pyturso 首次
+        # bootstrap 大库可能耗时 80-141s, 不能阻塞 _create_context 的调用方 (PUT
+        # /api/users/active 等路由)。这之后调用方可以拿到 ctx, 但 DB 还没建好,
+        # 由 is_db_ready() / /api/health/ready 告诉前端何时可以查询。
+        # 笔记扫描 (_warmup_async) 紧跟在 DB init 之后,也在同一个后台线程里跑。
         self._warmup_sync_and_kick_async(ctx)
 
         return ctx
 
     def get_warmup_state(self, profile_name: str) -> str:
-        """返回 profile 的 warmup 状态: 'not_started' | 'in_progress' | 'done'."""
+        """返回 profile 的 warmup 状态:
+        'not_started' | 'db_init_in_progress' | 'db_init_done' | 'done'.
+        """
         with self._lock:
             return self._warmup_state.get(profile_name, "not_started")
 
+    def is_db_ready(self, profile_name: str) -> bool:
+        """True 当且仅当该 profile 的 DB 已经 init 完毕、可以查询。
+
+        前端/中间件应在调任何依赖 DB 的端点前检查此项, 否则返回 503。
+        """
+        return self.get_warmup_state(profile_name) in ("db_init_done", "done")
+
     def _warmup_sync_and_kick_async(self, ctx: UserContext) -> None:
-        """同步执行 warmup 同步段（DB schema + 并发系统），然后异步启动笔记扫描。"""
+        """启动 profile 的 warmup 后台线程 (DB init + 笔记扫描)。
+
+        这个方法是非阻塞的 —— 仅设置状态标志并 fork 一个 daemon 线程。
+        DB init 完毕后 is_db_ready() 转 True; 笔记扫描完毕后 state 转 'done'。
+        """
         profile = (ctx.profile_name or "").strip().lower()
         with self._lock:
             state = self._warmup_state.get(profile, "not_started")
-            if state in ("done", "in_progress"):
+            if state in ("db_init_in_progress", "db_init_done", "done"):
                 return
-            self._warmup_state[profile] = "in_progress"
+            self._warmup_state[profile] = "db_init_in_progress"
 
-        # 同步段：阻塞直到 DB 初始化完成
+        thread = threading.Thread(
+            target=self._warmup_chain_safe,
+            args=(ctx, profile),
+            name=f"warmup-{profile}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _warmup_chain_safe(self, ctx: UserContext, profile: str) -> None:
+        """后台线程入口: 先跑 DB init (慢, 80-141s), 再跑笔记扫描。"""
+        # Phase 1: DB init —— 慢, pyturso 首次 bootstrap 可能 80-141s
         try:
             self._warmup_sync(ctx)
         except Exception as exc:
             try:
                 ctx.logger.warning(
-                    f"[Web] profile '{profile}' 同步 warmup 失败: {exc}",
+                    f"[Web] profile '{profile}' DB init 失败: {exc}",
                     module="user_context",
                 )
             except Exception:
                 pass
+        finally:
+            # 即使失败也要把状态推进, 否则前端永远等不到 ready
+            # (业务路由仍可能在查询时报错,但起码不会无限 503)
+            with self._lock:
+                self._warmup_state[profile] = "db_init_done"
 
-        # 异步段：笔记扫描放入后台线程
-        thread = threading.Thread(
-            target=self._warmup_async_safe,
-            args=(ctx, profile),
-            name=f"warmup-async-{profile}",
-            daemon=True,
-        )
-        thread.start()
+        # Phase 2: 笔记扫描 (best-effort, 失败不影响 ctx 可用性)
+        try:
+            self._warmup_async(ctx)
+        except Exception as exc:
+            try:
+                ctx.logger.warning(
+                    f"[Web] profile '{profile}' 异步 warmup 失败: {exc}",
+                    module="user_context",
+                )
+            except Exception:
+                pass
+        finally:
+            with self._lock:
+                self._warmup_state[profile] = "done"
 
     def ensure_profile_ready(self, ctx: UserContext) -> None:
-        """兼容入口：调用 _warmup_sync_and_kick_async。"""
+        """兼容入口: 启动后台 warmup 但立即返回 (不阻塞)。"""
         self._warmup_sync_and_kick_async(ctx)
 
     def _warmup_sync(self, ctx: UserContext) -> None:
@@ -252,24 +291,6 @@ class UserContextManager:
         # pyturso 不需要 libsql 的 "重建连接" workaround。
 
         init_concurrent_system()
-
-    def _warmup_async_safe(self, ctx: UserContext, profile: str) -> None:
-        """异步段：扫描未同步笔记并入队。失败不影响 ctx 可用性。"""
-        try:
-            self._warmup_async(ctx)
-            with self._lock:
-                self._warmup_state[profile] = "done"
-        except Exception as exc:
-            with self._lock:
-                # 部分完成也算 done — 这是 best-effort 后台扫描，不可阻塞下一次调用
-                self._warmup_state[profile] = "done"
-            try:
-                ctx.logger.warning(
-                    f"[Web] profile '{profile}' 异步 warmup 失败: {exc}",
-                    module="user_context",
-                )
-            except Exception:
-                pass
 
     def _warmup_async(self, ctx: UserContext) -> None:
         """异步执行：把未同步笔记重新入队同步。"""

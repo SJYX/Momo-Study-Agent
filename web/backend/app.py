@@ -11,12 +11,22 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from web.backend.deps import cleanup_deps, init_deps
 from web.backend.schemas import HealthInfo, ok_response
 from web.backend.user_context import UserContextManager
+
+
+# 这些前缀不依赖 profile DB, 也不应被 readiness 检查拦截。
+# 业务路由都需要 DB ready 才能正常工作, 不在白名单内。
+_DB_READY_EXEMPT_PREFIXES = (
+    "/api/health",         # /api/health, /api/health/ready
+    "/api/users",          # list/switch/create/validate/wizard/delete profile
+    "/api/preflight",      # 检查云端连通 + 凭据有效, 不查本地 DB
+    "/api/ops",            # 运维指标, 不依赖业务 DB schema
+)
 
 
 @asynccontextmanager
@@ -60,6 +70,47 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ── DB readiness gate ──
+    # 业务路由调用前必须确认该 profile 的 DB 已经 init 完毕 (pyturso 首次 bootstrap
+    # 可能要 80-141s)。期间一律返回 503 + Retry-After, 让前端轮询 /api/health/ready。
+    @app.middleware("http")
+    async def _gate_unready_db(request: Request, call_next):
+        path = request.url.path
+        # 非 API 请求 (前端静态资源) 直接放行
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        # 白名单端点 (健康检查 / 用户管理 / preflight / ops) 不依赖业务 DB
+        if path.startswith(_DB_READY_EXEMPT_PREFIXES):
+            return await call_next(request)
+
+        # 业务路由: 检查当前 profile 的 DB 是否 ready
+        import web.backend.deps as _deps
+        if _deps._context_manager is None:
+            return await call_next(request)  # 还没启动完, 让请求自然失败
+
+        profile = (request.headers.get("X-Momo-Profile") or _deps._fallback_user or "").strip().lower()
+        if not profile:
+            return await call_next(request)
+
+        # 只对已经触发过 warmup 的 profile 做检查 — 没触发过说明前端还没切用户,
+        # 此时让请求自然走到 get_user_context, 它会触发 warmup。
+        state = _deps._context_manager.get_warmup_state(profile)
+        if state == "db_init_in_progress":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "SYNCING",
+                        "message": f"profile '{profile}' 正在首次同步云端数据库, 请稍候重试",
+                        "warmup_state": state,
+                    },
+                },
+                headers={"Retry-After": "5"},
+            )
+
+        return await call_next(request)
 
     # PLAYBOOK B5：API timing middleware
     # 对 /api/* 请求计时，记录到 MetricsCollector，给 B3 闲时引擎与 /api/ops/metrics 用
@@ -110,6 +161,25 @@ def create_app() -> FastAPI:
         data = HealthInfo().model_dump()
         data["db_sync"] = get_db_sync_status()
         return ok_response(data)
+
+    @app.get("/api/health/ready")
+    async def health_ready(request: Request):
+        """前端可以轮询此端点检查 profile DB 是否 init 完毕。
+
+        返回:
+          {
+            "ready": bool,                            # True 表示该 profile 可以查 DB 了
+            "warmup_state": "not_started"|"db_init_in_progress"|"db_init_done"|"done",
+            "profile": "<profile_name>"
+          }
+        """
+        import web.backend.deps as _deps
+        profile = (request.headers.get("X-Momo-Profile") or _deps._fallback_user or "").strip().lower() or "default"
+        if _deps._context_manager is None:
+            return ok_response({"ready": False, "warmup_state": "not_started", "profile": profile})
+        state = _deps._context_manager.get_warmup_state(profile)
+        ready = state in ("db_init_done", "done")
+        return ok_response({"ready": ready, "warmup_state": state, "profile": profile})
 
     # ---- 生产模式：托管前端静态文件 ----
     frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"

@@ -209,19 +209,24 @@ def _close_hub_write_conn_singleton() -> None:
 
 
 
-def _get_local_read_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
-    """打开一个轻量级只读 sqlite3 连接。
+def _get_local_read_conn(db_path: Optional[str] = None) -> Any:
+    """打开一个只读连接。
 
-    用于 Embedded Replica 模式下的读操作隔离。
-    WAL 模式天然支持 '一写多读' 并行，此连接仅做 SELECT，不会与写单例冲突。
-
-    与 _get_local_conn 的区别：
-    - 设置 PRAGMA query_only=ON 防止意外写入
-    - 不做损坏恢复（读失败时由 with_read_session 装饰器兜底降级）
-    - 更短的 busy_timeout（读操作不应等太久）
+    在 pyturso 模式下，统一使用免 pull 的 pyturso 引擎连接，以防与标准 sqlite3 冲突损坏数据。
+    在普通 SQLite 模式下，打开轻量级只读 sqlite3 连接。
     """
     path = db_path or _config.DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+
+    ctx = _resolve_conn_context(path)
+    if (HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
+        conn = _get_backend().connect(path, ctx["url"], ctx["token"], do_sync=False, do_pull=False)
+        try:
+            conn.execute("PRAGMA query_only=ON;")
+        except Exception:
+            pass
+        return conn
+
     conn = sqlite3.connect(path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.text_factory = lambda b: b.decode("utf-8", "replace")
@@ -232,11 +237,16 @@ def _get_local_read_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
-def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
+def _get_local_conn(db_path: Optional[str] = None) -> Any:
     path = db_path or _config.DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 
-    def _open_local_connection() -> sqlite3.Connection:
+    ctx = _resolve_conn_context(path)
+    is_pyturso_cloud = bool((HAS_PYTURSO) and ctx.get("url") and ctx.get("token"))
+
+    def _open_local_connection() -> Any:
+        if is_pyturso_cloud:
+            return _get_backend().connect(path, ctx["url"], ctx["token"], do_sync=False, do_pull=False)
         conn = sqlite3.connect(path, timeout=20.0)
         conn.row_factory = sqlite3.Row
         conn.text_factory = lambda b: b.decode("utf-8", "replace")
@@ -248,7 +258,7 @@ def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
 
     try:
         return _open_local_connection()
-    except (sqlite3.DatabaseError, sqlite3.OperationalError) as error:
+    except Exception as error:
         if not _is_sqlite_malformed_error(error):
             raise
 
@@ -276,11 +286,13 @@ def _get_local_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
         return conn
 
 
-def _get_hub_local_conn() -> sqlite3.Connection:
+def _get_hub_local_conn() -> Any:
     path = HUB_DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 
-    def _open_local_connection() -> sqlite3.Connection:
+    def _open_local_connection() -> Any:
+        if (HAS_PYTURSO) and TURSO_HUB_DB_URL and TURSO_HUB_AUTH_TOKEN:
+            return _get_backend().connect(path, TURSO_HUB_DB_URL, TURSO_HUB_AUTH_TOKEN, do_sync=False, do_pull=False)
         conn = sqlite3.connect(path, timeout=20.0)
         conn.row_factory = sqlite3.Row
         conn.text_factory = lambda b: b.decode("utf-8", "replace")
@@ -291,7 +303,7 @@ def _get_hub_local_conn() -> sqlite3.Connection:
 
     try:
         return _open_local_connection()
-    except (sqlite3.DatabaseError, sqlite3.OperationalError) as error:
+    except Exception as error:
         if not _is_sqlite_malformed_error(error):
             raise
 

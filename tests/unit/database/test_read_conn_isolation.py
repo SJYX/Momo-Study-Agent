@@ -162,8 +162,8 @@ class TestBackendAwareRouting:
 
         conn = conn_mod._get_read_conn_impl(tmp_db)
         try:
-            # 应该是标准 sqlite3 连接
-            assert isinstance(conn, sqlite3.Connection)
+            # 在 pyturso 模式下，应该返回 pyturso 后端连接而不是标准 sqlite3 连接，以防数据损坏
+            assert conn is mock_backend.connect.return_value
             assert conn is not conn_mod._main_write_conn_singleton
         finally:
             conn.close()

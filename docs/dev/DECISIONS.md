@@ -133,3 +133,42 @@
 **落地文档**:
 - `docs/dev/SYNC_PRIORITY_MATRIX.md`
 - `docs/dev/SYNC_OPTIMIZATION_PLAYBOOK.md`
+
+---
+
+## DEC-010 · pyturso 首次 bootstrap 走后台线程 + readiness gate
+
+**日期**: 2026-05-23
+**场景**: 新用户首次启动 Web 后端,`turso.sync.connect()` 对 ~10MB 远端库阻塞 80~150s,期间业务 API 完全无响应,用户以为程序卡死
+
+**否定方案**:
+
+- ❌ 在 `_pyturso.py` wrapper 里加 `socket.setdefaulttimeout(120)` 兜底 — 实测 N=120s 也不触发(pyturso 内部对 socket 超时有"吞错重试"),N 设小了反而触发 `IncompleteRead` 导致数据丢失
+- ❌ 传 `long_poll_timeout_ms=10000` — 该参数官方说**只对显式 `pull()` 生效**,对 `connect()` 内部 long-poll 不生效,实测耗时反而从 80s 变 141s
+- ❌ `bootstrap_if_empty=False` + 手动 `pull()` — pull 13 分钟后抛 `IncompleteRead`,数据为空
+- ❌ `PartialSyncOpts(PrefixBootstrap(128KB))`(官方文档推荐) — Windows 平台直接 Rust panic: `has_hole is not supported for the given IO implementation`
+- ❌ Context-Managed Monkey Patch 拦截 `urllib.request.urlopen` 强行加 timeout — 不可控,触发 pyturso 内部错误路径,数据状态不一致
+
+**采用方案**:
+
+- 接受 `turso.sync.connect()` 首次需要 80~150s,**改在调用层把它推到后台 daemon 线程**
+- 在 [`web/backend/user_context.py`](../../web/backend/user_context.py) 引入 4 态状态机:
+  `not_started → db_init_in_progress → db_init_done → done`
+- 在 [`web/backend/app.py`](../../web/backend/app.py) 加 `_gate_unready_db` middleware:
+  业务 API 在 `db_init_in_progress` 时返回 `503 + SYNCING + Retry-After: 5`
+- 新增 [`/api/health/ready`](../../web/backend/app.py) 端点 + 前端
+  [`SyncGate.tsx`](../../web/frontend/src/components/SyncGate.tsx) 遮罩,把"慢"的可见度交给 UI
+
+**原因**:
+
+- 所有"让 pyturso 自己变快"的尝试都已逐一被证伪,且部分尝试反而引入数据损坏风险(IncompleteRead/零页面)
+- pyturso 是 BETA 软件 (v0.5.1),不可控因素多,**用应用架构去包容慢,而不是逼库变快**
+- 后台线程 + readiness gate 是标准异步初始化模式,可观察、可恢复、不污染上层
+- 这条 ~150s 阻塞只在**新用户首次启动**触发一次,之后再启动秒回——是真值得"忍"的代价
+
+**落地文档**:
+
+- `docs/api/turso_api.md §14` — 完整的"已知问题与变通方案"踩坑记录
+- `web/backend/user_context.py` — 后台 bootstrap 实现
+- `web/backend/app.py` — readiness gate middleware
+- `web/frontend/src/components/SyncGate.tsx` — 前端遮罩 UI
