@@ -5,7 +5,7 @@ from database._repo_helpers import row_to_dict, row_value, rows_to_dicts
 
 
 class _RowWithKeys:
-    """模拟 libsql Row（同时暴露 keys() 和位置访问）。"""
+    """模拟 DB Row（同时暴露 keys() 和位置访问）。"""
     def __init__(self, columns, values):
         self._columns = columns
         self._values = values

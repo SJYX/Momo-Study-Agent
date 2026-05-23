@@ -192,7 +192,7 @@ def save_ai_word_note(
     except (sqlite3.DatabaseError, OSError) as e:
         _log_repo_failure("save_ai_word_note", e, level="ERROR")
         return False
-    except Exception as e:  # noqa: BLE001 - libsql/queue 抛出的非标准异常需兜底
+    except Exception as e:  # noqa: BLE001 - pyturso/queue 抛出的非标准异常需兜底
         _log_repo_failure("save_ai_word_note", e, level="ERROR")
         return False
 
@@ -237,7 +237,7 @@ def save_ai_word_notes_batch(
     except (sqlite3.DatabaseError, OSError) as e:
         _log_repo_failure("save_ai_word_notes_batch", e)
         return False
-    except Exception as e:  # noqa: BLE001 - 兜底未知 libsql/队列异常
+    except Exception as e:  # noqa: BLE001 - 兜底未知 pyturso/队列异常
         _log_repo_failure("save_ai_word_notes_batch", e)
         return False
 

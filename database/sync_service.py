@@ -1,6 +1,6 @@
 from __future__ import annotations
 """
-database/sync_service.py: Embedded Replica 帧级同步管线（主库 + Hub 库）。
+database/sync_service.py: pyturso push/pull 同步管线（主库 + Hub 库）。
 
 边界：
 - 仅处理 conn.sync() 调用、进度回调、错误归类和 skip 状态。
@@ -165,7 +165,7 @@ def sync_databases(
         progress_callback=progress_callback,
         messages={
             "skip_creds_msg": f"跳过同步: {creds_skip_reason}",
-            "connect": "连接 Embedded Replica 数据库",
+            "connect": "连接 pyturso 同步数据库",
             "cloud_unavail_skip_prefix": "跳过同步",
             "sync_doing": "执行帧级增量同步...",
             "local_only": "本地模式，无需同步",
@@ -207,8 +207,8 @@ def sync_hub_databases(
         dry_run=dry_run,
         progress_callback=progress_callback,
         messages={
-            "skip_creds_msg": "跳过 Hub 同步: 云端凭据或 libsql 不可用",
-            "connect": "连接 Hub Embedded Replica 数据库",
+            "skip_creds_msg": "跳过 Hub 同步: 云端凭据或 pyturso 不可用",
+            "connect": "连接 Hub pyturso 同步数据库",
             "cloud_unavail_skip_prefix": "跳过 Hub 同步",
             "sync_doing": "执行 Hub 帧级增量同步...",
             "local_only": "Hub 本地模式，无需同步",

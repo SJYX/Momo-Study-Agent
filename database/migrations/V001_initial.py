@@ -54,7 +54,7 @@ def _column_exists(cur: Any, table: str, column: str) -> bool:
     rows = cur.fetchall() or []
     for row in rows:
         # row 形态：(cid, name, type, notnull, dflt_value, pk)
-        # libsql 以 sequence/dict 返回都可能；统一取第二位 name
+        # pyturso 以 sequence/dict 返回都可能；统一取第二位 name
         name = row[1] if not isinstance(row, dict) else row.get("name")
         if str(name) == column:
             return True

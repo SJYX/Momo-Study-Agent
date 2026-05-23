@@ -84,7 +84,7 @@ async def reset_ops_metrics(
 async def db_replica_health(
     profile: Optional[str] = Query(default=None),
 ):
-    """Embedded Replica 健康快照：连接 + 同步性能 + 数据一致性。"""
+    """DB replica 健康快照：连接 + 同步性能 + 数据一致性。"""
     import os
 
     from database.execution_engine import get_db_sync_status, _write_queue_stats

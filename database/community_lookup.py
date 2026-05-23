@@ -172,7 +172,7 @@ def find_words_in_community_batch(
                 except Exception:  # noqa: BLE001
                     pass
 
-    # 3) 云端副本（只查仍缺失项；使用 sqlite3 读取本地副本文件，兼容 libsql ER 和 pyturso 两种格式）
+    # 3) 云端副本（只查仍缺失项；使用 sqlite3 读取本地副本文件，兼容 pyturso 格式）
     if not skip_cloud and remaining_ids:
         for cloud_url, cloud_token, source_label in _collect_cloud_lookup_targets():
             if not remaining_ids:

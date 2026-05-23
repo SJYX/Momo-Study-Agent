@@ -288,8 +288,6 @@ class UserContextManager:
         except Exception as e:
             _debug_log(f"[_warmup_sync] init_db 异常（已捕获，继续启动）: {e}", level="WARNING", module="web.user_context")
 
-        # pyturso 不需要 libsql 的 "重建连接" workaround。
-
         init_concurrent_system()
 
     def _warmup_async(self, ctx: UserContext) -> None:
