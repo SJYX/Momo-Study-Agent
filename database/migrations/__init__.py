@@ -1,5 +1,5 @@
 """
-database/migrations/: SQLite/pyturso user_version 迁移框架。
+database/migrations/: pyturso (Turso DB) user_version 迁移框架。
 
 设计原则：
 1. **每个版本一个文件**：`V001_xxx.py` / `V002_xxx.py`，文件名前缀决定顺序。
