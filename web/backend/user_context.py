@@ -194,7 +194,7 @@ class UserContextManager:
             sync_coordinator=coordinator,
         )
 
-        # ⚠️ DB init (init_db + init_concurrent_system) 在后台线程跑——pyturso 首次
+        # ⚠️ DB init (init_db + init_db_session_resources) 在后台线程跑——pyturso 首次
         # bootstrap 大库可能耗时 80-141s, 不能阻塞 _create_context 的调用方 (PUT
         # /api/users/active 等路由)。这之后调用方可以拿到 ctx, 但 DB 还没建好,
         # 由 is_db_ready() / /api/health/ready 告诉前端何时可以查询。
@@ -280,7 +280,7 @@ class UserContextManager:
         """阻塞段：DB schema 初始化 + 写连接单例 + 写并发系统启动。必须先于任何任务完成。"""
         from database.utils import _debug_log
         UserContextManager.prepare_for_task(ctx)
-        from database.connection import init_concurrent_system
+        from database.connection import init_db_session_resources
         from database.schema import init_db
 
         try:
@@ -288,7 +288,7 @@ class UserContextManager:
         except Exception as e:
             _debug_log(f"[_warmup_sync] init_db 异常（已捕获，继续启动）: {e}", level="WARNING", module="web.user_context")
 
-        init_concurrent_system()
+        init_db_session_resources()
 
     def _warmup_async(self, ctx: UserContext) -> None:
         """异步执行：把未同步笔记重新入队同步。"""
