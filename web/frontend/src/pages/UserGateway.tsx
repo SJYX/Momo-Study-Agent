@@ -10,7 +10,6 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProfileStore } from '../stores/profile'
-import { useSyncGateStore } from '../stores/syncGate'
 import { apiClient, apiPost, apiPut } from '../api/client'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
@@ -99,8 +98,8 @@ export default function UserGateway() {
   const switchUserMutation = useMutation({
     mutationFn: async (username: string) => {
       setActiveProfile(username)
-      const res = await apiPut<any>(`/api/users/active?username=${encodeURIComponent(username)}`)
-      return { username, warmup_state: res.data?.warmup_state }
+      const res = await apiPut<{ warmup_state?: string }>(`/api/users/active?username=${encodeURIComponent(username)}`)
+      return { username, warmup_state: res.data?.warmup_state ?? 'not_started' }
     },
     onSuccess: ({ username, warmup_state }) => {
       if (warmup_state === 'db_init_in_progress') {

@@ -11,7 +11,7 @@ import { useSyncGateStore } from '../stores/syncGate'
 import { useDbReadyPoll } from '../hooks/useDbReadyPoll'
 import { useEffect, useState } from 'react'
 
-const POLL_INTERVAL_MS = 2000
+const POLL_INTERVAL_MS = 400
 
 export default function SyncGate() {
   const isSyncing = useSyncGateStore((s) => s.isSyncing)
