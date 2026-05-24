@@ -275,10 +275,12 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
         else:
             _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
 
-        if is_cloud:
-            from database.backends import get_active_backend
-            get_active_backend().do_sync_on(lc)
-            _debug_log("[init_db] 初始云端同步及落盘已完成", module="database.schema")
+        # 之前这里再调一次 get_active_backend().do_sync_on(lc) 做 push+pull+checkpoint,
+        # 但上面 _get_conn(path, do_sync=True) 内部已经 push+pull 过(见
+        # database/backends/_pyturso.py 的 Step 4)。中间只插了 CREATE TABLE IF NOT
+        # EXISTS 与 apply_migrations(local_only=True) —— 暖库上都不产生新 WAL 帧。
+        # 实测这一行多花 ~3s 纯 RTT 浪费,checkpoint 留给 wal_autocheckpoint=1000 PRAGMA
+        # 与 ProfileSyncCoordinator 处理。
 
         # 如果是本地连接，我们关闭它；如果是单例写连接，则不关闭
         # 注意:_main_write_conn_singleton 是可变 module-level global,Phase 3 拆分后
@@ -294,12 +296,36 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
         _debug_log(f"数据库初始化失败: {e}", start_time=start_time, level="WARNING", module="database.schema")
 
     _debug_log("[init_db] 主库初始化完毕，开始 Hub 初始化...", module="database.schema")
-    hub_start = time.time()
-    hub_ok = init_users_hub_tables()
-    if hub_ok:
-        _debug_log("Hub 数据库初始化完成", start_time=hub_start, module="database.schema")
-    else:
-        _debug_log("Hub 数据库初始化失败（已记录原因）", start_time=hub_start, level="WARNING", module="database.schema")
+
+    # Hub 初始化与主库 schema/数据完全独立(不同 DB 文件、不同连接、不同凭据),
+    # 而且唯一消费者 /api/users/* 在 _DB_READY_EXEMPT_PREFIXES 白名单里,不受
+    # SyncGate 控制。所以让 Hub 在后台 daemon 线程跑 —— init_db 直接返回,
+    # _warmup_sync 早 ~1.5s 把 state 推到 db_init_done,SyncGate 早消失。
+    # 如果第一个 /api/users/* 请求来时 Hub 还没建好,_get_hub_conn 内部有锁
+    # 会自动等待 —— 走的不是 SyncGate 关键路径。
+    def _hub_init_async() -> None:
+        hub_start = time.time()
+        try:
+            hub_ok = init_users_hub_tables()
+        except Exception as e:
+            _debug_log(
+                f"Hub 数据库初始化异常: {e}",
+                start_time=hub_start,
+                level="WARNING",
+                module="database.schema",
+            )
+            return
+        if hub_ok:
+            _debug_log("Hub 数据库初始化完成", start_time=hub_start, module="database.schema")
+        else:
+            _debug_log(
+                "Hub 数据库初始化失败（已记录原因）",
+                start_time=hub_start,
+                level="WARNING",
+                module="database.schema",
+            )
+
+    threading.Thread(target=_hub_init_async, name="hub-init", daemon=True).start()
 
 
 def init_users_hub_tables() -> bool:
