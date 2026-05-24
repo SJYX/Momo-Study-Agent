@@ -281,8 +281,10 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
             _debug_log("[init_db] 初始云端同步及落盘已完成", module="database.schema")
 
         # 如果是本地连接，我们关闭它；如果是单例写连接，则不关闭
-        import database.connection as conn_mod
-        if lc is not conn_mod._main_write_conn_singleton:
+        # 注意:_main_write_conn_singleton 是可变 module-level global,Phase 3 拆分后
+        # 必须从 database.connection.singleton 子模块直读,不能走 __init__.py(快照行为)。
+        from database.connection import singleton as conn_singleton
+        if lc is not conn_singleton._main_write_conn_singleton:
             try:
                 lc.close()
             except Exception:
