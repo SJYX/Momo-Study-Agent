@@ -172,10 +172,31 @@ class PytursoBackend:
                 )
 
         # ── Step 4: Full sync cycle if requested ──
+        # 拆开 push / pull 单独计时,因为 connect(do_sync=True) 路径上
+        # 整轮可能花数十秒,需要看清是 push 在清本地积压还是 pull 在拉远端。
         if do_sync:
             try:
+                _t_push = time.time()
+                _debug_log(
+                    f"[{db_label}] push 开始...",
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
                 db.push()
+                _debug_log(
+                    f"[{db_label}] push 完成",
+                    start_time=_t_push,
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
+                _t_pull = time.time()
                 db.pull()
+                _debug_log(
+                    f"[{db_label}] pull 完成",
+                    start_time=_t_pull,
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
                 _debug_log(
                     f"[{db_label}] 同步完成 (push→pull)",
                     level="INFO",
@@ -194,9 +215,30 @@ class PytursoBackend:
         """Trigger a full sync cycle (push → pull → checkpoint) on an existing pyturso connection."""
         if hasattr(conn, "pull"):
             try:
+                _t_push = time.time()
                 conn.push()
+                _debug_log(
+                    f"[pyturso do_sync_on] push 完成",
+                    start_time=_t_push,
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
+                _t_pull = time.time()
                 conn.pull()
+                _debug_log(
+                    f"[pyturso do_sync_on] pull 完成",
+                    start_time=_t_pull,
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
+                _t_ckpt = time.time()
                 conn.checkpoint()
+                _debug_log(
+                    f"[pyturso do_sync_on] checkpoint 完成",
+                    start_time=_t_ckpt,
+                    level="INFO",
+                    module="database.backends._pyturso",
+                )
             except Exception as e:
                 _debug_log(
                     f"[pyturso] do_sync_on 失败: {e}",
