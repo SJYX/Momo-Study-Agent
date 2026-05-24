@@ -222,25 +222,81 @@ def init_db(db_path: Optional[str] = None) -> None:
     return _init_db_impl(db_path)
 
 
+def _kick_async_pull(path: str) -> None:
+    """Spawn a daemon thread that does a one-shot pyturso pull on `path`.
+
+    Used by init_db to prime cross-device freshness without blocking the
+    SyncGate critical path. With Fix D, init_db's foreground connection
+    opens pyturso with do_sync=False, do_pull=False (fastest), so any
+    remote changes since last sync would otherwise wait until
+    ProfileSyncCoordinator's first idle-sync cycle (up to ~30s).
+
+    This thread issues one explicit pull right after schema is ready,
+    typically landing remote-side updates ~1-2s after SyncGate dismisses.
+    Failures are non-fatal — coordinator will pull again on its own timer.
+    """
+    def _runner() -> None:
+        pull_start = time.time()
+        try:
+            ctx_local = connection._resolve_conn_context(path)
+            from database.backends import HAS_PYTURSO
+
+            if not (HAS_PYTURSO and ctx_local.get("url") and ctx_local.get("token")):
+                return
+            from database.backends import get_active_backend
+
+            # do_pull=True with do_sync=False fires Step 3 in pyturso backend
+            # (db.pull()), no push. We capture `path` in closure to avoid
+            # races with _config.DB_PATH being switched between profiles.
+            conn = get_active_backend().connect(
+                path,
+                ctx_local["url"],
+                ctx_local["token"],
+                do_sync=False,
+                do_pull=True,
+            )
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _debug_log(
+                "[init_db] 后台 pull 完成",
+                start_time=pull_start,
+                module="database.schema",
+            )
+        except Exception as e:
+            _debug_log(
+                f"[init_db] 后台 pull 失败(不影响 UI): {e}",
+                start_time=pull_start,
+                level="WARNING",
+                module="database.schema",
+            )
+
+    threading.Thread(target=_runner, name="init-async-pull", daemon=True).start()
+
+
 def _init_db_impl(db_path: Optional[str] = None) -> None:
     from database.migrations import apply_migrations, _NeedCloudMigrations
 
     import config as _cfg
     path = db_path or _cfg.DB_PATH
     start_time = time.time()
+    is_cloud = False  # defined here so it survives an early except below
 
     try:
-        from database.connection import _resolve_conn_context, _get_conn
+        from database.connection import _resolve_conn_context
         ctx = _resolve_conn_context(path)
         is_cloud = bool(ctx.get("url") and ctx.get("token"))
 
+        # Fix D: 在 pyturso 架构下,本地副本就是真实可用的数据库。init_db 只负责
+        # 让 schema 在位,远端 push/pull 全部交给 ProfileSyncCoordinator(它有
+        # max_delay + shutdown flush,不会积压)。do_sync=True 是 libsql 时代的
+        # 残留 —— 在那里 sync 是离散事件,必须每次启动对齐;pyturso 不需要。
         if is_cloud:
-            _debug_log(f"[init_db] 检测到云端数据库配置，开始建立云端同步连接以进行拉取...", module="database.schema")
-            lc = _get_conn(path, do_sync=True)
-            _debug_log(f"[init_db] 云端同步连接建立成功，已完成初始拉取", module="database.schema")
+            _debug_log("[init_db] 检测到云端配置,使用本地副本(后台 pull 异步触发)...", module="database.schema")
         else:
             _debug_log("[init_db] 获取本地连接...", module="database.schema")
-            lc = connection._get_local_conn(path)
+        lc = connection._get_local_conn(path)
 
         # CREATE TABLE IF NOT EXISTS 是幂等的，直接执行。
         lcur = lc.cursor()
@@ -294,6 +350,10 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
         _debug_log("数据库初始化完成", start_time=start_time, module="database.schema")
     except Exception as e:
         _debug_log(f"数据库初始化失败: {e}", start_time=start_time, level="WARNING", module="database.schema")
+
+    # Fix D: 启动后台 pull,把跨设备远端写在 ~1-2s 内拉到本地。SyncGate 不等。
+    if is_cloud:
+        _kick_async_pull(path)
 
     _debug_log("[init_db] 主库初始化完毕，开始 Hub 初始化...", module="database.schema")
 
