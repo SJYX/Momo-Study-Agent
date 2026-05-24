@@ -18,6 +18,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from database import connection as conn_mod
+from database.connection import context as conn_context
+from database.connection import factory as conn_factory
+from database.connection import singleton as conn_singleton
 from database.backends import get_active_backend
 
 
@@ -52,7 +55,7 @@ class TestGetLocalReadConn:
         """独立读连接不是写单例。"""
         conn = conn_mod._get_local_read_conn(tmp_db)
         try:
-            assert conn is not conn_mod._main_write_conn_singleton
+            assert conn is not conn_singleton._main_write_conn_singleton
         finally:
             conn.close()
 
@@ -141,8 +144,10 @@ class TestBackendAwareRouting:
 
     def test_pyturso_returns_local_read_conn(self, monkeypatch, tmp_db):
         """pyturso 后端应返回独立 sqlite3 只读连接。"""
-        monkeypatch.setattr(conn_mod, "HAS_PYTURSO", True)
-        monkeypatch.setattr(conn_mod._config, "DB_PATH", tmp_db)
+        # HAS_PYTURSO 在 factory.py 中通过 `from .context import HAS_PYTURSO` 绑定到本地;
+        # _resolve_conn_context / _should_use_local_only_connection 都是 factory 内的名字。
+        monkeypatch.setattr(conn_factory, "HAS_PYTURSO", True)
+        monkeypatch.setattr(conn_context._config, "DB_PATH", tmp_db)
 
         fake_ctx = {
             "db_path": tmp_db,
@@ -152,19 +157,19 @@ class TestBackendAwareRouting:
             "token": "fake-token",
             "force_cloud_mode": False,
         }
-        monkeypatch.setattr(conn_mod, "_resolve_conn_context", lambda *a, **k: fake_ctx)
-        monkeypatch.setattr(conn_mod, "_should_use_local_only_connection", lambda *a, **k: False)
+        monkeypatch.setattr(conn_factory, "_resolve_conn_context", lambda *a, **k: fake_ctx)
+        monkeypatch.setattr(conn_factory, "_should_use_local_only_connection", lambda *a, **k: False)
 
-        # 模拟 pyturso backend
+        # 模拟 pyturso backend — 直接塞进 context._backend 缓存,跳过 _get_backend 的 lazy init
         mock_backend = MagicMock()
         mock_backend.name = "pyturso"
-        monkeypatch.setattr(conn_mod, "get_active_backend", lambda: mock_backend)
+        monkeypatch.setattr(conn_context, "_backend", mock_backend)
 
         conn = conn_mod._get_read_conn_impl(tmp_db)
         try:
             # 在 pyturso 模式下，应该返回 pyturso 后端连接而不是标准 sqlite3 连接，以防数据损坏
             assert conn is mock_backend.connect.return_value
-            assert conn is not conn_mod._main_write_conn_singleton
+            assert conn is not conn_singleton._main_write_conn_singleton
         finally:
             conn.close()
 

@@ -5,26 +5,27 @@ import pytest
 
 
 def _clear_all_resources():
-    import database.connection as db_connection
+    import database.connection as db_connection  # noqa: F401  (kept for backward compat / other monkeypatches)
+    import database.connection.singleton as db_singleton
     import database.execution_engine as db_engine
     import database.sync_coordinator as sync_coord
     import web.backend.deps as web_deps
 
-    with db_connection._main_write_conn_lock:
-        if db_connection._main_write_conn_singleton is not None:
+    with db_singleton._main_write_conn_lock:
+        if db_singleton._main_write_conn_singleton is not None:
             try:
-                db_connection._main_write_conn_singleton.close()
+                db_singleton._main_write_conn_singleton.close()
             except Exception:
                 pass
-            db_connection._main_write_conn_singleton = None
-            db_connection._main_write_conn_singleton_path = None
-    with db_connection._hub_write_conn_lock:
-        if db_connection._hub_write_conn_singleton is not None:
+            db_singleton._main_write_conn_singleton = None
+            db_singleton._main_write_conn_singleton_path = None
+    with db_singleton._hub_write_conn_lock:
+        if db_singleton._hub_write_conn_singleton is not None:
             try:
-                db_connection._hub_write_conn_singleton.close()
+                db_singleton._hub_write_conn_singleton.close()
             except Exception:
                 pass
-            db_connection._hub_write_conn_singleton = None
+            db_singleton._hub_write_conn_singleton = None
 
     try:
         db_engine.cleanup_db_session_resources()

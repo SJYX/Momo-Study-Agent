@@ -91,8 +91,11 @@ async def db_sync_health(
 
     prof = _normalize_profile(profile)
 
-    # 连接健康
-    from database.connection import _main_write_conn_singleton, _main_write_conn_singleton_path
+    # 连接健康 (singleton globals 必须直读子模块,见 database/connection/singleton.py 头部注释)
+    from database.connection.singleton import (
+        _main_write_conn_singleton,
+        _main_write_conn_singleton_path,
+    )
     conn_alive = _main_write_conn_singleton is not None
     is_cloud = bool(os.getenv("TURSO_DB_URL"))
     db_path = _main_write_conn_singleton_path or ""
