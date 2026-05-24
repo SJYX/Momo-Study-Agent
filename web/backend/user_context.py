@@ -194,14 +194,91 @@ class UserContextManager:
             sync_coordinator=coordinator,
         )
 
-        # ⚠️ DB init (init_db + init_db_session_resources) 在后台线程跑——pyturso 首次
-        # bootstrap 大库可能耗时 80-141s, 不能阻塞 _create_context 的调用方 (PUT
-        # /api/users/active 等路由)。这之后调用方可以拿到 ctx, 但 DB 还没建好,
-        # 由 is_db_ready() / /api/health/ready 告诉前端何时可以查询。
-        # 笔记扫描 (_warmup_async) 紧跟在 DB init 之后,也在同一个后台线程里跑。
-        self._warmup_sync_and_kick_async(ctx)
+        # Fix E5: 暖库走同步路径,根本不进 "db_init_in_progress" 状态,
+        # 中间件就不会返回 503,前端 SyncGate 不会闪现。
+        # 冷启动(本地无 .db 或空文件)才走异步 + SyncGate 兜底
+        # pyturso bootstrap 的 60-150s 等待。
+        if self._decide_warmup_mode(ctx) == "sync":
+            self._run_warm_warmup(ctx)
+        else:
+            # 冷启动:DB init (init_db + init_db_session_resources) 在后台线程跑
+            # ——pyturso 首次 bootstrap 大库可能耗时 80-141s,不能阻塞调用方。
+            # 由 is_db_ready() / /api/health/ready 告诉前端何时可以查询。
+            # 笔记扫描 (_warmup_async) 紧跟在 DB init 之后,也在同一个后台线程里跑。
+            self._warmup_sync_and_kick_async(ctx)
 
         return ctx
+
+    def _decide_warmup_mode(self, ctx) -> str:
+        """Return 'sync' if the local DB file is warm (exists & non-empty),
+        else 'async' (cold path needs pyturso bootstrap → SyncGate fallback).
+        """
+        import os
+        db_path = getattr(ctx, "db_path", "") or ""
+        if not db_path:
+            return "async"
+        try:
+            if os.path.exists(db_path) and os.path.getsize(db_path) > 0:
+                return "sync"
+        except OSError:
+            pass
+        return "async"
+
+    def _run_warm_warmup(self, ctx) -> None:
+        """Synchronous warmup for warm DB: run Phase 1 inline so PUT
+        /api/users/active doesn't return until the ctx is ready, then
+        kick Phase 2 (notes scan) in the background.
+
+        Crucially: state goes 'not_started' → 'db_init_done' WITHOUT
+        passing through 'db_init_in_progress', so the readiness middleware
+        never returns 503 and SyncGate never appears on warm restart.
+        """
+        profile_key = (ctx.profile_name or "").strip().lower()
+        try:
+            self._warmup_sync(ctx)
+        except Exception as e:
+            try:
+                ctx.logger.warning(
+                    f"[Web] 同步 warmup 失败,降级到异步路径: {e}",
+                    module="user_context",
+                )
+            except Exception:
+                pass
+            # Fall back to the async chain so we don't leave state inconsistent
+            self._warmup_sync_and_kick_async(ctx)
+            return
+
+        with self._lock:
+            # Skip db_init_in_progress entirely.
+            self._warmup_state[profile_key] = "db_init_done"
+
+        # Phase 2 (notes scan) still runs in the background — it's best-effort
+        # and not required for SyncGate dismissal.
+        threading.Thread(
+            target=self._run_warmup_phase2,
+            args=(ctx, profile_key),
+            name=f"warmup-phase2-{profile_key}",
+            daemon=True,
+        ).start()
+
+    def _run_warmup_phase2(self, ctx, profile_key: str) -> None:
+        """Background-only Phase 2 (unsynced notes scan). Mirrors the tail
+        of _warmup_chain_safe but without the Phase 1 work that the warm
+        path already did synchronously.
+        """
+        try:
+            self._warmup_async(ctx)
+        except Exception as exc:
+            try:
+                ctx.logger.warning(
+                    f"[Web] profile '{profile_key}' Phase 2 warmup 失败: {exc}",
+                    module="user_context",
+                )
+            except Exception:
+                pass
+        finally:
+            with self._lock:
+                self._warmup_state[profile_key] = "done"
 
     def get_warmup_state(self, profile_name: str) -> str:
         """返回 profile 的 warmup 状态:
