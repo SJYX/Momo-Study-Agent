@@ -61,33 +61,84 @@ class ProfileSyncCoordinator:
         db_path: str,
         backend: Any,
         debounce_seconds: float = 5.0,
+        max_delay_seconds: float = 30.0,
     ):
         self.db_path = db_path
         self._backend = backend
         self._debounce = debounce_seconds
+        self._max_delay = max_delay_seconds
 
         self._last_write_ts = 0.0
+        # _first_dirty_ts: time of the first mark_dirty since the last successful
+        # sync; bounds the wait under continuous writes (debounce keeps resetting,
+        # but max_delay forces a sync within max_delay seconds of this timestamp).
+        # Cleared back to None after a successful _do_sync.
+        self._first_dirty_ts: Optional[float] = None
         self._timer: Optional[threading.Timer] = None
         self._timer_lock = threading.Lock()
         self._sync_lock = threading.Lock()  # Guards _do_sync serialization
 
     def mark_dirty(self) -> None:
-        """Called after a successful write. Starts/resets the debounce timer."""
-        self._last_write_ts = time.time()
+        """Called after a successful write. Starts/resets the debounce timer.
+
+        max_delay safety net: under continuous writes (mark_dirty faster than
+        debounce), the timer would keep getting reset and _do_sync would
+        starve. Each call computes its timer delay as
+            min(debounce, _first_dirty_ts + max_delay - now)
+        so even a continuous stream of writes forces a sync within max_delay
+        of the first un-synced write.
+        """
+        now = time.time()
+        self._last_write_ts = now
 
         with self._timer_lock:
+            if self._first_dirty_ts is None:
+                self._first_dirty_ts = now
+            max_remaining = max(0.0, (self._first_dirty_ts + self._max_delay) - now)
+            delay = min(self._debounce, max_remaining)
+
             if self._timer is not None:
                 self._timer.cancel()
-            self._timer = threading.Timer(self._debounce, self._check_and_sync)
+            self._timer = threading.Timer(delay, self._check_and_sync)
             self._timer.daemon = True
             self._timer.start()
 
-    def shutdown(self) -> None:
-        """Cancel any pending timer. Called during profile cleanup."""
+    def shutdown(self, flush: bool = False) -> None:
+        """Cancel any pending timer. Called during profile cleanup.
+
+        Args:
+            flush: When True, synchronously run one push+pull+checkpoint cycle
+                if there is pending dirty data, so writes in the open debounce
+                window do not get deferred to the next startup. Use this from
+                lifespan shutdown / atexit hooks.
+        """
         with self._timer_lock:
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
+
+        if not flush:
+            return
+        if self._first_dirty_ts is None:
+            return
+
+        # Blocking acquire: wait for any in-flight _check_and_sync to finish.
+        # If it already drained the dirty data, _first_dirty_ts would now be
+        # None and we'd skip — but re-check after the lock in case another
+        # sync just completed.
+        with self._sync_lock:
+            if self._first_dirty_ts is None:
+                return
+            try:
+                self._do_sync()
+                self._first_dirty_ts = None
+            finally:
+                # _do_sync may re-arm a retry timer in its failure path;
+                # cancel it so it doesn't fire after shutdown.
+                with self._timer_lock:
+                    if self._timer is not None:
+                        self._timer.cancel()
+                        self._timer = None
 
     def _check_and_sync(self) -> None:
         """Timer callback: check if debounce has passed, then sync.
@@ -96,12 +147,25 @@ class ProfileSyncCoordinator:
         If another _do_sync is running, this callback simply exits —
         the running sync will pick up the latest writes, and any
         subsequent mark_dirty() will start a fresh timer.
+
+        max_delay override: if (now - _first_dirty_ts) >= max_delay, we
+        fall through to sync even if the debounce window has new writes.
+        Otherwise continuous writes would re-arm the timer forever.
         """
         now = time.time()
 
-        if (now - self._last_write_ts) < self._debounce:
-            # New writes arrived very recently; reset timer for remaining window
+        max_delay_reached = (
+            self._first_dirty_ts is not None
+            and (now - self._first_dirty_ts) >= self._max_delay
+        )
+
+        if (now - self._last_write_ts) < self._debounce and not max_delay_reached:
+            # New writes arrived very recently AND max_delay not yet hit —
+            # wait for the shorter of (debounce remaining, max_delay remaining).
             remaining = self._debounce - (now - self._last_write_ts)
+            if self._first_dirty_ts is not None:
+                max_remaining = max(0.0, (self._first_dirty_ts + self._max_delay) - now)
+                remaining = min(remaining, max_remaining)
             with self._timer_lock:
                 self._timer = threading.Timer(remaining, self._check_and_sync)
                 self._timer.daemon = True
@@ -113,7 +177,17 @@ class ProfileSyncCoordinator:
             return
 
         try:
+            sync_started_at = time.time()
             self._do_sync()
+            # Success: clear the "first dirty since last sync" window so the
+            # next mark_dirty starts a fresh max_delay timer. If writes arrived
+            # during _do_sync (last_write_ts > sync_started_at), the post-sync
+            # re-arm below will pick them up.
+            if self._last_write_ts <= sync_started_at:
+                self._first_dirty_ts = None
+            else:
+                # Writes during sync; track those as the new first-dirty window.
+                self._first_dirty_ts = sync_started_at
         finally:
             self._sync_lock.release()
 

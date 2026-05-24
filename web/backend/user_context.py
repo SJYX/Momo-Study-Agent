@@ -382,9 +382,11 @@ class UserContextManager:
     def _cleanup_context(ctx: UserContext) -> None:
         """释放单个 context 的资源。"""
         # Phase 2: shut down per-profile sync coordinator
+        # flush=True 强制把当前 debounce 窗口里的脏数据 push 到云端,避免下次
+        # 启动 SyncGate 期间一次性付清积压(see test_sync_coordinator.py)。
         if ctx.sync_coordinator:
             try:
-                ctx.sync_coordinator.shutdown()
+                ctx.sync_coordinator.shutdown(flush=True)
             except Exception:
                 pass
             try:
