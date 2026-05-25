@@ -95,23 +95,28 @@ export default function UserGateway() {
     onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
   })
 
+  // 切换用户
+  const switchUserMutation = useMutation({
+    mutationFn: async (username: string) => {
+      setActiveProfile(username)
+      const res = await apiPut<any>(`/api/users/active?username=${encodeURIComponent(username)}`)
+      return { username, warmup_state: res.data?.warmup_state }
+    },
+    onSuccess: ({ username, warmup_state }) => {
+      if (warmup_state === 'db_init_in_progress') {
+        useSyncGateStore.getState().setSyncing(true, username)
+      }
+      navigate('/', { replace: true })
+    },
+    onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
+  })
+
   const finishAndEnter = (name: string) => {
-    setActiveProfile(name)
-    // 立即开启 SyncGate 遮罩, 它会自己轮询 /api/health/ready 直到 DB 就绪。
-    // 不等业务 API 失败再触发, 这样切用户的瞬间就有反馈。
-    useSyncGateStore.getState().setSyncing(true, name)
-    // Fire-and-forget: warmup is async, navigate immediately
-    apiPut(`/api/users/active?username=${encodeURIComponent(name)}`).catch(() => {})
-    navigate('/', { replace: true })
+    switchUserMutation.mutate(name)
   }
 
   const handleSelectExisting = (username: string) => {
-    setActiveProfile(username)
-    // 同上: 立即遮罩, 不依赖业务 API 失败触发
-    useSyncGateStore.getState().setSyncing(true, username)
-    // Fire-and-forget: warmup is async, navigate immediately
-    apiPut(`/api/users/active?username=${encodeURIComponent(username)}`).catch(() => {})
-    navigate('/', { replace: true })
+    switchUserMutation.mutate(username)
   }
 
   const errMsg = actionError
@@ -119,6 +124,7 @@ export default function UserGateway() {
   const validating = validateMutation.isPending
   const creating = createMutation.isPending
   const saving = saveConfigMutation.isPending
+  const switching = switchUserMutation.isPending
   const showCurrentProfileHint = activeProfile && step === 'select'
 
   return (
@@ -165,9 +171,10 @@ export default function UserGateway() {
                   <button
                     key={p.username}
                     onClick={() => handleSelectExisting(p.username)}
+                    disabled={switching}
                     className={`w-full text-left px-4 py-3 rounded-lg border transition-all hover:border-blue-400 hover:bg-blue-50 ${
                       p.username === activeProfile ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-                    }`}
+                    } ${switching ? 'opacity-50 cursor-wait' : ''}`}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
@@ -190,7 +197,11 @@ export default function UserGateway() {
                           </div>
                         </div>
                       </div>
-                      <ArrowRight size={16} className="text-gray-400" />
+                      {switching && switchUserMutation.variables === p.username ? (
+                        <Loader2 size={16} className="text-blue-500 animate-spin" />
+                      ) : (
+                        <ArrowRight size={16} className="text-gray-400" />
+                      )}
                     </div>
                   </button>
                 ))}
@@ -311,17 +322,18 @@ export default function UserGateway() {
               </button>
               <button
                 onClick={() => finishAndEnter(configName)}
+                disabled={saving || switching}
                 className="flex items-center gap-1 px-4 py-2 border border-gray-300 text-gray-500 rounded-lg text-sm hover:bg-gray-50 transition-colors"
               >
-                <SkipForward size={14} /> 跳过
+                {switching ? <Loader2 size={14} className="animate-spin" /> : <SkipForward size={14} />} 跳过
               </button>
               <button
                 onClick={() => saveConfigMutation.mutate()}
-                disabled={saving}
+                disabled={saving || switching}
                 className="flex-1 flex items-center justify-center gap-1 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
               >
-                {saving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                {saving ? '保存中...' : '完成'}
+                {saving || switching ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                {saving || switching ? '保存中...' : '完成'}
               </button>
             </div>
           </div>

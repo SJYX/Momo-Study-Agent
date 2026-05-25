@@ -72,25 +72,9 @@ class PytursoBackend:
 
         db_label = "Hub" if "hub" in os.path.basename(db_path).lower() else "主库"
 
-        # ── Step 1: V007 format migration (仅当文件真实存在且包含数据时才执行) ──
-        # 拦截掉空文件生成，保护 pyturso 的 bootstrap 机制
-        try:
-            if os.path.exists(db_path) and os.path.getsize(db_path) > 0:
-                from database.migrations.V007_migrate_db_format import pre_connect_migrate
-
-                pre_connect_migrate(db_path)
-            else:
-                _debug_log(
-                    f"[{db_label}] 这是一个新库或空库，跳过 V007 历史迁移...",
-                    level="INFO",
-                    module="database.backends._pyturso",
-                )
-        except Exception as e:
-            _debug_log(
-                f"[{db_label}] V007: 格式迁移失败（非致命，继续尝试连接）: {e}",
-                level="WARNING",
-                module="database.backends._pyturso",
-            )
+        # ── Step 1: V007 format migration ──
+        # 历史迁移代码已清理，现在直接跳过，交给 pyturso 的 bootstrap 机制自动处理
+        pass
 
         def _is_valid_sqlite(fp: str) -> bool:
             try:

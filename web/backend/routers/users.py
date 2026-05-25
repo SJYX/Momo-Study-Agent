@@ -105,8 +105,13 @@ async def switch_active_user(
     except Exception as e:
         return error_response("CONTEXT_ERROR", f"初始化用户上下文失败: {e}", user_id=user)
 
+    warmup_state = "not_started"
+    if _deps._context_manager:
+        warmup_state = _deps._context_manager.get_warmup_state(username.lower())
+
     return ok_response({
         "active_profile": username.lower(),
+        "warmup_state": warmup_state,
         "message": f"已切换到用户 '{username}'",
     }, user_id=username.lower())
 

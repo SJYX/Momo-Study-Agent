@@ -276,8 +276,6 @@ def _kick_async_pull(path: str) -> None:
 
 
 def _init_db_impl(db_path: Optional[str] = None) -> None:
-    from database.migrations import apply_migrations, _NeedCloudMigrations
-
     import config as _cfg
     path = db_path or _cfg.DB_PATH
     start_time = time.time()
@@ -301,35 +299,32 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
         # CREATE TABLE IF NOT EXISTS 是幂等的，直接执行。
         lcur = lc.cursor()
         _t_create = time.time()
-        _debug_log("[init_db] 开始建表...", module="database.schema")
-        _create_tables(lcur)
-        lc.commit()
-        lcur.close()
-        _debug_log("[init_db] 建表完成", start_time=_t_create, level="INFO", module="database.schema")
-
-        _debug_log("[init_db] 开始应用迁移...", module="database.schema")
-        try:
-            start_v, end_v = apply_migrations(lc, local_only=True)
-        except _NeedCloudMigrations as e:
-            # 有新迁移需要执行，需要连云
-            _debug_log(f"[init_db] 检测到新迁移 v{e.current}→v{e.target}，使用云端连接...", module="database.schema")
-            from database.backends import get_active_backend
-            if ctx.get("url") and ctx.get("token"):
-                cc = get_active_backend().connect(path, ctx["url"], ctx["token"], do_sync=False)
-                try:
-                    start_v, end_v = apply_migrations(cc)
-                finally:
-                    cc.close()
-            else:
-                _debug_log("[init_db] 无云端连接配置，跳过迁移", level="WARNING", module="database.schema")
-                start_v = end_v = e.current
-        if start_v != end_v:
+        
+        # 优化启动流程：先读版本号，如果 >= 7 说明表已经全部建好了，直接跳过重复的 DDL 执行
+        lcur.execute("PRAGMA user_version")
+        row = lcur.fetchone()
+        current_version = row[0] if row else 0
+        
+        if current_version == 0:
+            _debug_log("[init_db] 发现新库或空库 (v0)，开始初始化表结构...", module="database.schema")
+            _create_tables(lcur)
+            lcur.execute("PRAGMA user_version = 7")
+            lc.commit()
+            _debug_log("[init_db] 建表及版本号初始化完成", start_time=_t_create, level="INFO", module="database.schema")
+        elif current_version < 7:
             _debug_log(
-                f"数据库迁移完成 v{start_v} → v{end_v}",
-                module="database.schema",
+                f"[init_db] 警告：发现旧版本库 (v{current_version})，但升级脚本已被移除！"
+                "请确保它能通过 Pyturso 从云端同步到最新版本，否则可能因缺少列而报错。",
+                level="WARNING", 
+                module="database.schema"
             )
+            # 我们不执行 _create_tables 因为 IF NOT EXISTS 不会加列，也不伪造 user_version = 7
         else:
-            _debug_log(f"[init_db] 迁移无需执行 (v{start_v})", module="database.schema")
+            _debug_log(f"[init_db] 库版本 v{current_version} >= 7，跳过重复建表校验", module="database.schema")
+            
+        lcur.close()
+
+        # 历史迁移脚本已被清理，等待未来版本有真实的业务字段增删时，再基于 pyturso API 构建新的迁移框架。
 
         # 之前这里再调一次 get_active_backend().do_sync_on(lc) 做 push+pull+checkpoint,
         # 但上面 _get_conn(path, do_sync=True) 内部已经 push+pull 过(见

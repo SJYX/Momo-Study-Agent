@@ -99,14 +99,28 @@ class UserContextManager:
         for ctx in contexts:
             self._cleanup_context(ctx)
 
-    def _create_context(self, profile_name: str) -> UserContext:
-        """为指定 profile 创建完整的运行时上下文。
+    @staticmethod
+    def preload_modules():
+        """预加载耗时模块，避免首次切换用户时产生额外的 1-2s 延迟。"""
+        try:
+            from web.backend.profile_config import load_profile_config
+            from core.log_config import get_full_config
+            from core.logger import setup_logger
+            from core.maimemo_api import MaiMemoAPI
+            from core.mimo_client import MimoClient
+            from core.gemini_client import GeminiClient
+            from core.study_workflow import StudyWorkflow
+            from web.backend.tasks import TaskRegistry
+            from web.backend.logger_bridge import LoggerBridge
+            from database.sync_coordinator import ProfileSyncCoordinator
+            from database.backends import get_active_backend
+        except Exception:
+            pass
 
-        P4-T4 后不再走 cfg.switch_user + finally 恢复全局态的老路径。改为：
-          1. 用 ProfileConfig.load() 读出 profile env，得到不可变快照
-          2. 用快照里的字段直接构造 logger / momo_api / ai_client / workflow
-          3. prepare_for_task 在每个任务开始前把 db_path 切到当前 ctx
-             （database.connection / database.momo_words 仍存模块级 DB_PATH，
+    def _create_context(self, profile_name: str) -> UserContext:
+        """从 profile_config 加载配置，创建 DB 路径、Turso 凭据和 AI Client。
+        由于内部会实例化大量重对象（包括 API Clients 和 工作流引擎），耗时较长。
+        （所有实例保存在 context 中由应用生命周期管理，不用依赖每次请求重新注入，
              所以并发不同 profile 的任务时由 prepare_for_task 序列化）
         """
         import os

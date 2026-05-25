@@ -45,6 +45,9 @@ async def lifespan(app: FastAPI):
     # 注册到依赖注入（fallback_user 仅用于无 header 时的降级，不影响 profile 隔离）
     init_deps(context_manager=context_manager, fallback_user=fallback_user)
 
+    # 预加载耗时模块，优化首次切换用户的体验
+    context_manager.preload_modules()
+
     print(f"[Web] 后端启动流程继续，fallback用户: {fallback_user}")
 
     yield  # --- 应用运行中 ---
