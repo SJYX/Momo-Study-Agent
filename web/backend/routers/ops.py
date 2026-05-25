@@ -111,7 +111,7 @@ async def db_sync_health(
     sync_count = coll.count(prof, "db.idle_sync.duration_ms")
 
     # 写队列统计
-    wq = _write_queue_stats
+    wq = q_stats
 
     # 数据一致性
     schema_version = 0
