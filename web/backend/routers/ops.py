@@ -87,7 +87,7 @@ async def db_sync_health(
     """DB 同步健康快照 (pyturso push/pull)：连接 + 同步性能 + 数据一致性。"""
     import os
 
-    from database.execution_engine import get_db_sync_status, _write_queue_stats
+    from database.execution_engine import get_db_sync_status, get_write_queue_stats
 
     prof = _normalize_profile(profile)
 
@@ -99,6 +99,8 @@ async def db_sync_health(
     conn_alive = _main_write_conn_singleton is not None
     is_cloud = bool(os.getenv("TURSO_DB_URL"))
     db_path = _main_write_conn_singleton_path or ""
+
+    q_stats = get_write_queue_stats()
     sync_status = get_db_sync_status()
 
     # 同步性能（从 MetricsCollector 取）
