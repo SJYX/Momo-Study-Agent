@@ -300,27 +300,21 @@ def _init_db_impl(db_path: Optional[str] = None) -> None:
         lcur = lc.cursor()
         _t_create = time.time()
         
-        # 优化启动流程：先读版本号，如果 >= 7 说明表已经全部建好了，直接跳过重复的 DDL 执行
-        lcur.execute("PRAGMA user_version")
-        row = lcur.fetchone()
-        current_version = row[0] if row else 0
+        # 优化启动流程：不使用可能导致 libsql 复制状态损坏的 PRAGMA user_version。
+        # 而是检查核心表 `processed_words` 是否存在来判断是否需要建表。
+        try:
+            lcur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='processed_words'")
+            has_tables = bool(lcur.fetchone())
+        except Exception:
+            has_tables = False
         
-        if current_version == 0:
-            _debug_log("[init_db] 发现新库或空库 (v0)，开始初始化表结构...", module="database.schema")
+        if not has_tables:
+            _debug_log("[init_db] 发现新库或空库，开始初始化表结构...", module="database.schema")
             _create_tables(lcur)
-            lcur.execute("PRAGMA user_version = 7")
             lc.commit()
-            _debug_log("[init_db] 建表及版本号初始化完成", start_time=_t_create, level="INFO", module="database.schema")
-        elif current_version < 7:
-            _debug_log(
-                f"[init_db] 警告：发现旧版本库 (v{current_version})，但升级脚本已被移除！"
-                "请确保它能通过 Pyturso 从云端同步到最新版本，否则可能因缺少列而报错。",
-                level="WARNING", 
-                module="database.schema"
-            )
-            # 我们不执行 _create_tables 因为 IF NOT EXISTS 不会加列，也不伪造 user_version = 7
+            _debug_log("[init_db] 建表完成", start_time=_t_create, level="INFO", module="database.schema")
         else:
-            _debug_log(f"[init_db] 库版本 v{current_version} >= 7，跳过重复建表校验", module="database.schema")
+            _debug_log("[init_db] 表结构已存在，跳过重复建表", module="database.schema")
             
         lcur.close()
 
