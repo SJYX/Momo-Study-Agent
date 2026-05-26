@@ -81,13 +81,49 @@ class ProfileSyncCoordinator:
         # Dirty flag: tracks whether there's unpushed data
         self._has_unpushed_data = False
 
+        # Adaptive debounce: track recent write timestamps
+        self._write_timestamps: list[float] = []  # 最近 10 次写入的时间戳
+        self._min_delay = 1.0  # 高频写入最小延迟（秒）
+        self._max_delay_adaptive = 3.0  # 低频写入最大延迟（秒）
+
+    def _calculate_adaptive_delay(self) -> float:
+        """根据最近写入频率计算自适应延迟。
+
+        算法：
+        - 统计最近 10 次写入的平均间隔
+        - 高频（< 0.5s 间隔）→ 1s 延迟
+        - 低频（> 5s 间隔）→ 3s 延迟
+        - 中频 → 线性插值
+
+        Returns:
+            延迟秒数（1.0 - 3.0）
+        """
+        if len(self._write_timestamps) < 5:
+            # 数据不足，使用最大延迟（保守策略）
+            return self._max_delay_adaptive
+
+        # 计算最近 10 次写入的平均间隔
+        recent = self._write_timestamps[-10:]
+        intervals = [recent[i] - recent[i-1] for i in range(1, len(recent))]
+        avg_interval = sum(intervals) / len(intervals)
+
+        # 线性映射：0.5s → 1s, 5s → 3s
+        if avg_interval <= 0.5:
+            return self._min_delay
+        elif avg_interval >= 5.0:
+            return self._max_delay_adaptive
+        else:
+            # 线性插值
+            ratio = (avg_interval - 0.5) / (5.0 - 0.5)
+            return self._min_delay + ratio * (self._max_delay_adaptive - self._min_delay)
+
     def mark_dirty(self) -> None:
         """Called after a successful write. Starts/resets the debounce timer.
 
         max_delay safety net: under continuous writes (mark_dirty faster than
         debounce), the timer would keep getting reset and _do_sync would
         starve. Each call computes its timer delay as
-            min(debounce, _first_dirty_ts + max_delay - now)
+            min(adaptive_delay, _first_dirty_ts + max_delay - now)
         so even a continuous stream of writes forces a sync within max_delay
         of the first un-synced write.
         """
@@ -95,11 +131,19 @@ class ProfileSyncCoordinator:
         self._last_write_ts = now
         self._has_unpushed_data = True  # Set dirty flag
 
+        # 记录写入时间戳（保留最近 10 次）
+        self._write_timestamps.append(now)
+        if len(self._write_timestamps) > 10:
+            self._write_timestamps.pop(0)
+
         with self._timer_lock:
             if self._first_dirty_ts is None:
                 self._first_dirty_ts = now
+
+            # 使用自适应延迟替代固定 debounce
+            adaptive_delay = self._calculate_adaptive_delay()
             max_remaining = max(0.0, (self._first_dirty_ts + self._max_delay) - now)
-            delay = min(self._debounce, max_remaining)
+            delay = min(adaptive_delay, max_remaining)
 
             if self._timer is not None:
                 self._timer.cancel()
