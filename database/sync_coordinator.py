@@ -78,6 +78,9 @@ class ProfileSyncCoordinator:
         self._timer_lock = threading.Lock()
         self._sync_lock = threading.Lock()  # Guards _do_sync serialization
 
+        # Dirty flag: tracks whether there's unpushed data
+        self._has_unpushed_data = False
+
     def mark_dirty(self) -> None:
         """Called after a successful write. Starts/resets the debounce timer.
 
@@ -90,6 +93,7 @@ class ProfileSyncCoordinator:
         """
         now = time.time()
         self._last_write_ts = now
+        self._has_unpushed_data = True  # Set dirty flag
 
         with self._timer_lock:
             if self._first_dirty_ts is None:
@@ -200,7 +204,12 @@ class ProfileSyncCoordinator:
                     self._timer.start()
 
     def _do_sync(self) -> None:
-        """Execute push → pull → checkpoint."""
+        """Execute push → pull → checkpoint.
+
+        Fast path: if _has_unpushed_data is False, skips push and only pulls
+        remote updates. Otherwise executes full push→pull cycle and clears
+        the dirty flag on successful push.
+        """
         from database.backends import get_active_backend
         from database.connection import _get_main_write_conn_singleton, _close_main_write_conn_singleton
         from database.utils import _debug_log
@@ -208,6 +217,34 @@ class ProfileSyncCoordinator:
         backend = self._backend or get_active_backend()
         base = os.path.basename(self.db_path)
 
+        # Fast path: no dirty data, skip push
+        if not self._has_unpushed_data:
+            _debug_log(
+                f"[{base}] 无脏数据，跳过 push",
+                level="DEBUG",
+                module="database.sync_coordinator",
+            )
+            # Still execute pull to get remote updates
+            try:
+                _orig_db_path = __import__("config").DB_PATH
+                if self.db_path != _orig_db_path:
+                    __import__("config").DB_PATH = self.db_path
+                try:
+                    conn = _get_main_write_conn_singleton(do_sync=False)
+                finally:
+                    if self.db_path != _orig_db_path:
+                        __import__("config").DB_PATH = _orig_db_path
+
+                backend.do_pull_only(conn)
+            except Exception as e:
+                _debug_log(
+                    f"[{base}] pull-only 失败: {e}",
+                    level="WARNING",
+                    module="database.sync_coordinator",
+                )
+            return
+
+        # Has dirty data: execute full push → pull cycle
         try:
             _orig_db_path = __import__("config").DB_PATH
             if self.db_path != _orig_db_path:
@@ -223,7 +260,12 @@ class ProfileSyncCoordinator:
             from database.execution_engine import set_db_syncing, clear_db_syncing
             set_db_syncing(phase="idle_sync")
             try:
-                backend.do_sync_on(conn)
+                # Split push and pull, using Task 1's new methods
+                backend.do_push_only(conn)
+                # Push succeeded, clear dirty flag
+                # (even if pull fails afterward, the local data is now pushed)
+                self._has_unpushed_data = False
+                backend.do_pull_only(conn)
             finally:
                 clear_db_syncing()
 
@@ -258,6 +300,7 @@ class ProfileSyncCoordinator:
                 pass
 
         except BaseException as e:
+            # Push failed, dirty flag remains True
             _debug_log(
                 f"闲时后台自动同步失败 (db_path={self.db_path[:30]}...): {e}",
                 level="WARNING",
