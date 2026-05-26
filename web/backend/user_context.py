@@ -388,6 +388,8 @@ class UserContextManager:
                 healed = heal_stuck_sync_status(ctx.momo_api, max_records=50, db_path=ctx.db_path)
                 if healed > 0:
                     ctx.logger.info(f"自愈修复了 {healed} 条卡住的记录", module="user_context")
+                else:
+                    ctx.logger.debug(f"自愈检查完成，未发现卡住的记录", module="user_context")
             except Exception as e:
                 ctx.logger.warning(f"自愈失败（非致命）: {e}", module="user_context")
 
