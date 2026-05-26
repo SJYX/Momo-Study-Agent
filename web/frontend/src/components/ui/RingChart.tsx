@@ -1,5 +1,3 @@
-import React from 'react'
-
 export function RingChart({ percentage, size = 60, strokeWidth = 6 }: { percentage: number, size?: number, strokeWidth?: number }) {
   const radius = (size - strokeWidth) / 2
   const circumference = radius * 2 * Math.PI

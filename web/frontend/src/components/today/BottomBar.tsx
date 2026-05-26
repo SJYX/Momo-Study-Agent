@@ -1,5 +1,3 @@
-import React from 'react'
-
 export interface BottomBarProps {
   selectedCount: number
   onCancel: () => void

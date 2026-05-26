@@ -5,7 +5,7 @@
  * 只换渲染：Hero 4 态 + 紧凑表格 + 暖色 pill。
  */
 import { useMemo, useRef } from 'react'
-import { Filter, Eye, EyeOff, Info, RotateCw, CloudDownload, Square } from 'lucide-react'
+import { Eye, EyeOff, Info, RotateCw, CloudDownload, Square } from 'lucide-react'
 import { rowPhaseLabel, rowDisplayLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'

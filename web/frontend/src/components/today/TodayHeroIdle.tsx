@@ -1,7 +1,6 @@
 /**
  * components/today/TodayHeroIdle.tsx — Spec §4.2 ① Idle 状态。
  */
-import { PlayCircle } from 'lucide-react'
 import RingChart from '../ui/RingChart'
 
 export interface TodayHeroIdleProps {
