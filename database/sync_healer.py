@@ -25,7 +25,7 @@ def get_stuck_records(
         session: libsql 会话对象
 
     Returns:
-        卡住的记录列表，每条包含 id, voc_id, created_at
+        卡住的记录列表，每条包含 voc_id, updated_at
     """
     threshold = datetime.now() - timedelta(hours=older_than_hours)
     threshold_str = threshold.isoformat()
@@ -105,7 +105,6 @@ def heal_stuck_sync_status(
 
     for record in stuck_records:
         voc_id = record["voc_id"]
-        record_id = record["id"]
 
         try:
             # 检查云端是否有数据
@@ -113,22 +112,22 @@ def heal_stuck_sync_status(
 
             if cloud_data and cloud_data.get("data"):
                 # 云端有数据，说明同步成功但状态更新失败
-                logger.info(f"自愈：记录 {record_id} (voc_id={voc_id}) 云端有数据，修复 sync_status")
+                logger.info(f"自愈：voc_id={voc_id} 云端有数据，修复 sync_status")
 
                 # 更新 sync_status
                 update_query = """
                     UPDATE ai_word_notes
                     SET sync_status = 1
-                    WHERE id = ?
+                    WHERE voc_id = ?
                 """
-                session.execute(update_query, (record_id,))
+                session.execute(update_query, (voc_id,))
                 healed_count += 1
             else:
                 # 云端无数据，说明确实未同步，跳过
-                logger.debug(f"自愈：记录 {record_id} (voc_id={voc_id}) 云端无数据，跳过")
+                logger.debug(f"自愈：voc_id={voc_id} 云端无数据，跳过")
 
         except Exception as e:
-            logger.warning(f"自愈：检查记录 {record_id} 时出错: {e}")
+            logger.warning(f"自愈：检查 voc_id={voc_id} 时出错: {e}")
             continue
 
     if healed_count > 0:
