@@ -31,7 +31,7 @@ def get_stuck_records(
     threshold_str = threshold.isoformat()
 
     query = """
-        SELECT id, voc_id, created_at
+        SELECT voc_id, created_at
         FROM ai_word_notes
         WHERE sync_status = 0
           AND created_at < ?
@@ -48,15 +48,13 @@ def get_stuck_records(
         # 支持字典和元组两种格式
         if isinstance(row, dict):
             records.append({
-                "id": row["id"],
                 "voc_id": row["voc_id"],
                 "created_at": row["created_at"]
             })
         else:
             records.append({
-                "id": row[0],
-                "voc_id": row[1],
-                "created_at": row[2]
+                "voc_id": row[0],
+                "created_at": row[1]
             })
 
     return records
