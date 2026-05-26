@@ -53,6 +53,15 @@ class StudyFlowManager:
         init_db()
         init_db_session_resources()
 
+        # 自愈：修复卡住的 sync_status 记录
+        try:
+            from database.sync_healer import heal_stuck_sync_status
+            healed = heal_stuck_sync_status(self.momo, max_records=50)
+            if healed > 0:
+                self.logger.info(f"自愈修复了 {healed} 条卡住的记录", module="main")
+        except Exception as e:
+            self.logger.warning(f"自愈失败（非致命）: {e}", module="main")
+
         # Phase 2: register per-profile DB sync coordinator (event-driven debounce)
         from database.sync_coordinator import ProfileSyncCoordinator, _registry_lock, _coordinators
         from database.backends import get_active_backend
