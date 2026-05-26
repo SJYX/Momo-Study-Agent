@@ -102,10 +102,11 @@ class PytursoBackend:
                 except OSError:
                     size = 0
                 elapsed = time.time() - _t0
+                operation = "连接中" if db_existed_before else "首次 bootstrap"
+                extra_note = "" if db_existed_before else " (可能耗时 60-150s)"
                 _debug_log(
-                    f"[{db_label}] bootstrap 进行中... 已 {elapsed:.0f}s,"
-                    f" .db 文件 {size / 1024 / 1024:.2f} MB"
-                    + ("" if db_existed_before else " (首次 bootstrap 可能耗时 60-150s)"),
+                    f"[{db_label}] {operation}... 已 {elapsed:.0f}s,"
+                    f" .db 文件 {size / 1024 / 1024:.2f} MB{extra_note}",
                     level="INFO",
                     module="database.backends._pyturso",
                 )
