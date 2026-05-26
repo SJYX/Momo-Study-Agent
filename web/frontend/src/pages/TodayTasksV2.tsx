@@ -5,7 +5,7 @@
  * 只换渲染：Hero 4 态 + 紧凑表格 + 暖色 pill。
  */
 import { useMemo, useRef } from 'react'
-import { Filter, Eye, EyeOff, Info, RotateCw, CloudDownload } from 'lucide-react'
+import { Filter, Eye, EyeOff, Info, RotateCw, CloudDownload, Square } from 'lucide-react'
 import { rowPhaseLabel, rowDisplayLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'
@@ -13,6 +13,7 @@ import LightConfirmBar from '../components/today/LightConfirmBar'
 import FailureGroupsPanel from '../components/today/FailureGroupsPanel'
 import BulkGuardModal from '../components/today/BulkGuardModal'
 import TodayHero from '../components/today/TodayHero'
+import BottomBar from '../components/today/BottomBar'
 import { useSearchParams } from 'react-router-dom'
 import { parseDrillDownParams, isDrillDownActive, drillDownLabel } from '../utils/drillDown'
 import { isEnabled } from '../utils/featureFlags'
@@ -98,6 +99,9 @@ export default function TodayTasksV2() {
         onViewFailures={c.flags.failureGroups ? () => c.setShowFailureMode(true) : undefined}
         onRetryBatch={() => c.refresh()}
         disabled={c.processing || c.refreshing || c.confirmingProcess}
+        filteredCount={c.filteredItemsCount}
+        filterView={c.filterView}
+        onRetryFailures={c.statusCounts.error > 0 ? () => c.handleProcess(c.items.filter(it => c.rowStatusMap[(it.voc_spelling||'').toLowerCase()]?.status === 'error').map(it => it.voc_id)) : undefined}
       />
 
       {drillActive && (
@@ -139,29 +143,52 @@ export default function TodayTasksV2() {
         </div>
       ) : (
         <>
-          {/* 筛选条 */}
+          {/* 筛选条（新版 Filter Bar） */}
           {c.flags.defaultView && c.data && c.items.length > 0 && (
             <>
-              <div className="mt-4 mb-2 flex items-center gap-3 text-sm">
-                <button
-                  onClick={() => c.setShowAll((v) => !v)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-button border border-border-default hover:bg-surface-hover transition-colors text-text-secondary"
-                >
-                  <Filter size={14} />
-                  {c.showAll ? `查看全部 (${c.sortedItems.length})` : `仅可执行 (${c.executableItems.length})`}
-                </button>
-                {!c.showAll && c.hiddenCount > 0 && (
-                  <span className="text-xs text-text-muted">已隐藏 {c.hiddenCount} 条已完成/跳过项</span>
-                )}
-                <span className="text-xs text-text-muted">价值优先 · 时间压力次级</span>
-                {c.flags.followRunning && c.isTaskRunning && (
-                  <button
-                    onClick={() => c.setFollowPaused((v) => !v)}
-                    className="flex items-center gap-1 px-2 py-1 rounded-pill text-xs border border-border-default hover:bg-surface-hover transition-colors text-text-secondary ml-auto"
-                  >
-                    {c.followPaused ? <><Eye size={12} /> 恢复跟随</> : <><EyeOff size={12} /> 暂停跟随</>}
-                  </button>
-                )}
+              <div className="mt-4 mb-3 flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2">
+                  {(['all', 'pending', 'error', 'new', 'review'] as const).map(view => {
+                    const label = {
+                      all: `全部 (${c.items.length})`,
+                      pending: `待处理`,
+                      error: `已失败`,
+                      new: `新词`,
+                      review: `复习词`
+                    }[view]
+                    return (
+                      <button
+                        key={view}
+                        onClick={() => c.setFilterView(view)}
+                        className={`px-3 py-1.5 rounded-pill border text-xs font-medium transition-colors ${
+                          c.filterView === view 
+                            ? 'bg-surface-hover text-text-primary border-border-default' 
+                            : 'bg-transparent text-text-secondary border-transparent hover:bg-surface-hover/50'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="flex items-center gap-3">
+                   {!c.isBatchMode && (
+                     <button
+                       onClick={() => c.setIsBatchMode(true)}
+                       className="flex items-center gap-1.5 text-text-secondary hover:text-text-primary text-xs"
+                     >
+                       <Square size={14} /> 进入批量选择
+                     </button>
+                   )}
+                  {c.flags.followRunning && c.isTaskRunning && (
+                    <button
+                      onClick={() => c.setFollowPaused((v) => !v)}
+                      className="flex items-center gap-1 px-2 py-1 rounded-pill text-xs border border-border-default hover:bg-surface-hover transition-colors text-text-secondary"
+                    >
+                      {c.followPaused ? <><Eye size={12} /> 恢复跟随</> : <><EyeOff size={12} /> 暂停跟随</>}
+                    </button>
+                  )}
+                </div>
               </div>
               {c.isTaskRunning && (
                 <div className="mb-2 flex items-center gap-1.5 text-xs text-accent">
@@ -187,9 +214,13 @@ export default function TodayTasksV2() {
               <table className="w-full text-sm">
                 <thead className="bg-surface-hover">
                   <tr>
-                    <th className="text-left px-4 py-2 font-medium text-text-secondary">#</th>
-                    <th className="text-left px-4 py-2 font-medium text-text-secondary">单词</th>
-                    <th className="text-left px-4 py-2 font-medium text-text-secondary">进度</th>
+                        {c.isBatchMode && (
+                          <th className="px-4 py-2 w-10" />
+                        )}
+                        <th className="text-left px-4 py-2 font-medium text-text-secondary">#</th>
+                        <th className="text-left px-4 py-2 font-medium text-text-secondary">单词</th>
+                        <th className="text-left px-4 py-2 font-medium text-text-secondary">进度</th>
+                        <th className="px-4 py-2" />
                   </tr>
                 </thead>
                 <tbody>
@@ -198,6 +229,8 @@ export default function TodayTasksV2() {
                     const status = state?.status || 'pending'
                     const phase = state?.phase
                     const isRunning = status === 'running'
+                        const isError = status === 'error'
+                        const isSelected = c.selectedIds.has(item.voc_id)
                     let pillClass = {
                       pending: 'bg-surface-hover text-text-secondary',
                       running: 'bg-accent-soft text-accent-hover border border-accent',
@@ -211,13 +244,34 @@ export default function TodayTasksV2() {
                     return (
                       <tr
                         key={item.voc_id}
-                        className={`border-t border-border-soft hover:bg-surface-hover ${isRunning ? 'bg-surface-highlight' : ''}`}
+                        onClick={c.isBatchMode ? () => {
+                          const next = new Set(c.selectedIds)
+                          if (next.has(item.voc_id)) next.delete(item.voc_id)
+                          else next.add(item.voc_id)
+                          c.setSelectedIds(next)
+                        } : undefined}
+                        className={`border-t border-border-soft transition-all duration-300 ${
+                          c.isBatchMode ? 'cursor-pointer' : ''
+                        } ${
+                          isRunning ? 'bg-surface-highlight animate-pulse' : 
+                          isError ? 'bg-error-soft/30' : 'hover:bg-surface-hover'
+                        }`}
                         ref={(el) => {
                           const k = (item.voc_spelling || '').toLowerCase()
                           if (el) rowRefs.current.set(k, el)
                           else rowRefs.current.delete(k)
                         }}
                       >
+                        {c.isBatchMode && (
+                          <td className="px-4 py-2 w-10">
+                            <input 
+                              type="checkbox" 
+                              checked={isSelected} 
+                              readOnly
+                              className="w-4 h-4 rounded border-border-default text-accent focus:ring-accent/20" 
+                            />
+                          </td>
+                        )}
                         <td className="px-4 py-2 text-text-muted">{i + 1}</td>
                         <td className="px-4 py-2 font-medium text-text-primary">{item.voc_spelling}</td>
                         <td className="px-4 py-2">
@@ -242,6 +296,16 @@ export default function TodayTasksV2() {
                             )}
                           </div>
                         </td>
+                        <td className="px-4 py-2 text-right">
+                           {isError && !c.isBatchMode && (
+                             <button
+                               onClick={(e) => { e.stopPropagation(); c.handleProcess([item.voc_id]) }}
+                               className="text-error hover:text-error/80 text-xs px-2 py-1 rounded border border-error/30 hover:bg-error-soft transition-colors"
+                             >
+                               ↻ 重试
+                             </button>
+                           )}
+                        </td>
                       </tr>
                     )
                   })}
@@ -256,6 +320,22 @@ export default function TodayTasksV2() {
             </div>
           )}
         </>
+      )}
+
+      {c.isBatchMode && (
+        <BottomBar
+          selectedCount={c.selectedIds.size}
+          onCancel={() => {
+            c.setIsBatchMode(false)
+            c.setSelectedIds(new Set())
+          }}
+          onProcess={() => {
+            c.handleProcess(Array.from(c.selectedIds))
+            c.setIsBatchMode(false)
+            c.setSelectedIds(new Set())
+          }}
+          disabled={c.processing}
+        />
       )}
     </div>
   )

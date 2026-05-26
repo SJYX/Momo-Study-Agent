@@ -82,6 +82,10 @@ export function useTodayController(rowRefs: RowRefMap) {
   const [showFailureMode, setShowFailureMode] = useState(false)
   const [showAll, setShowAll] = useState(false)
   const [actionError, setActionError] = useState('')
+  // 视图过滤与批量选择（新增）
+  const [filterView, setFilterView] = useState<'all' | 'pending' | 'error' | 'new' | 'review'>('all')
+  const [isBatchMode, setIsBatchMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   // -------------------------------------------------------------------------
   // Feature flags
@@ -114,12 +118,32 @@ export function useTodayController(rowRefs: RowRefMap) {
     [flags.defaultView, sortedItems, rowStatusMap],
   )
 
+  // 根据 filterView 派生显示列表
+  const filteredItems = useMemo(() => {
+    switch (filterView) {
+      case 'pending':
+        return sortedItems.filter(it => {
+          const s = rowStatusMap[(it.voc_spelling || '').toLowerCase()]
+          return !s || (s.phase !== 'skipped' && s.status !== 'done' && s.status !== 'error')
+        })
+      case 'error':
+        return sortedItems.filter(it => rowStatusMap[(it.voc_spelling || '').toLowerCase()]?.status === 'error')
+      case 'new':
+        return sortedItems.filter(it => typeof it.review_count === 'number' && it.review_count === 0)
+      case 'review':
+        return sortedItems.filter(it => typeof it.review_count === 'number' && it.review_count > 0)
+      case 'all':
+      default:
+        return flags.defaultView && !showAll ? executableItems : sortedItems
+    }
+  }, [filterView, sortedItems, rowStatusMap, flags.defaultView, showAll, executableItems])
+
   const displayItems = useMemo(() => {
-    let list = flags.defaultView && !showAll ? executableItems : sortedItems
+    let list = [...filteredItems]
 
     // 动态置顶：执行中把 running 行移到顶部
     if (taskStatus === 'running' || taskStatus === 'pending') {
-      list = [...list].sort((a, b) => {
+      list.sort((a, b) => {
         const aStatus = rowStatusMap[(a.voc_spelling || '').toLowerCase()]?.status
         const bStatus = rowStatusMap[(b.voc_spelling || '').toLowerCase()]?.status
         if (aStatus === 'running' && bStatus !== 'running') return -1
@@ -128,7 +152,7 @@ export function useTodayController(rowRefs: RowRefMap) {
       })
     }
     return list
-  }, [flags.defaultView, showAll, executableItems, sortedItems, taskStatus, rowStatusMap])
+  }, [filteredItems, taskStatus, rowStatusMap])
 
   const hiddenCount = flags.defaultView ? sortedItems.length - executableItems.length : 0
   const runningKey = useMemo(() => findRunningKey(rowStatusMap), [rowStatusMap])
@@ -264,12 +288,21 @@ export function useTodayController(rowRefs: RowRefMap) {
     dbSyncing,
     errorMsg,
 
+    // 新增视图与批量状态
+    filterView,
+    isBatchMode,
+    selectedIds,
+    filteredItemsCount: filteredItems.length,
+
     // 动作
     setConfirmingProcess,
     setConfirmingBulk,
     setFollowPaused,
     setShowFailureMode,
     setShowAll,
+    setFilterView,
+    setIsBatchMode,
+    setSelectedIds,
     handleProcess,
     handleClick,
     handleCancel: cancelMutation.mutate,

@@ -26,6 +26,10 @@ export interface TodayHeroProps {
   onViewFailures?: () => void
   onRetryBatch: () => void
   disabled?: boolean
+  // 新增
+  filteredCount?: number
+  filterView?: string
+  onRetryFailures?: () => void
 }
 
 export default function TodayHero(props: TodayHeroProps) {
@@ -66,12 +70,13 @@ export default function TodayHero(props: TodayHeroProps) {
   return (
     <TodayHeroIdle
       totalCount={props.totalCount}
-      executableCount={props.executableCount}
       doneCount={props.doneCount}
-      showAll={props.showAll}
+      errorCount={props.errorCount}
+      filteredCount={props.filteredCount ?? props.totalCount}
+      filterView={props.filterView ?? 'all'}
       onStart={props.onStart}
-      onToggleShowAll={props.onToggleShowAll}
       disabled={props.disabled}
+      onRetryFailures={props.onRetryFailures}
     />
   )
 }

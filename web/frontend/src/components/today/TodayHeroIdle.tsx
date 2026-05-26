@@ -1,50 +1,52 @@
 /**
  * components/today/TodayHeroIdle.tsx — Spec §4.2 ① Idle 状态。
  */
-import { PlayCircle, Filter } from 'lucide-react'
+import { PlayCircle } from 'lucide-react'
+import RingChart from '../ui/RingChart'
 
-export default function TodayHeroIdle({
-  totalCount,
-  executableCount,
-  doneCount,
-  showAll,
-  onStart,
-  onToggleShowAll,
-  disabled,
-}: {
+export interface TodayHeroIdleProps {
   totalCount: number
-  executableCount: number
   doneCount: number
-  showAll: boolean
+  errorCount: number
+  filteredCount: number
+  filterView: string
   onStart: () => void
-  onToggleShowAll: () => void
   disabled?: boolean
-}) {
+  onRetryFailures?: () => void
+}
+
+export default function TodayHeroIdle(props: TodayHeroIdleProps) {
+  const percentage = props.totalCount > 0 ? (props.doneCount / props.totalCount) * 100 : 0
+  const actionText = props.filterView === 'all' ? `处理剩余 (${Math.max(0, props.filteredCount - props.doneCount)})` : `处理选中视图 (${props.filteredCount})`
+
   return (
-    <div className="rounded-card border border-border-hero shadow-hero p-6 bg-gradient-to-br from-surface-card to-surface-highlight">
-      <div className="text-xs text-text-muted mb-1">今日待处理 · 价值优先</div>
-      <div className="text-3xl font-bold text-text-primary mb-2">{totalCount} 个单词</div>
-      <div className="flex gap-3 text-sm text-text-secondary mb-4">
-        <span><b className="text-text-primary">{executableCount}</b> 可执行</span>
-        <span className="text-text-muted">·</span>
-        <span><b className="text-text-primary">{doneCount}</b> 已完成</span>
-      </div>
-      <div className="flex gap-2">
-        <button
-          onClick={onStart}
-          disabled={disabled || executableCount === 0}
-          className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-button text-sm font-semibold transition-colors"
-        >
-          <PlayCircle size={16} />
-          全部处理
-        </button>
-        <button
-          onClick={onToggleShowAll}
-          className="flex items-center gap-1.5 bg-accent-soft hover:bg-accent hover:text-white text-accent-hover px-4 py-2.5 rounded-button text-sm font-medium transition-colors"
-        >
-          <Filter size={14} />
-          {showAll ? `仅可执行 (${executableCount})` : `查看全部 (${totalCount})`}
-        </button>
+    <div className="bg-gradient-to-br from-surface-highlight to-surface-base rounded-card border border-border-hero shadow-hero p-5 mb-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <RingChart percentage={percentage} />
+          <div>
+            <h2 className="text-lg font-semibold text-text-primary">今日进度</h2>
+            <p className="text-sm text-text-secondary mt-1">{props.doneCount} / {props.totalCount} 已完成</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {props.errorCount > 0 && props.onRetryFailures && (
+            <button 
+              onClick={props.onRetryFailures}
+              disabled={props.disabled}
+              className="bg-error-soft text-error px-4 py-2 rounded-button text-sm font-medium hover:bg-error/10 transition-colors"
+            >
+              ↻ 重试 {props.errorCount} 个失败
+            </button>
+          )}
+          <button
+            onClick={props.onStart}
+            disabled={props.disabled || props.filteredCount === 0}
+            className="bg-accent text-white px-4 py-2 rounded-button text-sm font-medium hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            🚀 {actionText}
+          </button>
+        </div>
       </div>
     </div>
   )
