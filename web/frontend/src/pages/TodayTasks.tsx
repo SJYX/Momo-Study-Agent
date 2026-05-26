@@ -47,7 +47,7 @@ export default function TodayTasks() {
             </button>
           </div>
           <p className="text-gray-500 flex items-center gap-2">
-            {c.data ? `${c.data.count} 个单词待处理` : '加载中...'}
+            {c.data ? `${c.executableItems.length} 个单词待处理` : '加载中...'}
             {c.data?.ts && !c.refreshing && (
               <span className="text-xs text-gray-300">
                 (数据更新于 {new Date(c.data.ts * 1000).toLocaleTimeString()})

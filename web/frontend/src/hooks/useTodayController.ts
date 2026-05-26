@@ -124,7 +124,7 @@ export function useTodayController(rowRefs: RowRefMap) {
       case 'pending':
         return sortedItems.filter(it => {
           const s = rowStatusMap[(it.voc_spelling || '').toLowerCase()]
-          return !s || (s.phase !== 'skipped' && s.status !== 'done' && s.status !== 'error')
+          return !s || (s.phase !== 'skipped' && s.phase !== 'sync_conflict' && s.status !== 'done' && s.status !== 'error')
         })
       case 'error':
         return sortedItems.filter(it => rowStatusMap[(it.voc_spelling || '').toLowerCase()]?.status === 'error')

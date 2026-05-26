@@ -10,6 +10,7 @@ import UserGateway from './pages/UserGateway'
 import Dashboard from './pages/Dashboard'
 import OpsMonitor from './pages/OpsMonitor'
 import TodayTasks from './pages/TodayTasks'
+import TodayConflicts from './pages/TodayConflicts'
 import FuturePlan from './pages/FuturePlan'
 import Iteration from './pages/Iteration'
 import WordLibrary from './pages/WordLibrary'
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
           { index: true, element: isEnabled('ff_ops_monitor') ? <OpsMonitor /> : <Dashboard /> },
           { path: 'dashboard', element: <Dashboard /> },
           { path: 'today', element: <TodayTasks /> },
+          { path: 'today/conflicts', element: <TodayConflicts /> },
           { path: 'future', element: <FuturePlan /> },
           { path: 'iteration', element: <Iteration /> },
           { path: 'words', element: <WordLibrary /> },

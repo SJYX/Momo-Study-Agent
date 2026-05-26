@@ -50,7 +50,7 @@ class TestStatsSummary:
         )
         conn.execute(
             "INSERT INTO ai_word_notes (voc_id, spelling, sync_status, content_origin, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            ("v1", "abandon", 0, "ai_generated"),
+            ("v1", "abandon", 0, "cache_hit"),
         )
         conn.execute(
             "INSERT INTO ai_batches (batch_id, total_tokens, total_latency_ms) VALUES (?, ?, ?)",

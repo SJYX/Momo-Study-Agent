@@ -103,7 +103,7 @@ def _fetch_ops_db_data(db_path: str) -> dict:
         conn1 = _get_read_conn(db_path)
         cur1 = conn1.cursor()
         try:
-            cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0 AND content_origin = 'ai_generated'")
+            cur1.execute("SELECT COUNT(*) FROM ai_word_notes WHERE sync_status = 0")
             row = cur1.fetchone()
             sync_queue_depth = int((row or [0])[0] or 0)
         finally:

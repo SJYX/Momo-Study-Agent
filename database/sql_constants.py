@@ -31,7 +31,6 @@ UNSYNCED_NOTES_SELECT_SQL = (
     "maimemo_context, it_level, updated_at, content_origin "
     "FROM ai_word_notes "
     "WHERE sync_status = 0 "
-    "AND (content_origin IS NULL OR content_origin = 'ai_generated') "
     "ORDER BY updated_at ASC"
 )
 

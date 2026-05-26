@@ -5,7 +5,7 @@
  * 只换渲染：Hero 4 态 + 紧凑表格 + 暖色 pill。
  */
 import { useMemo, useRef } from 'react'
-import { Eye, EyeOff, Info, RotateCw, CloudDownload, Square } from 'lucide-react'
+import { Eye, EyeOff, Info, RotateCw, CloudDownload, Square, AlertTriangle } from 'lucide-react'
 import { rowPhaseLabel, rowDisplayLabel } from '../utils/rowProgress'
 import { useTodayController } from '../hooks/useTodayController'
 import ErrorBanner from '../components/ui/ErrorBanner'
@@ -14,7 +14,7 @@ import FailureGroupsPanel from '../components/today/FailureGroupsPanel'
 import BulkGuardModal from '../components/today/BulkGuardModal'
 import TodayHero from '../components/today/TodayHero'
 import BottomBar from '../components/today/BottomBar'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { parseDrillDownParams, isDrillDownActive, drillDownLabel } from '../utils/drillDown'
 import { isEnabled } from '../utils/featureFlags'
 import DrillDownNotice from '../components/today/DrillDownNotice'
@@ -50,7 +50,17 @@ export default function TodayTasksV2() {
   )
   const pendingCount = Math.max(
     0,
-    c.items.length - c.statusCounts.done - c.statusCounts.error - c.statusCounts.skipped - runningCount,
+    c.items.filter((it) => {
+      const s = c.rowStatusMap[(it.voc_spelling || '').toLowerCase()]
+      if (!s) return true
+      if (s.phase === 'sync_conflict') return false
+      return s.status === 'pending'
+    }).length,
+  )
+
+  const conflictCount = useMemo(
+    () => Object.values(c.rowStatusMap).filter((s) => s?.phase === 'sync_conflict').length,
+    [c.rowStatusMap],
   )
 
   return (
@@ -69,13 +79,24 @@ export default function TodayTasksV2() {
             </button>
           </div>
           <p className="text-text-secondary text-sm flex items-center gap-2">
-            {c.data ? `${c.data.count} 个单词待处理` : '加载中...'}
+            {c.data ? `${c.executableItems.length} 个单词待处理` : '加载中...'}
             {c.data?.ts && !c.refreshing && (
               <span className="text-xs text-text-muted">
                 (数据更新于 {new Date(c.data.ts * 1000).toLocaleTimeString()})
               </span>
             )}
           </p>
+          {conflictCount > 0 && (
+            <div className="mt-2">
+              <Link
+                to="/today/conflicts"
+                className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-pill border border-error/30 bg-error-soft text-error hover:opacity-90"
+              >
+                <AlertTriangle size={12} />
+                {conflictCount} 个冲突词，进入冲突页面
+              </Link>
+            </div>
+          )}
         </div>
       </div>
 

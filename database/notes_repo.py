@@ -246,7 +246,7 @@ def save_ai_word_notes_batch(
 def get_unsynced_notes(db_path: Optional[str] = None, session: DBSession = None) -> List[Dict[str, Any]]:
     rows = session.fetchall(UNSYNCED_NOTES_SELECT_SQL)
     result = rows_to_dicts(rows, fallback_columns=UNSYNCED_NOTE_COLUMNS)
-    _debug_log(f"获取未同步笔记完成: {len(result)} 条 (仅 ai_generated)", module=_LOG_MOD)
+    _debug_log(f"获取未同步笔记完成: {len(result)} 条", module=_LOG_MOD)
     return result
 
 

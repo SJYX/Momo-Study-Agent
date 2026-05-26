@@ -45,6 +45,13 @@ def test_unsynced_note_columns_match_select_select_list():
     assert selected == UNSYNCED_NOTE_COLUMNS
 
 
+def test_unsynced_notes_query_is_all_unsynced_rows():
+    """启动补发查询必须覆盖所有 sync_status=0 的未同步笔记。"""
+    assert "WHERE sync_status = 0" in UNSYNCED_NOTES_SELECT_SQL
+    assert "content_origin IS NULL" not in UNSYNCED_NOTES_SELECT_SQL
+    assert "ai_generated" not in UNSYNCED_NOTES_SELECT_SQL
+
+
 def test_community_lookup_template_uses_placeholders_marker():
     """模板必须包含 {placeholders}，由调用方按 IN 长度填充。"""
     assert "{placeholders}" in COMMUNITY_NOTE_LOOKUP_SQL_TEMPLATE
