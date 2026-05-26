@@ -195,37 +195,63 @@ class PytursoBackend:
 
         return db
 
+    def do_push_only(self, conn: Any) -> None:
+        """Push local changes to remote and checkpoint.
+
+        Raises:
+            Exception: Propagates exceptions from push or checkpoint to allow caller to detect failures.
+        """
+        if not hasattr(conn, "push"):
+            return
+
+        _t_push = time.time()
+        conn.push()
+        _debug_log(
+            f"[pyturso do_push_only] push 完成",
+            start_time=_t_push,
+            level="INFO",
+            module="database.backends._pyturso",
+        )
+
+        _t_ckpt = time.time()
+        conn.checkpoint()
+        _debug_log(
+            f"[pyturso do_push_only] checkpoint 完成",
+            start_time=_t_ckpt,
+            level="INFO",
+            module="database.backends._pyturso",
+        )
+
+    def do_pull_only(self, conn: Any) -> None:
+        """Pull remote changes to local.
+
+        Pull failures are logged but not propagated (local data remains usable).
+        """
+        if not hasattr(conn, "pull"):
+            return
+
+        try:
+            _t_pull = time.time()
+            conn.pull()
+            _debug_log(
+                f"[pyturso do_pull_only] pull 完成",
+                start_time=_t_pull,
+                level="INFO",
+                module="database.backends._pyturso",
+            )
+        except Exception as e:
+            _debug_log(
+                f"[pyturso do_pull_only] pull 失败（非致命，本地仍可用）: {e}",
+                level="WARNING",
+                module="database.backends._pyturso",
+            )
+
     def do_sync_on(self, conn: Any) -> None:
-        """Trigger a full sync cycle (push → pull → checkpoint) on an existing pyturso connection."""
-        if hasattr(conn, "pull"):
-            try:
-                _t_push = time.time()
-                conn.push()
-                _debug_log(
-                    f"[pyturso do_sync_on] push 完成",
-                    start_time=_t_push,
-                    level="INFO",
-                    module="database.backends._pyturso",
-                )
-                _t_pull = time.time()
-                conn.pull()
-                _debug_log(
-                    f"[pyturso do_sync_on] pull 完成",
-                    start_time=_t_pull,
-                    level="INFO",
-                    module="database.backends._pyturso",
-                )
-                _t_ckpt = time.time()
-                conn.checkpoint()
-                _debug_log(
-                    f"[pyturso do_sync_on] checkpoint 完成",
-                    start_time=_t_ckpt,
-                    level="INFO",
-                    module="database.backends._pyturso",
-                )
-            except Exception as e:
-                _debug_log(
-                    f"[pyturso] do_sync_on 失败: {e}",
-                    level="WARNING",
-                    module="database.backends._pyturso",
-                )
+        """Trigger a full sync cycle (push → pull → checkpoint) on an existing pyturso connection.
+
+        Raises:
+            Exception: Propagates exceptions from do_push_only to allow caller to detect push failures.
+        """
+        # Rely on internal guards in do_push_only/do_pull_only
+        self.do_push_only(conn)  # Let push exceptions propagate
+        self.do_pull_only(conn)  # Pull failures are logged internally

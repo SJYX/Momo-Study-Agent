@@ -96,12 +96,14 @@ async def switch_active_user(
 
     import web.backend.deps as _deps
 
+    warmup_state = "not_started"
     try:
         if _deps._context_manager:
             ctx = _deps._context_manager.get(username.lower())
             # get() 已同步执行 DB 初始化（init_db + init_db_session_resources）。
             # ensure_profile_ready 是 no-op（warmup 已在 get 中启动）。
             _deps._context_manager.ensure_profile_ready(ctx)
+            warmup_state = _deps._context_manager.get_warmup_state(username.lower())
     except Exception as e:
         return error_response("CONTEXT_ERROR", f"初始化用户上下文失败: {e}", user_id=user)
 

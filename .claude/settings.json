@@ -213,7 +213,18 @@
       "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from core.gemini_client import GeminiClient; print\\('test_apple import: OK'\\)\")",
       "Bash(python -m pytest tests/core/test_gemini_client.py tests/core/test_maimemo_api.py tests/core/test_apple.py -v --tb=short -x)",
       "Bash(python -m py_compile core/log_config.py)",
-      "Bash(python -m py_compile core/mimo_client.py core/iteration_manager.py)"
+      "Bash(python -m py_compile core/mimo_client.py core/iteration_manager.py)",
+      "Bash(gh pr create --title 'chore\\(database\\): refresh libsql residual comments + drop dead compat shims \\(Phase 1\\)' --body ' *)",
+      "Bash(git log *)",
+      "Bash(Select-String -Pattern \"init_concurrent_system|cleanup_concurrent_system\")",
+      "Bash(gh pr create --base feat/web-ui --title 'refactor\\(database\\): remove dead write-queue shims, consolidate write API \\(Phase 2\\)' --body ' *)",
+      "mcp__codegraph__codegraph_node",
+      "mcp__codegraph__codegraph_callers",
+      "Read(//c/Users/Ashi/.claude/skills/subagent-driven-development/**)",
+      "Bash(Select-Object -Last 15)",
+      "Bash(git mv *)",
+      "mcp__codegraph__codegraph_explore",
+      "Bash(echo \"compile ok: $?\")"
     ],
     "additionalDirectories": [
       "E:\\MOMO_Script",

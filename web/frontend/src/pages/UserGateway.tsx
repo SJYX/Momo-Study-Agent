@@ -10,6 +10,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useProfileStore } from '../stores/profile'
+import { useSyncGateStore } from '../stores/syncGate'
 import { apiClient, apiPost, apiPut } from '../api/client'
 import { queryKeys } from '../queries/queryClient'
 import ErrorBanner from '../components/ui/ErrorBanner'
@@ -94,7 +95,6 @@ export default function UserGateway() {
     onError: (e) => setActionError(String(e instanceof Error ? e.message : e)),
   })
 
-  // 切换用户
   const switchUserMutation = useMutation({
     mutationFn: async (username: string) => {
       setActiveProfile(username)
@@ -152,6 +152,7 @@ export default function UserGateway() {
                 </span>
                 <button
                   onClick={() => navigate('/', { replace: true })}
+                  disabled={switching}
                   className="text-sm text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1"
                 >
                   继续 <ArrowRight size={14} />
