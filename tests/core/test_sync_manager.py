@@ -12,16 +12,15 @@ def mock_deps():
     return logger, momo_api, on_mark_processed
 
 def test_sync_manager_success_flow(mock_deps):
-    """测试同步成功流程：入队 -> 调用 API -> 标记成功"""
+    """测试同步成功流程：入队 -> 调用 API -> 立即写入数据库"""
     logger, momo_api, _ = mock_deps
 
     # 模拟 API 返回成功 (sync_status=1)
     momo_api.sync_interpretation.return_value = {"sync_status": 1}
 
     with patch("core.sync_manager.get_local_word_note", return_value=None), \
-         patch("core.sync_manager.mark_processed_batch", return_value=True) as mock_processed_batch, \
-         patch("core.sync_manager.update_sync_status_batch", return_value=True) as mock_update_status, \
-         patch("core.sync_manager.mark_note_synced", return_value=True) as mock_mark:
+         patch("core.sync_manager.mark_note_synced", return_value=True) as mock_mark_synced, \
+         patch("core.sync_manager.set_note_sync_status", return_value=True) as mock_set_status:
 
         sm = SyncManager(logger, momo_api)
 
@@ -34,9 +33,9 @@ def test_sync_manager_success_flow(mock_deps):
 
         # 验证 API 调用
         momo_api.sync_interpretation.assert_called_once()
-        # 注意：由于现在采用批量刷盘逻辑，可能需要手动触发 flush 或等待
-        sm.flush_pending_syncs("test_context")
-        mock_processed_batch.assert_called_once()
+        # 验证立即写入（不再使用批量缓冲）
+        mock_mark_synced.assert_called_once()
+        mock_set_status.assert_called_once()
 
 def test_sync_manager_api_conflict_flow(mock_deps):
     """测试同步时 API 发现冲突 (状态 2)"""

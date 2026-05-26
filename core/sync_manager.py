@@ -13,10 +13,8 @@ from core.sync_priority import Priority
 from database.momo_words import (
     get_local_word_note,
     mark_processed,
-    mark_processed_batch,
     mark_note_synced,
     set_note_sync_status,
-    update_sync_status_batch,
 )
 from database.utils import clean_for_maimemo
 
@@ -55,14 +53,6 @@ class SyncManager:
             "中央 Hub 数据库": [],
         }
         self._sync_duration_history_limit = 12
-
-        # 写合并缓冲：积攒终态写入，定量/定时批量刷盘
-        self._pending_synced: list = []  # [(voc_id, spell), ...] 成功同步待刷盘
-        self._pending_status: list = []  # [(sync_status, match_confidence, match_reason, last_synced_content, voc_id), ...] 终态状态待刷盘
-        self._flush_lock = threading.Lock()
-        self._last_flush_ts = time.time()
-        self._flush_batch_size = 20   # 积攒满 N 条即刷
-        self._flush_interval_s = 2.0  # 或间隔 N 秒即刷
 
         self._is_processing = False
         self._is_processing_lock = threading.Lock()
@@ -357,10 +347,22 @@ class SyncManager:
                         synced_content = clean_for_maimemo(
                             sync_result.get("cloud_interpretation", "") if isinstance(sync_result, dict) else interpretation
                         ) or synced_content
-                        # 积攒到写合并缓冲，由 _flush_pending_writes 统一批量刷盘
-                        with self._flush_lock:
-                            self._pending_synced.append((voc_id, spell))
-                            self._pending_status.append((1, match_confidence, match_reason, synced_content, voc_id))
+                        # 立即写入数据库，不再使用写合并缓冲
+                        try:
+                            if self.db_path:
+                                mark_note_synced(voc_id, spell, db_path=self.db_path)
+                            else:
+                                mark_note_synced(voc_id, spell)
+                        except Exception as persist_error:
+                            self.logger.warning(f"⚠️ {spell} processed 标记写入失败: {persist_error}")
+
+                        if self.db_path:
+                            ok = set_note_sync_status(voc_id, 1, db_path=self.db_path, match_confidence=match_confidence, match_reason=match_reason, last_synced_content=synced_content)
+                        else:
+                            ok = set_note_sync_status(voc_id, 1, match_confidence=match_confidence, match_reason=match_reason, last_synced_content=synced_content)
+                        if not ok:
+                            self.logger.warning(f"⚠️ {spell} sync_status=1 写回未命中")
+
                         self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 释义一致并入库")
                         self._log_row_status(spell, "done", "sync_done", "同步完成")
                     elif sync_status == 2:
@@ -382,9 +384,22 @@ class SyncManager:
                                 match_confidence = 1.0
                                 match_reason = "3-way-merged"
                                 synced_content = clean_for_maimemo(interpretation)
-                                with self._flush_lock:
-                                    self._pending_synced.append((voc_id, spell))
-                                    self._pending_status.append((1, match_confidence, match_reason, synced_content, voc_id))
+                                # 立即写入数据库，不再使用写合并缓冲
+                                try:
+                                    if self.db_path:
+                                        mark_note_synced(voc_id, spell, db_path=self.db_path)
+                                    else:
+                                        mark_note_synced(voc_id, spell)
+                                except Exception as persist_error:
+                                    self.logger.warning(f"⚠️ {spell} 3-Way Merge processed 标记写入失败: {persist_error}")
+
+                                if self.db_path:
+                                    ok = set_note_sync_status(voc_id, 1, db_path=self.db_path, match_confidence=match_confidence, match_reason=match_reason, last_synced_content=synced_content)
+                                else:
+                                    ok = set_note_sync_status(voc_id, 1, match_confidence=match_confidence, match_reason=match_reason, last_synced_content=synced_content)
+                                if not ok:
+                                    self.logger.warning(f"⚠️ {spell} 3-Way Merge sync_status=1 写回未命中")
+
                                 self.logger.info(f"[Pipeline] {spell} - 4. 墨墨同步完成: 3-Way Merge 覆盖成功并入库")
                             else:
                                 self.logger.warning(f"[Pipeline] ⚠️ {spell} - 3-Way Merge: 尝试覆盖失败，回退冲突态")
@@ -457,60 +472,9 @@ class SyncManager:
                     self._is_processing = False
                 self._is_processing_event.set()
 
-            # 每轮循环末检查是否需要刷写缓冲
-            self._maybe_flush()
-
-        # 退出前最终刷写
-        self._flush_pending_writes()
         self._sync_worker_stopped = True
 
-    def _maybe_flush(self):
-        """定量/定时触发批量刷盘。"""
-        with self._flush_lock:
-            pending_count = len(self._pending_synced) + len(self._pending_status)
-        if pending_count <= 0:
-            return
-        elapsed = time.time() - self._last_flush_ts
-        if pending_count >= self._flush_batch_size or elapsed >= self._flush_interval_s:
-            self._flush_pending_writes()
-
-    def _flush_pending_writes(self):
-        """将积攒的终态写入合并为批量事务一次性刷盘。"""
-        with self._flush_lock:
-            synced_batch = list(self._pending_synced)
-            status_batch = list(self._pending_status)
-            self._pending_synced.clear()
-            self._pending_status.clear()
-            self._last_flush_ts = time.time()
-
-        if not synced_batch and not status_batch:
-            return
-
-        # 1. 批量写 processed 标记
-        if synced_batch:
-            try:
-                db_kw = {"db_path": self.db_path} if self.db_path else {}
-                if not mark_processed_batch(synced_batch, **db_kw):
-                    self.logger.warning(f"⚠️ 批量 processed 标记写入返回 False（{len(synced_batch)} 条）")
-            except Exception as e:
-                self.logger.warning(f"⚠️ 批量 processed 标记写入失败: {e}")
-
-        # 2. 批量写 sync_status 终态
-        if status_batch:
-            try:
-                db_kw = {"db_path": self.db_path} if self.db_path else {}
-                if not update_sync_status_batch([], match_items=status_batch, **db_kw):
-                    self.logger.warning(f"⚠️ 批量 sync_status 写入返回 False（{len(status_batch)} 条）")
-            except Exception as e:
-                self.logger.warning(f"⚠️ 批量 sync_status 写入失败: {e}")
-
-        total = len(synced_batch) + len(status_batch)
-        if total > 0:
-            self.logger.info(f"[SyncFlush] 批量刷盘完成: {len(synced_batch)} 条 processed + {len(status_batch)} 条 status")
-
     def flush_pending_syncs(self, context_name: str):
-        # 先刷写积攒的终态
-        self._flush_pending_writes()
         # 等待同步队列完全排空，确保 taskStatus="done" 发出时墨墨同步已完成
         remaining = self.sync_queue.qsize()
         if remaining > 0:
@@ -544,8 +508,6 @@ class SyncManager:
         self.logger.info(f"退出前关闭后台同步线程，剩余任务 {pending_count} 个...")
         self._stop_event.set()
         self.sync_worker_thread.join(timeout=5.0)
-        # 确保 worker 退出后残余缓冲也被刷写
-        self._flush_pending_writes()
         if self.sync_worker_thread.is_alive():
             self.logger.warning("后台同步线程未在 5 秒内结束")
         else:
