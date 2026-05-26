@@ -14,6 +14,7 @@ import sqlite3
 import pytest
 
 from database import connection as conn_mod
+import database.execution_engine as db_engine
 from database._repo_helpers import dispatch_batch_write, dispatch_write
 from database.notes_repo import (
     save_ai_word_iteration,
@@ -117,3 +118,17 @@ def test_mark_processed_batch_returns_true_for_empty_input():
 def test_mark_processed_batch_swallows_db_error(monkeypatch):
     monkeypatch.setattr("database.progress_repo.dispatch_batch_write", lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.OperationalError("busy")))
     assert mark_processed_batch([("v1", "apple"), ("v2", "bee")]) is False
+
+
+def test_mark_main_db_needs_sync_marks_dirty_even_with_existing_conn(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_mark_db_written(path):
+        calls["count"] += 1
+        assert path == db_engine._config.DB_PATH
+
+    monkeypatch.setattr("database.sync_coordinator.mark_db_written", fake_mark_db_written)
+
+    db_engine._mark_main_db_needs_sync(db_path=db_engine._config.DB_PATH, conn=object())
+
+    assert calls["count"] == 1

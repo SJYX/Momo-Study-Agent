@@ -98,9 +98,7 @@ def _mark_main_db_needs_sync(db_path: Optional[str] = None, conn: Any = None) ->
     """
     from database.sync_coordinator import mark_db_written
 
-    if conn is not None:
-        return
-    elif not _is_main_db_path(db_path):
+    if not _is_main_db_path(db_path):
         return
 
     path = db_path or _config.DB_PATH

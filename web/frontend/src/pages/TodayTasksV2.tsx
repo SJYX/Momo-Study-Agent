@@ -14,7 +14,7 @@ import FailureGroupsPanel from '../components/today/FailureGroupsPanel'
 import BulkGuardModal from '../components/today/BulkGuardModal'
 import TodayHero from '../components/today/TodayHero'
 import BottomBar from '../components/today/BottomBar'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { parseDrillDownParams, isDrillDownActive, drillDownLabel } from '../utils/drillDown'
 import { isEnabled } from '../utils/featureFlags'
 import DrillDownNotice from '../components/today/DrillDownNotice'
@@ -58,11 +58,6 @@ export default function TodayTasksV2() {
     }).length,
   )
 
-  const conflictCount = useMemo(
-    () => Object.values(c.rowStatusMap).filter((s) => s?.phase === 'sync_conflict').length,
-    [c.rowStatusMap],
-  )
-
   return (
     <div className="p-6 bg-surface-base min-h-screen">
       <div className="flex items-center justify-between mb-6">
@@ -86,17 +81,10 @@ export default function TodayTasksV2() {
               </span>
             )}
           </p>
-          {conflictCount > 0 && (
-            <div className="mt-2">
-              <Link
-                to="/today/conflicts"
-                className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-pill border border-error/30 bg-error-soft text-error hover:opacity-90"
-              >
-                <AlertTriangle size={12} />
-                {conflictCount} 个冲突词，进入冲突页面
-              </Link>
-            </div>
-          )}
+          <p className="mt-2 text-xs text-text-muted flex items-center gap-1.5">
+            <AlertTriangle size={12} />
+            冲突词已并入下方同页筛选
+          </p>
         </div>
       </div>
 
@@ -169,11 +157,12 @@ export default function TodayTasksV2() {
             <>
               <div className="mt-4 mb-3 flex items-center justify-between text-sm">
                 <div className="flex items-center gap-2">
-                  {(['all', 'pending', 'error', 'new', 'review'] as const).map(view => {
+                  {(['all', 'pending', 'error', 'conflict', 'new', 'review'] as const).map(view => {
                     const label = {
                       all: `全部 (${c.items.length})`,
                       pending: `待处理`,
                       error: `已失败`,
+                      conflict: `冲突词`,
                       new: `新词`,
                       review: `复习词`
                     }[view]

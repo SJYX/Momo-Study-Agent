@@ -83,7 +83,7 @@ export function useTodayController(rowRefs: RowRefMap) {
   const [showAll, setShowAll] = useState(false)
   const [actionError, setActionError] = useState('')
   // 视图过滤与批量选择（新增）
-  const [filterView, setFilterView] = useState<'all' | 'pending' | 'error' | 'new' | 'review'>('all')
+  const [filterView, setFilterView] = useState<'all' | 'pending' | 'error' | 'conflict' | 'new' | 'review'>('all')
   const [isBatchMode, setIsBatchMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
@@ -128,6 +128,8 @@ export function useTodayController(rowRefs: RowRefMap) {
         })
       case 'error':
         return sortedItems.filter(it => rowStatusMap[(it.voc_spelling || '').toLowerCase()]?.status === 'error')
+      case 'conflict':
+        return sortedItems.filter(it => rowStatusMap[(it.voc_spelling || '').toLowerCase()]?.phase === 'sync_conflict')
       case 'new':
         return sortedItems.filter(it => typeof it.review_count === 'number' && it.review_count === 0)
       case 'review':
