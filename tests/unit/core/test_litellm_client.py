@@ -35,14 +35,16 @@ def test_generate_with_instruction_returns_text_and_usage():
 
     client = LiteLLMClient(model="openai/test", api_key="key")
 
-    with patch("core.litellm_client.litellm.completion", return_value=mock_response) as mock_call:
+    mock_litellm = MagicMock()
+    mock_litellm.completion.return_value = mock_response
+    with patch("core.litellm_client._get_litellm", return_value=mock_litellm):
         text, metadata = client.generate_with_instruction("test prompt")
 
     assert text == '{"results": []}'
     assert metadata["prompt_tokens"] == 10
     assert metadata["completion_tokens"] == 20
     assert metadata["total_tokens"] == 30
-    mock_call.assert_called_once()
+    mock_litellm.completion.assert_called_once()
 
 
 def test_generate_with_instruction_passes_system_instruction():
@@ -59,10 +61,12 @@ def test_generate_with_instruction_passes_system_instruction():
 
     client = LiteLLMClient(model="openai/test", api_key="key")
 
-    with patch("core.litellm_client.litellm.completion", return_value=mock_response) as mock_call:
+    mock_litellm = MagicMock()
+    mock_litellm.completion.return_value = mock_response
+    with patch("core.litellm_client._get_litellm", return_value=mock_litellm):
         client.generate_with_instruction("prompt", instruction="custom system")
 
-    call_kwargs = mock_call.call_args
+    call_kwargs = mock_litellm.completion.call_args
     messages = call_kwargs.kwargs.get("messages") or call_kwargs[1].get("messages")
     assert messages[0]["role"] == "system"
     assert messages[0]["content"] == "custom system"
@@ -84,7 +88,9 @@ def test_generate_with_instruction_retries_on_failure():
 
     client = LiteLLMClient(model="openai/test", api_key="key")
 
-    with patch("core.litellm_client.litellm.completion", side_effect=[Exception("timeout"), success_response]):
+    mock_litellm = MagicMock()
+    mock_litellm.completion.side_effect = [Exception("timeout"), success_response]
+    with patch("core.litellm_client._get_litellm", return_value=mock_litellm):
         with patch("core.litellm_client.time.sleep"):
             text, metadata = client.generate_with_instruction("prompt")
 
@@ -96,7 +102,9 @@ def test_generate_with_instruction_returns_empty_on_all_failures():
 
     client = LiteLLMClient(model="openai/test", api_key="key")
 
-    with patch("core.litellm_client.litellm.completion", side_effect=Exception("fail")):
+    mock_litellm = MagicMock()
+    mock_litellm.completion.side_effect = Exception("fail")
+    with patch("core.litellm_client._get_litellm", return_value=mock_litellm):
         with patch("core.litellm_client.time.sleep"):
             text, metadata = client.generate_with_instruction("prompt")
 

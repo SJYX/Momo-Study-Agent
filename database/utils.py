@@ -451,6 +451,7 @@ def _is_pyturso_db_corruption_error(msg: str) -> bool:
         or "i/o error" in msg
         or "io error" in msg
         or "io processing error" in msg
+        or "short read" in msg
     )
 
 

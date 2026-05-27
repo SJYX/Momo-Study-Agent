@@ -10,12 +10,24 @@ import time
 from typing import Tuple
 
 import json_repair
-import litellm
 
 from config import MAX_RETRIES, PROMPT_FILE, RETRY_WAIT_S
 
-# 抑制 litellm 自身的重试日志（我们自己管理重试）
-litellm.suppress_debug_info = True
+# litellm 延迟导入：模块级 import 耗时 ~13s，推迟到首次 API 调用时加载
+_litellm = None
+_litellm_configured = False
+
+
+def _get_litellm():
+    """延迟加载 litellm 并抑制调试日志。"""
+    global _litellm, _litellm_configured
+    if _litellm is None:
+        import litellm as _m
+        _litellm = _m
+        if not _litellm_configured:
+            _litellm.suppress_debug_info = True
+            _litellm_configured = True
+    return _litellm
 
 
 class LiteLLMClient:
@@ -57,7 +69,8 @@ class LiteLLMClient:
         last_error = ""
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                response = litellm.completion(**kwargs)
+                llm = _get_litellm()
+                response = llm.completion(**kwargs)
                 choice = response.choices[0]
                 text = choice.message.content or ""
                 usage = response.usage
