@@ -6,13 +6,13 @@ sys.path.append('.')
 from database.momo_words import save_ai_word_note
 from database.schema import init_db
 from config import TEST_DB_PATH
-from core.gemini_client import GeminiClient
+from core.litellm_client import LiteLLMClient
 
 # 初始化 DB
 init_db(TEST_DB_PATH)
 
-# 测试 Gemini 客户端
-client = GeminiClient('dummy_key')  # 不会真的调用，因为没有 key
+# 测试客户端（不会真的调用，因为没有有效 key）
+client = LiteLLMClient(model="gemini/gemini-2.0-flash", api_key="dummy_key")
 
 # 模拟结果
 mock_results = [

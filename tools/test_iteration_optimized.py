@@ -40,9 +40,13 @@ def main():
     logger = setup_logger(ACTIVE_USER)
 
     # 创建迭代管理器
-    from core.mimo_client import MimoClient
-    from config import MIMO_API_KEY
-    ai_client = MimoClient(MIMO_API_KEY)
+    from core.litellm_client import LiteLLMClient
+    from config import AI_API_KEY, AI_MODEL, AI_BASE_URL, AI_PROVIDER
+    from core.litellm_presets import get_provider_prefix
+    model = AI_MODEL or ""
+    if model and "/" not in model:
+        model = f"{get_provider_prefix(AI_PROVIDER)}{model}"
+    ai_client = LiteLLMClient(model=model, api_key=AI_API_KEY, base_url=AI_BASE_URL or None)
 
     im = IterationManager(ai_client, momo, logger)
 

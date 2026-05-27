@@ -107,8 +107,7 @@ class UserContextManager:
             from core.log_config import get_full_config
             from core.logger import setup_logger
             from core.maimemo_api import MaiMemoAPI
-            from core.mimo_client import MimoClient
-            from core.gemini_client import GeminiClient
+            from core.litellm_client import LiteLLMClient
             from core.study_workflow import StudyWorkflow
             from web.backend.tasks import TaskRegistry
             from web.backend.logger_bridge import LoggerBridge
@@ -142,19 +141,17 @@ class UserContextManager:
         from core.maimemo_api import MaiMemoAPI
         momo_api = MaiMemoAPI(cfg_snapshot.momo_token)
 
-        if cfg_snapshot.ai_provider == "mimo":
-            from core.mimo_client import MimoClient
-            ai_client = MimoClient(
-                api_key=cfg_snapshot.mimo_api_key,
-                model_name=cfg_snapshot.mimo_model or None,
-                api_base=cfg_snapshot.mimo_api_base or None,
-            )
+        from core.litellm_client import LiteLLMClient
+        from core.litellm_presets import get_provider_prefix
+        if cfg_snapshot.ai_provider == "gemini":
+            api_key = cfg_snapshot.gemini_api_key
         else:
-            from core.gemini_client import GeminiClient
-            ai_client = GeminiClient(
-                api_key=cfg_snapshot.gemini_api_key,
-                model_name=cfg_snapshot.gemini_model or None,
-            )
+            api_key = cfg_snapshot.mimo_api_key
+        model = (cfg_snapshot.gemini_model if cfg_snapshot.ai_provider == "gemini" else cfg_snapshot.mimo_model) or ""
+        if model and "/" not in model:
+            model = f"{get_provider_prefix(cfg_snapshot.ai_provider)}{model}"
+        base_url = cfg_snapshot.mimo_api_base or None
+        ai_client = LiteLLMClient(model=model, api_key=api_key, base_url=base_url)
 
         from core.study_workflow import StudyWorkflow
 

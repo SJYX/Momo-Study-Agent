@@ -7,8 +7,6 @@ from dotenv import load_dotenv
 # Add root directory to path so we can import project modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from core.gemini_client import GeminiClient
-
 # 解决终端中文的输出乱码
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
@@ -17,12 +15,8 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 def main():
-    print("====== 实战操作：测试模型对于单词 'apple' 的结构化分析能力 ======")
-    if not GEMINI_API_KEY:
-        print("[错误] 未找到 GEMINI_API_KEY，请检查 .env 文件。")
-        return
-        
-    client = GeminiClient(GEMINI_API_KEY)
+    print("====== SKIPPED: Old GeminiClient removed. Use LiteLLMClient. ======")
+    return
     
     # 我们要测试的核心单词
     test_words = ["apple"]

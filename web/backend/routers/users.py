@@ -175,16 +175,17 @@ async def validate_config(body: ValidateRequest, user: str = Depends(get_active_
             return ok_response({"field": field, "valid": ok, "message": "连接成功" if ok else "Token 无效"}, user_id=user)
 
         elif field == "mimo_api_key":
-            from core.mimo_client import MimoClient
-            client = MimoClient(api_key=value)
+            from core.litellm_client import LiteLLMClient
+            from core.litellm_presets import get_default_base_url
+            client = LiteLLMClient(model="openai/mimo-v2-flash", api_key=value, base_url=get_default_base_url("mimo"))
             text, _ = client.generate_with_instruction("test", instruction="回复 OK")
             ok = bool(text)
             client.close()
             return ok_response({"field": field, "valid": ok, "message": "Key 有效" if ok else "Key 无效"}, user_id=user)
 
         elif field == "gemini_api_key":
-            from core.gemini_client import GeminiClient
-            client = GeminiClient(api_key=value)
+            from core.litellm_client import LiteLLMClient
+            client = LiteLLMClient(model="gemini/gemini-2.0-flash", api_key=value)
             text, _ = client.generate_with_instruction("test", instruction="回复 OK")
             ok = bool(text)
             client.close()

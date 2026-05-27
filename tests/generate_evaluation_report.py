@@ -7,7 +7,10 @@ import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-from core.mimo_client import MimoClient
+# MimoClient has been replaced by LiteLLMClient.
+# This script used generate_mnemonics which is no longer available on LiteLLMClient.
+print("SKIPPED: Old MimoClient.generate_mnemonics removed. Use LiteLLMClient with generate_with_instruction.")
+sys.exit(0)
 
 import io
 
