@@ -174,8 +174,10 @@ def run_phase2(
         confidence = info.get("match_confidence")
         reason = info.get("reason", "")
 
+        cloud_text = info.get("first_text", "")
+
         if cloud_status == 1:
-            # 匹配成功
+            # 匹配成功：sync_status=1, last_synced_content=本地内容
             if dry_run:
                 print(f'  [DRY]   voc_id={voc_id} "{spelling}" — 云端匹配 (confidence={confidence})')
             else:
@@ -190,6 +192,13 @@ def run_phase2(
                     print(f'  [SYNCED] voc_id={voc_id} "{spelling}" — 云端匹配 (confidence={confidence})')
             fixed += 1
         else:
+            # 匹配失败：保持 sync_status=2，写入云端文本供未来参考
+            if not dry_run and cloud_text:
+                conn.execute(
+                    "UPDATE ai_word_notes SET last_synced_content = ?, "
+                    "updated_at = datetime('now') WHERE voc_id = ?",
+                    (cloud_text, voc_id),
+                )
             if verbose:
                 print(f'  [CONFLICT] voc_id={voc_id} "{spelling}" — 云端不同 (confidence={confidence})')
 
