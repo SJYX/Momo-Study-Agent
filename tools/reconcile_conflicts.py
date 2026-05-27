@@ -15,6 +15,7 @@ import argparse
 import os
 import sqlite3
 import sys
+import time
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
@@ -120,6 +121,83 @@ def run_phase1(
     return fixed, remaining
 
 
+def init_maimemo_client():
+    """从 profile env 加载 MOMO_TOKEN 并初始化 MaiMemoAPI 客户端。"""
+    from core.maimemo_api import MaiMemoAPI
+
+    token = os.getenv("MOMO_TOKEN")
+    if not token:
+        print("WARNING: MOMO_TOKEN 未设置，跳过 Phase 2（Maimemo API 比较）")
+        return None
+    return MaiMemoAPI(token)
+
+
+def run_phase2(
+    conn,
+    client,
+    remaining: list,
+    *,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
+    """Phase 2: 调用 Maimemo API 比较云端释义 vs 本地 basic_meanings。
+
+    返回 fixed_count。
+    """
+    fixed = 0
+    total = len(remaining)
+
+    for i, rec in enumerate(remaining):
+        voc_id = rec["voc_id"]
+        spelling = rec.get("spelling", "")
+        basic = rec.get("basic_meanings") or ""
+
+        if not basic:
+            if verbose:
+                print(f'  [SKIP]  voc_id={voc_id} "{spelling}" — basic_meanings 为空')
+            continue
+
+        # 进度输出（每 50 条）
+        if (i + 1) % 50 == 0 or verbose:
+            print(f"  进度: {i + 1}/{total}")
+
+        try:
+            res = client.list_interpretations(voc_id)
+        except Exception as e:
+            if verbose:
+                print(f'  [ERROR] voc_id={voc_id} "{spelling}" — API 调用失败: {e}')
+            continue
+
+        # 用 MaiMemoAPI 内部方法比较
+        info = client._classify_interpretation_list(res, expected_text=basic)
+        cloud_status = info.get("sync_status", 0)
+        confidence = info.get("match_confidence")
+        reason = info.get("reason", "")
+
+        if cloud_status == 1:
+            # 匹配成功
+            if dry_run:
+                print(f'  [DRY]   voc_id={voc_id} "{spelling}" — 云端匹配 (confidence={confidence})')
+            else:
+                conn.execute(
+                    "UPDATE ai_word_notes SET sync_status = 1, "
+                    "match_confidence = ?, match_reason = ?, "
+                    "updated_at = datetime('now') WHERE voc_id = ?",
+                    (confidence, f"api_{reason}", voc_id),
+                )
+                if verbose:
+                    print(f'  [SYNCED] voc_id={voc_id} "{spelling}" — 云端匹配 (confidence={confidence})')
+            fixed += 1
+        else:
+            if verbose:
+                print(f'  [CONFLICT] voc_id={voc_id} "{spelling}" — 云端不同 (confidence={confidence})')
+
+        # 频控：每次 API 调用后等待 0.3s
+        time.sleep(0.3)
+
+    return fixed
+
+
 def main() -> int:
     args = parse_args()
     username = args.user
@@ -156,7 +234,30 @@ def main() -> int:
             return 0
 
         print(f"--- Phase 2: Maimemo API 比较 ---")
-        print("(Phase 2 尚未实现)")
+        client = init_maimemo_client()
+        if client is None or not remaining:
+            print("跳过 Phase 2")
+            print()
+            print("=== Summary ===")
+            print(f"Total conflicts: {len(conflicts)}")
+            print(f"Fixed (Phase 1): {fixed_p1}")
+            print(f"Fixed (Phase 2): 0")
+            print(f"Still conflicting: {len(remaining)}")
+            return 0
+
+        fixed_p2 = run_phase2(
+            conn, client, remaining, dry_run=args.dry_run, verbose=args.verbose
+        )
+        if not args.dry_run:
+            conn.commit()
+        print(f"Phase 2 结果: {fixed_p2} 已修复, {len(remaining) - fixed_p2} 仍冲突")
+        print()
+
+        print("=== Summary ===")
+        print(f"Total conflicts: {len(conflicts)}")
+        print(f"Fixed (Phase 1): {fixed_p1}")
+        print(f"Fixed (Phase 2): {fixed_p2}")
+        print(f"Still conflicting: {len(remaining) - fixed_p2}")
         return 0
     finally:
         conn.close()
