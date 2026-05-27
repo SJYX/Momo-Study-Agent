@@ -9,9 +9,22 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Generic, Literal, Optional, TypeVar, Union
 
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, field_validator
 
 T = TypeVar("T")
+
+
+def _valid_ai_provider_ids() -> set[str]:
+    """Return the whitelist of provider ids from litellm_presets.
+
+    Lazy import keeps schemas.py free of business-logic dependencies at
+    module load time and lets tests monkeypatch PROVIDERS.
+    """
+    try:
+        from core.litellm_presets import PROVIDERS
+        return {p["id"] for p in PROVIDERS}
+    except Exception:
+        return set()
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +553,16 @@ class AIConfigRequest(BaseModel):
     model: str
     base_url: Optional[str] = None
 
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, v: str) -> str:
+        valid = _valid_ai_provider_ids()
+        if valid and v not in valid:
+            raise ValueError(
+                f"unknown provider {v!r}; must be one of: {sorted(valid)}"
+            )
+        return v
+
 
 class AIConfigResponse(BaseModel):
     provider: str
@@ -553,6 +576,16 @@ class AITestRequest(BaseModel):
     api_key: str
     model: str
     base_url: Optional[str] = None
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, v: str) -> str:
+        valid = _valid_ai_provider_ids()
+        if valid and v not in valid:
+            raise ValueError(
+                f"unknown provider {v!r}; must be one of: {sorted(valid)}"
+            )
+        return v
 
 
 class AITestResponse(BaseModel):

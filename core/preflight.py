@@ -67,25 +67,41 @@ def run_preflight(root_dir: str, username: str) -> Dict:
     )
 
     provider = profile_env.get("AI_PROVIDER", "").lower().strip()
-    provider_ok = provider in ("mimo", "gemini")
+    valid_providers: set[str] = set()
+    try:
+        from core.litellm_presets import PROVIDERS
+        valid_providers = {p["id"] for p in PROVIDERS}
+    except Exception:
+        # 兜底：litellm_presets 不可用时退回到原始两家白名单
+        valid_providers = {"mimo", "gemini"}
+    provider_ok = provider in valid_providers
     add_check(
         "ai_provider",
         provider_ok,
         True,
         f"AI_PROVIDER={provider}" if provider else "AI_PROVIDER 缺失",
-        "设置 AI_PROVIDER 为 mimo 或 gemini。",
+        "设置 AI_PROVIDER 为 PROVIDERS 列表中的合法值（如 mimo / gemini / openai / anthropic / deepseek / qwen / zhipu / moonshot / yi / mistral）。",
     )
 
+    # 统一 AI_API_KEY 为主，回退到 legacy MIMO_API_KEY / GEMINI_API_KEY
+    ai_api_key = profile_env.get("AI_API_KEY", "")
     mimo_key = profile_env.get("MIMO_API_KEY", "")
     gemini_key = profile_env.get("GEMINI_API_KEY", "")
 
-    ai_key_ok = (provider == "mimo" and bool(mimo_key)) or (provider == "gemini" and bool(gemini_key))
+    if ai_api_key:
+        ai_key_ok = True
+    elif provider == "mimo":
+        ai_key_ok = bool(mimo_key)
+    elif provider == "gemini":
+        ai_key_ok = bool(gemini_key)
+    else:
+        ai_key_ok = False
     add_check(
         "ai_key",
         ai_key_ok,
         True,
         "AI Key 已配置" if ai_key_ok else "当前 provider 对应的 API Key 缺失",
-        "为当前 AI_PROVIDER 配置对应 API Key。",
+        "在 profile .env 中设置 AI_API_KEY，或为当前 AI_PROVIDER 配置 legacy 字段。",
     )
 
     turso_user_ok = bool(profile_env.get("TURSO_DB_URL") and profile_env.get("TURSO_AUTH_TOKEN"))

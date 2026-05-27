@@ -30,6 +30,28 @@ def _get_litellm():
     return _litellm
 
 
+def _extract_json_array(text: str) -> str:
+    """从字符串中提取第一个完整的 JSON 数组 [...]，防止末尾乱码干扰。
+
+    用括号计数找出第一个合法结束的数组范围。继承自旧 GeminiClient 的
+    防御性恢复逻辑——json_repair 在多数情况已经鲁棒，但对 Gemini 这类
+    容易在数组后追加散文的供应商，先做括号切片可减少 parse 失败率。
+    """
+    start = text.find("[")
+    if start == -1:
+        return text
+
+    count = 0
+    for i in range(start, len(text)):
+        if text[i] == "[":
+            count += 1
+        elif text[i] == "]":
+            count -= 1
+            if count == 0:
+                return text[start:i + 1]
+    return text[start:]
+
+
 class LiteLLMClient:
     """统一 AI 客户端，支持 10+ 供应商。"""
 
@@ -37,6 +59,8 @@ class LiteLLMClient:
         if not api_key:
             raise ValueError("API key is required")
         self.model = model
+        # 兼容历史属性名：study_workflow 等调用方读 .model_name
+        self.model_name = model
         self.api_key = api_key
         self.base_url = base_url
         self.prompt_file = PROMPT_FILE
@@ -58,15 +82,29 @@ class LiteLLMClient:
             {"role": "user", "content": prompt},
         ]
 
+        # 旧 MimoClient 的核心生成参数——丢失会导致大批次被默认 max_tokens(~4096)截断。
+        # 允许通过环境变量覆盖以适配不同供应商上限。
+        try:
+            temperature = float(os.getenv("AI_TEMPERATURE", "0.7"))
+        except (TypeError, ValueError):
+            temperature = 0.7
+        try:
+            max_tokens = int(os.getenv("AI_MAX_TOKENS", "64000"))
+        except (TypeError, ValueError):
+            max_tokens = 64000
+
         kwargs = {
             "model": self.model,
             "messages": messages,
             "api_key": self.api_key,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         if self.base_url:
             kwargs["api_base"] = self.base_url
 
         last_error = ""
+        last_error_type = ""
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 llm = _get_litellm()
@@ -85,6 +123,7 @@ class LiteLLMClient:
                 return text.strip(), metadata
             except Exception as e:
                 last_error = str(e)
+                last_error_type = type(e).__name__
                 try:
                     from core.logger import get_logger
                     get_logger().warning(
@@ -93,6 +132,7 @@ class LiteLLMClient:
                         attempt=attempt,
                         max_retries=MAX_RETRIES,
                         error=last_error,
+                        error_type=last_error_type,
                     )
                 except Exception:
                     pass
@@ -102,7 +142,8 @@ class LiteLLMClient:
 
         return "", {
             "error": last_error,
-            "error_type": "request",
+            # 保留原始异常类名而非硬编码 "request"——上游观测/重试逻辑可据此分流。
+            "error_type": last_error_type or "request",
             "stage": "request",
         }
 
@@ -126,9 +167,16 @@ class LiteLLMClient:
                 text = text[7:]
             elif text.startswith("```"):
                 text = text[3:]
+            text = text.strip()
             if text.endswith("```"):
                 text = text[:-3]
             text = text.strip()
+
+            # 防御：若供应商（典型如 Gemini）追加了散文/多余括号，
+            # 先用括号计数切出第一个完整数组，再喂给 json_repair。
+            # 仅在 text 像裸数组时才走这条路径——对 {"results": [...]} 包裹格式保留原文。
+            if text.lstrip().startswith("["):
+                text = _extract_json_array(text)
 
             data = json_repair.loads(text)
             results = []
@@ -181,8 +229,31 @@ class LiteLLMClient:
             }
 
     def close(self):
-        """清理资源（litellm 无状态，保留接口兼容）。"""
-        pass
+        """尽力释放 litellm 内部的 HTTP client 连接池。
+
+        litellm 把 httpx 客户端缓存在 module-level；调 close_litellm_async_clients()
+        会优雅关闭所有缓存。该函数仅在事件循环空闲时可调用，所以这里包了一层
+        try/except 以保持调用方接口契约——任何异常都不外抛。
+        """
+        try:
+            global _litellm
+            if _litellm is None:
+                return
+            close_fn = getattr(_litellm, "close_litellm_async_clients", None)
+            if not callable(close_fn):
+                return
+            try:
+                import asyncio
+                try:
+                    asyncio.get_running_loop()
+                    # 已在 event loop 内（异步 web 端点），由调用方负责 await。
+                    return
+                except RuntimeError:
+                    asyncio.run(close_fn())
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 __all__ = ["LiteLLMClient"]

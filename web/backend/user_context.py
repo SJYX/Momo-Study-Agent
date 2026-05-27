@@ -17,6 +17,34 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 
+def _build_ai_client_from_snapshot(cfg_snapshot):
+    """Build a LiteLLMClient from a ProfileConfig snapshot.
+
+    Reads only the unified AI_API_KEY / AI_MODEL / AI_BASE_URL fields
+    (which load_profile_config populates by falling back to legacy
+    MIMO_/GEMINI_ keys when the unified ones are absent).
+
+    Raises ValueError when api_key is empty — caller decides how to surface
+    that (Web typically returns a 503 / config-incomplete badge).
+    """
+    from core.litellm_client import LiteLLMClient
+    from core.litellm_presets import get_provider_prefix
+
+    api_key = cfg_snapshot.ai_api_key or ""
+    if not api_key:
+        raise ValueError(
+            f"AI_API_KEY required (profile={cfg_snapshot.profile_name}, "
+            f"provider={cfg_snapshot.ai_provider})"
+        )
+
+    model = cfg_snapshot.ai_model or ""
+    if model and "/" not in model:
+        model = f"{get_provider_prefix(cfg_snapshot.ai_provider)}{model}"
+
+    base_url = cfg_snapshot.ai_base_url or None
+    return LiteLLMClient(model=model, api_key=api_key, base_url=base_url)
+
+
 @dataclass
 class UserContext:
     """单个 profile 的运行时上下文。"""
@@ -141,17 +169,8 @@ class UserContextManager:
         from core.maimemo_api import MaiMemoAPI
         momo_api = MaiMemoAPI(cfg_snapshot.momo_token)
 
-        from core.litellm_client import LiteLLMClient
-        from core.litellm_presets import get_provider_prefix
-        if cfg_snapshot.ai_provider == "gemini":
-            api_key = cfg_snapshot.gemini_api_key
-        else:
-            api_key = cfg_snapshot.mimo_api_key
-        model = (cfg_snapshot.gemini_model if cfg_snapshot.ai_provider == "gemini" else cfg_snapshot.mimo_model) or ""
-        if model and "/" not in model:
-            model = f"{get_provider_prefix(cfg_snapshot.ai_provider)}{model}"
-        base_url = cfg_snapshot.mimo_api_base or None
-        ai_client = LiteLLMClient(model=model, api_key=api_key, base_url=base_url)
+        # 统一 AI 客户端构造：仅依赖 cfg_snapshot.ai_*（已含 legacy 回退）。
+        ai_client = _build_ai_client_from_snapshot(cfg_snapshot)
 
         from core.study_workflow import StudyWorkflow
 

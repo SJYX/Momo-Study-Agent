@@ -19,6 +19,7 @@ import sys
 
 from core.profile_loader import (
     USER_SCOPED_KEYS,
+    apply_ai_legacy_fallbacks as _apply_ai_legacy_fallbacks,
     bootstrap_initial_profile,
     normalize_username as _normalize_username,
     resolve_profile_env_path as _resolve_profile_env_path,
@@ -91,22 +92,18 @@ AI_API_KEY = os.getenv("AI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL")
 AI_BASE_URL = os.getenv("AI_BASE_URL")
 
-# 旧配置自动迁移（如果 AI_API_KEY 未设置，从旧 key 映射）
-if not AI_API_KEY:
-    if AI_PROVIDER == "gemini" and GEMINI_API_KEY:
-        AI_API_KEY = GEMINI_API_KEY
-    elif MIMO_API_KEY:
-        AI_API_KEY = MIMO_API_KEY
-
-if not AI_MODEL:
-    if AI_PROVIDER == "gemini" and GEMINI_MODEL:
-        AI_MODEL = GEMINI_MODEL
-    elif MIMO_MODEL:
-        AI_MODEL = MIMO_MODEL
-
-# mimo → openai 兼容映射
-if AI_PROVIDER == "mimo" and not AI_BASE_URL:
-    AI_BASE_URL = "https://api.xiaomimimo.com/v1"
+# legacy → unified 迁移由 core.profile_loader.apply_ai_legacy_fallbacks 统一处理；
+# 旧逻辑曾在本文件和 switch_user 里重复实现两遍，bug 修复极易漏掉一处。
+AI_API_KEY, AI_MODEL, AI_BASE_URL = _apply_ai_legacy_fallbacks(
+    provider=AI_PROVIDER,
+    ai_api_key=AI_API_KEY or "",
+    ai_model=AI_MODEL or "",
+    ai_base_url=AI_BASE_URL or "",
+    gemini_api_key=GEMINI_API_KEY or "",
+    gemini_model=GEMINI_MODEL or "",
+    mimo_api_key=MIMO_API_KEY or "",
+    mimo_model=MIMO_MODEL or "",
+)
 
 # 重试机制 (Retry Logic)
 MAX_RETRIES = 3
@@ -193,22 +190,16 @@ def switch_user(username: str) -> str:
     AI_MODEL = os.getenv("AI_MODEL")
     AI_BASE_URL = os.getenv("AI_BASE_URL")
 
-    # 旧配置自动迁移（如果 AI_API_KEY 未设置，从旧 key 映射）
-    if not AI_API_KEY:
-        if AI_PROVIDER == "gemini" and GEMINI_API_KEY:
-            AI_API_KEY = GEMINI_API_KEY
-        elif MIMO_API_KEY:
-            AI_API_KEY = MIMO_API_KEY
-
-    if not AI_MODEL:
-        if AI_PROVIDER == "gemini" and GEMINI_MODEL:
-            AI_MODEL = GEMINI_MODEL
-        elif MIMO_MODEL:
-            AI_MODEL = MIMO_MODEL
-
-    # mimo → openai 兼容映射
-    if AI_PROVIDER == "mimo" and not AI_BASE_URL:
-        AI_BASE_URL = "https://api.xiaomimimo.com/v1"
+    AI_API_KEY, AI_MODEL, AI_BASE_URL = _apply_ai_legacy_fallbacks(
+        provider=AI_PROVIDER,
+        ai_api_key=AI_API_KEY or "",
+        ai_model=AI_MODEL or "",
+        ai_base_url=AI_BASE_URL or "",
+        gemini_api_key=GEMINI_API_KEY or "",
+        gemini_model=GEMINI_MODEL or "",
+        mimo_api_key=MIMO_API_KEY or "",
+        mimo_model=MIMO_MODEL or "",
+    )
 
     TURSO_DB_URL = os.getenv("TURSO_DB_URL")
     TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")

@@ -46,6 +46,45 @@ USER_SCOPED_KEYS: List[str] = [
 ]
 
 
+def apply_ai_legacy_fallbacks(
+    *,
+    provider: str,
+    ai_api_key: str,
+    ai_model: str,
+    ai_base_url: str,
+    gemini_api_key: str,
+    gemini_model: str,
+    mimo_api_key: str,
+    mimo_model: str,
+) -> Tuple[str, str, str]:
+    """Pure migration helper: if the unified AI_* values are missing, fill
+    them from the legacy provider-keyed fields and apply the mimo-default
+    base_url.
+
+    Extracted from the duplicated logic at config.py:module-load and
+    config.py:switch_user — one source of truth so the two callsites
+    can't drift.
+
+    Returns (ai_api_key, ai_model, ai_base_url).
+    """
+    if not ai_api_key:
+        if provider == "gemini" and gemini_api_key:
+            ai_api_key = gemini_api_key
+        elif mimo_api_key:
+            ai_api_key = mimo_api_key
+
+    if not ai_model:
+        if provider == "gemini" and gemini_model:
+            ai_model = gemini_model
+        elif mimo_model:
+            ai_model = mimo_model
+
+    if provider == "mimo" and not ai_base_url:
+        ai_base_url = "https://api.xiaomimimo.com/v1"
+
+    return ai_api_key, ai_model, ai_base_url
+
+
 @dataclass
 class ProfileBootstrap:
     """初始 bootstrap 结果。供 config.py 导出为模块级符号。"""

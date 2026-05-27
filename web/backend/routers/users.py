@@ -72,7 +72,11 @@ def _update_profile_env(profile_path: str, updates: dict):
                 new_lines.append(f"{key}={updates[key]}\n")
                 keys_written.add(key)
                 continue
-        new_lines.append(line)
+        # 兼容历史文件末尾缺少换行的情况，避免后续追加键值时发生粘行。
+        if line.endswith("\n"):
+            new_lines.append(line)
+        else:
+            new_lines.append(line + "\n")
 
     for key, value in updates.items():
         if key not in keys_written:
@@ -111,10 +115,14 @@ async def list_users(user: str = Depends(get_active_user)):
 
             has_momo = bool(env_data.get("MOMO_TOKEN"))
             ai_provider = env_data.get("AI_PROVIDER", "")
-            if ai_provider == "mimo":
-                has_ai = bool(env_data.get("MIMO_API_KEY"))
-            elif ai_provider == "gemini":
-                has_ai = bool(env_data.get("GEMINI_API_KEY"))
+            # Unified field wins (AIConfigCard writes only AI_API_KEY); legacy
+            # provider-keyed fields cover wizard-created profiles.
+            has_ai = bool(env_data.get("AI_API_KEY"))
+            if not has_ai:
+                if ai_provider == "mimo":
+                    has_ai = bool(env_data.get("MIMO_API_KEY"))
+                elif ai_provider == "gemini":
+                    has_ai = bool(env_data.get("GEMINI_API_KEY"))
 
         result.append({
             "username": username,
@@ -277,11 +285,13 @@ async def wizard_create(body: WizardCreateRequest, user: str = Depends(get_activ
     if os.path.exists(profile_path):
         return error_response("USER_EXISTS", f"用户 '{username}' 已存在", user_id=user)
 
-    # 构造 env 内容
+    # 构造 env 内容（统一变量为主，保留 legacy 字段以便老脚本继续工作）
     env_lines = [
         f'MOMO_TOKEN="{momo_token}"',
         f'AI_PROVIDER="{ai_provider}"',
     ]
+    if ai_api_key:
+        env_lines.append(f'AI_API_KEY="{ai_api_key}"')
     if ai_provider == "mimo":
         env_lines.append(f'MIMO_API_KEY="{ai_api_key}"')
     elif ai_provider == "gemini":
@@ -379,12 +389,21 @@ async def update_profile_config(
         env_data["AI_PROVIDER"] = body.ai_provider
     if body.ai_api_key is not None:
         provider = body.ai_provider or env_data.get("AI_PROVIDER", "")
+        # Unified field is authoritative — Web user_context reads only this.
+        env_data["AI_API_KEY"] = body.ai_api_key
+        # Mirror to the legacy slot so CLI/preflight paths that still consult
+        # the provider-keyed env keep agreeing with the unified one.
         if provider == "mimo":
             env_data["MIMO_API_KEY"] = body.ai_api_key
             env_data.pop("GEMINI_API_KEY", None)
         elif provider == "gemini":
             env_data["GEMINI_API_KEY"] = body.ai_api_key
             env_data.pop("MIMO_API_KEY", None)
+        else:
+            # Drop both legacy slots so they don't shadow AI_API_KEY for the
+            # new provider.
+            env_data.pop("MIMO_API_KEY", None)
+            env_data.pop("GEMINI_API_KEY", None)
     if body.user_email is not None:
         env_data["USER_EMAIL"] = body.user_email
 
@@ -472,6 +491,15 @@ async def save_ai_config(
         from config import switch_user
 
         switch_user(username)
+
+    # 失效缓存的 UserContext：缓存里的 ai_client 还持有旧 api_key，
+    # 不 cleanup 会让下一次 study/today 任务用过期凭据。
+    try:
+        import web.backend.deps as _deps
+        if _deps._context_manager is not None:
+            _deps._context_manager.cleanup(username.lower())
+    except Exception:
+        pass
 
     return ok_response(
         AIConfigResponse(

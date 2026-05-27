@@ -41,6 +41,11 @@ class ProfileConfig:
     mimo_api_key: str = ""
     mimo_api_base: str = ""
     mimo_model: str = ""
+    # 统一 AI 配置（LiteLLM 迁移后；AIConfigCard 写入这三个字段）。
+    # 未显式设置时由 load_profile_config 从 legacy 字段映射。
+    ai_api_key: str = ""
+    ai_model: str = ""
+    ai_base_url: str = ""
     # 数据库路径
     db_path: str = ""
     test_db_path: str = ""
@@ -84,16 +89,50 @@ def load_profile_config(profile_name: str) -> ProfileConfig:
 
     db_path, test_db_path = _resolve_user_db_paths(normalized, data_dir)
 
+    provider = (merged.get("AI_PROVIDER") or "mimo").strip().lower()
+    gemini_api_key = merged.get("GEMINI_API_KEY", "") or ""
+    gemini_model = merged.get("GEMINI_MODEL", "") or ""
+    mimo_api_key = merged.get("MIMO_API_KEY", "") or ""
+    mimo_api_base = merged.get("MIMO_API_BASE", "") or ""
+    mimo_model = merged.get("MIMO_MODEL", "") or ""
+
+    # 统一 AI 字段：优先读 AI_API_KEY/AI_MODEL/AI_BASE_URL；缺失时回退到 legacy 字段，
+    # 保证 wizard 创建的旧 profile 在 Web 端仍能工作。
+    ai_api_key = merged.get("AI_API_KEY", "") or ""
+    if not ai_api_key:
+        if provider == "gemini" and gemini_api_key:
+            ai_api_key = gemini_api_key
+        elif mimo_api_key:
+            ai_api_key = mimo_api_key
+
+    ai_model = merged.get("AI_MODEL", "") or ""
+    if not ai_model:
+        if provider == "gemini" and gemini_model:
+            ai_model = gemini_model
+        elif mimo_model:
+            ai_model = mimo_model
+
+    # AI_BASE_URL 显式存在(即便是空字符串)时尊重设定;不存在时按 provider 回退。
+    if "AI_BASE_URL" in merged:
+        ai_base_url = merged.get("AI_BASE_URL", "") or ""
+    elif provider == "mimo":
+        ai_base_url = mimo_api_base
+    else:
+        ai_base_url = ""
+
     return ProfileConfig(
         profile_name=normalized,
         env_path=env_path or os.path.join(profiles_dir, f"{normalized}.env"),
         momo_token=merged.get("MOMO_TOKEN", "") or "",
-        ai_provider=(merged.get("AI_PROVIDER") or "mimo").strip().lower(),
-        gemini_api_key=merged.get("GEMINI_API_KEY", "") or "",
-        gemini_model=merged.get("GEMINI_MODEL", "") or "",
-        mimo_api_key=merged.get("MIMO_API_KEY", "") or "",
-        mimo_api_base=merged.get("MIMO_API_BASE", "") or "",
-        mimo_model=merged.get("MIMO_MODEL", "") or "",
+        ai_provider=provider,
+        gemini_api_key=gemini_api_key,
+        gemini_model=gemini_model,
+        mimo_api_key=mimo_api_key,
+        mimo_api_base=mimo_api_base,
+        mimo_model=mimo_model,
+        ai_api_key=ai_api_key,
+        ai_model=ai_model,
+        ai_base_url=ai_base_url,
         db_path=db_path,
         test_db_path=test_db_path,
         turso_db_url=merged.get("TURSO_DB_URL", "") or "",

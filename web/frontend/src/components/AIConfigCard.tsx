@@ -61,11 +61,25 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
   const selectedProvider = providers.find((p) => p.id === provider);
   const availableModels = selectedProvider?.models || [];
 
-  // When provider changes, suggest first model; only auto-fill base_url for providers that require it
+  // Sync local provider state when the parent re-renders with a different
+  // currentProvider (e.g. after the users() query refetches post-save).
+  useEffect(() => {
+    setProvider(currentProvider || "");
+  }, [currentProvider]);
+
+  // When provider OR the providers list resolves, refresh model/baseUrl
+  // defaults. Without `providers` in deps, the first render runs before the
+  // ai-models query resolves and selectedProvider is undefined, so the model
+  // field never populates from the preset list.
   useEffect(() => {
     if (selectedProvider) {
+      // Auto-fill default base_url only when the provider requires one;
+      // otherwise CLEAR any stale value (e.g. dashscope URL left over from
+      // a previous qwen selection must not leak into a gemini config).
       if (selectedProvider.needs_base_url && selectedProvider.default_base_url) {
         setBaseUrl(selectedProvider.default_base_url);
+      } else {
+        setBaseUrl("");
       }
       if (selectedProvider.models.length > 0) {
         setModel(selectedProvider.models[0]);
@@ -74,7 +88,12 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
       setModel("");
       setBaseUrl("");
     }
-  }, [provider]);
+    // Always clear the api key when the provider changes — never leak one
+    // provider's secret into another provider's test call.
+    setApiKey("");
+    setTestResult(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, providers.length]);
 
   // Save mutation
   const saveMutation = useMutation({
@@ -210,7 +229,7 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
             <button
               className={btnPrimary}
               onClick={handleSave}
-              disabled={saveMutation.isPending || !apiKey}
+              disabled={saveMutation.isPending || !apiKey || !provider || !model}
             >
               {saveMutation.isPending ? (
                 <Loader2 size={14} className="animate-spin inline mr-1" />
@@ -220,7 +239,7 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
             <button
               className={btnSecondary}
               onClick={handleTest}
-              disabled={testMutation.isPending || !apiKey}
+              disabled={testMutation.isPending || !apiKey || !provider || !model}
             >
               {testMutation.isPending ? (
                 <Loader2 size={14} className="animate-spin inline mr-1" />

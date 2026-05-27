@@ -1,66 +1,49 @@
-"""Tests for _has_corrupt_sidecar_generation in database.backends._pyturso."""
-import json
-import os
-import tempfile
+"""Regression: large Turso generation values must NOT be flagged as corrupt.
 
-import pytest
+History: an earlier fix (`fix(sync): backup .db + sidecars on corrupt
+generation`) assumed pyturso wrote sentinel ~10^18 generations on sync
+errors, and forced a full re-bootstrap whenever it saw one. The assumption
+was wrong — Turso server encodes legitimate generations near 10^18 (likely
+as `(10^18 - 1) - real_generation`), so a healthy DB freshly pulled from
+the server would carry e.g. `999999999999999998` in its `.db-info` and
+be falsely flagged. Result: every startup wiped the local copy and
+re-downloaded the entire DB.
 
-from database.backends._pyturso import _has_corrupt_sidecar_generation, _CORRUPT_GENERATION_THRESHOLD
-
-
-@pytest.fixture
-def tmp_db(tmp_path):
-    """Return a temporary db path."""
-    return str(tmp_path / "test.db")
-
-
-def _write_sidecar(db_path, generation, wal_fragment=0):
-    """Write a .db-info sidecar with the given generation."""
-    info = {
-        "version": "v1",
-        "synced_revision": {
-            "type": "v1",
-            "revision": json.dumps({"generation": generation, "wal_fragment_no": wal_fragment}),
-        },
-    }
-    with open(db_path + "-info", "w", encoding="utf-8") as f:
-        json.dump(info, f)
+This file pins down the lesson so the check doesn't get re-introduced.
+"""
+from __future__ import annotations
 
 
-def test_no_sidecar_returns_false(tmp_db):
-    assert _has_corrupt_sidecar_generation(tmp_db) is False
+def test_sidecar_corruption_check_was_removed():
+    """The helper that misclassified Turso's normal generations as corrupt
+    has been removed. Re-introducing it would cause repeated full
+    re-bootstraps on healthy databases — see the history backup files
+    `data/*.db.er-broken-*` for evidence the bug fired in production."""
+    import database.backends._pyturso as mod
+    assert not hasattr(mod, "_has_corrupt_sidecar_generation"), (
+        "_has_corrupt_sidecar_generation reintroduced — it misclassifies "
+        "Turso's normal server-side generation encoding (~10^18) as a "
+        "corruption sentinel. Don't bring it back."
+    )
+    assert not hasattr(mod, "_CORRUPT_GENERATION_THRESHOLD"), (
+        "_CORRUPT_GENERATION_THRESHOLD reintroduced — see comment above."
+    )
 
 
-def test_normal_generation_returns_false(tmp_db):
-    _write_sidecar(tmp_db, generation=42)
-    assert _has_corrupt_sidecar_generation(tmp_db) is False
-
-
-def test_large_generation_returns_false(tmp_db):
-    _write_sidecar(tmp_db, generation=999999)
-    assert _has_corrupt_sidecar_generation(tmp_db) is False
-
-
-def test_sentinel_generation_returns_true(tmp_db):
-    _write_sidecar(tmp_db, generation=999999999999999928)
-    assert _has_corrupt_sidecar_generation(tmp_db) is True
-
-
-def test_another_sentinel_returns_true(tmp_db):
-    _write_sidecar(tmp_db, generation=999999999999999996)
-    assert _has_corrupt_sidecar_generation(tmp_db) is True
-
-
-def test_threshold_boundary(tmp_db):
-    _write_sidecar(tmp_db, generation=_CORRUPT_GENERATION_THRESHOLD - 1)
-    assert _has_corrupt_sidecar_generation(tmp_db) is False
-
-    _write_sidecar(tmp_db, generation=_CORRUPT_GENERATION_THRESHOLD + 1)
-    assert _has_corrupt_sidecar_generation(tmp_db) is True
-
-
-def test_corrupt_json_returns_false(tmp_db):
-    """Corrupt sidecar file should not crash, just return False."""
-    with open(tmp_db + "-info", "w") as f:
-        f.write("not valid json{{{")
-    assert _has_corrupt_sidecar_generation(tmp_db) is False
+def test_real_observed_generations_are_documented():
+    """Values observed in production after a successful Turso pull. Kept
+    here so the rationale for the removal is greppable from the test
+    suite."""
+    real_world_generations = [
+        999999999999999998,  # history-asher.db-info, post-pull, healthy
+        999999999999999999,  # momo-users-hub.db-info, post-pull, healthy
+        999999999999999996,
+        999999999999999928,
+    ]
+    # All look like (10^18 - 1) - small_integer.
+    for g in real_world_generations:
+        delta = (10**18 - 1) - g
+        assert 0 <= delta < 1000, (
+            f"Unexpected encoding for {g} (delta from 10^18-1 = {delta}); "
+            f"refine our understanding of Turso's generation scheme."
+        )
