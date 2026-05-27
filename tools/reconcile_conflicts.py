@@ -68,6 +68,58 @@ def get_conflict_records(conn: "sqlite3.Connection") -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
+def _normalize(text: str) -> str:
+    """标准化文本：去空白，用于比较。"""
+    return "".join(str(text or "").split())
+
+
+def run_phase1(
+    conn: "sqlite3.Connection",
+    conflicts: list[dict],
+    *,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> tuple[int, list[dict]]:
+    """Phase 1: 本地比较 last_synced_content vs basic_meanings。
+
+    返回 (fixed_count, remaining_records)。
+    """
+    fixed = 0
+    remaining = []
+
+    for rec in conflicts:
+        voc_id = rec["voc_id"]
+        spelling = rec.get("spelling", "")
+        last_synced = rec.get("last_synced_content") or ""
+        basic = rec.get("basic_meanings") or ""
+
+        if not last_synced:
+            if verbose:
+                print(f"  [SKIP]  voc_id={voc_id} \"{spelling}\" — last_synced_content 为空")
+            remaining.append(rec)
+            continue
+
+        if _normalize(last_synced) == _normalize(basic):
+            if dry_run:
+                print(f"  [DRY]   voc_id={voc_id} \"{spelling}\" — 本地匹配，可修复为 sync_status=1")
+            else:
+                conn.execute(
+                    "UPDATE ai_word_notes SET sync_status = 1, "
+                    "match_confidence = 1.0, match_reason = 'local_match', "
+                    "updated_at = datetime('now') WHERE voc_id = ?",
+                    (voc_id,),
+                )
+                if verbose:
+                    print(f"  [FIXED] voc_id={voc_id} \"{spelling}\" — last_synced_content 匹配 basic_meanings")
+            fixed += 1
+        else:
+            if verbose:
+                print(f"  [KEEP]  voc_id={voc_id} \"{spelling}\" — 内容不同，需 Phase 2")
+            remaining.append(rec)
+
+    return fixed, remaining
+
+
 def main() -> int:
     args = parse_args()
     username = args.user
@@ -89,9 +141,18 @@ def main() -> int:
             print("无冲突记录，退出")
             return 0
 
-        print("Phase 1 尚未实现")
+        fixed_p1, remaining = run_phase1(
+            conn, conflicts, dry_run=args.dry_run, verbose=args.verbose
+        )
+        if not args.dry_run:
+            conn.commit()
+        print(f"Phase 1 结果: {fixed_p1} 已修复, {len(remaining)} 需要 API 检查")
+        print()
 
         if args.phase1_only:
+            print("=== Summary (Phase 1 only) ===")
+            print(f"Total conflicts: {len(conflicts)}")
+            print(f"Fixed (Phase 1): {fixed_p1}")
             return 0
 
         print(f"--- Phase 2: Maimemo API 比较 ---")
