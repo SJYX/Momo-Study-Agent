@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
+from typing import Any, Dict, List
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
@@ -39,10 +41,65 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_db_path(username: str) -> str:
+    """解析用户数据库路径，兼容 history-X.db 和 history_X.db 命名。"""
+    data_dir = os.path.join(ROOT_DIR, "data")
+    db_path = os.path.join(data_dir, f"history-{username.lower()}.db")
+    if os.path.exists(db_path):
+        return db_path
+    # 兼容旧命名
+    old_path = os.path.join(data_dir, f"history_{username}.db")
+    if os.path.exists(old_path):
+        return old_path
+    old_lower = os.path.join(data_dir, f"history_{username.lower()}.db")
+    if os.path.exists(old_lower):
+        return old_lower
+    print(f"ERROR: 数据库文件不存在: {db_path}")
+    sys.exit(1)
+
+
+def get_conflict_records(conn) -> List[Dict[str, Any]]:
+    """查询所有 sync_status=2 的记录。"""
+    conn.row_factory = None
+    cursor = conn.execute(
+        "SELECT voc_id, spelling, basic_meanings, last_synced_content, "
+        "content_origin, match_confidence, match_reason "
+        "FROM ai_word_notes WHERE sync_status = 2"
+    )
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
 def main() -> int:
     args = parse_args()
-    # TODO: implement phases
-    return 0
+    username = args.user
+    db_path = resolve_db_path(username)
+
+    print(f"=== Conflict Reconciliation ===")
+    print(f"User: {username}")
+    print(f"DB: {db_path}")
+    print()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conflicts = get_conflict_records(conn)
+        print(f"--- Phase 1: 本地比较 ---")
+        print(f"发现 {len(conflicts)} 条冲突记录")
+
+        if not conflicts:
+            print("无冲突记录，退出")
+            return 0
+
+        print("Phase 1 尚未实现")
+
+        if args.phase1_only:
+            return 0
+
+        print(f"--- Phase 2: Maimemo API 比较 ---")
+        print("(Phase 2 尚未实现)")
+        return 0
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
