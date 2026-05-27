@@ -4,10 +4,12 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Tuple
 
+import json_repair
 import litellm
 
 from config import MAX_RETRIES, PROMPT_FILE, RETRY_WAIT_S
@@ -90,6 +92,80 @@ class LiteLLMClient:
             "error_type": "request",
             "stage": "request",
         }
+
+    def generate_mnemonics(self, words_batch: list) -> Tuple[list, dict]:
+        """生成助记法，返回 JSON 数组格式。"""
+        prompt = f"""
+        请处理以下 {len(words_batch)} 个英语单词，严格遵循系统设定中的全维度分析。
+        必须返回标准的 JSON 对象结构：{{"results": [...]}}，将结果放入名为 "results" 的数组中。
+        【极其重要】：请确保输出是语法完全合法的 JSON！如果中文字段内需要使用标点符号侧重点，请一律使用单引号或中文引号。绝对不要在字符串值中出现未转义的英文双引号。
+        输出中不要包含 Markdown 代码块标记（如 ```json 或 ```）。
+        待处理单词列表: {", ".join(words_batch)}
+        """
+        text, metadata = self.generate_with_instruction(prompt)
+        if not text:
+            meta = metadata or {}
+            meta.setdefault("stage", "request")
+            return [], meta
+
+        try:
+            if text.startswith("```json"):
+                text = text[7:]
+            elif text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+
+            data = json_repair.loads(text)
+            results = []
+            if isinstance(data, dict):
+                results = data.get("results", [])
+            elif isinstance(data, list):
+                results = data
+
+            final_results = []
+            n = len(results)
+            for item in results:
+                if not isinstance(item, dict):
+                    try:
+                        from core.logger import get_logger
+                        get_logger().warning(
+                            "AI 返回了非对象类型的 JSON 条目，已跳过",
+                            module="litellm_client",
+                            item_type=type(item).__name__,
+                            item_preview=str(item)[:100],
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+                cnt = n if n > 0 else 1
+                item["raw_full_text"] = json.dumps(item, ensure_ascii=False)
+                item["prompt_tokens"] = metadata.get("prompt_tokens", 0) // cnt
+                item["completion_tokens"] = metadata.get("completion_tokens", 0) // cnt
+                item["total_tokens"] = metadata.get("total_tokens", 0) // cnt
+                final_results.append(item)
+
+            return final_results, metadata
+        except Exception as e:
+            preview = text[:500] if text else ""
+            try:
+                from core.logger import get_logger
+                get_logger().error(
+                    "[JSON Parse Error]",
+                    error=str(e),
+                    module="litellm_client",
+                    words_count=len(words_batch),
+                    response_preview=preview,
+                )
+            except Exception:
+                pass
+            return [], {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "stage": "parse",
+            }
 
     def close(self):
         """清理资源（litellm 无状态，保留接口兼容）。"""
