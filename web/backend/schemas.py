@@ -529,3 +529,46 @@ class PreflightResponse(BaseModel):
     ok: bool
     checks: list[PreflightCheck] = Field(default_factory=list)
     blocking_items: list[PreflightCheck] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# /api/users/{username}/ai-config — AI 供应商配置
+# ---------------------------------------------------------------------------
+class AIConfigRequest(BaseModel):
+    provider: str
+    api_key: str
+    model: str
+    base_url: Optional[str] = None
+
+
+class AIConfigResponse(BaseModel):
+    provider: str
+    model: str
+    has_api_key: bool
+    base_url: Optional[str] = None
+
+
+class AITestRequest(BaseModel):
+    provider: str
+    api_key: str
+    model: str
+    base_url: Optional[str] = None
+
+
+class AITestResponse(BaseModel):
+    ok: bool
+    message: str
+    latency_ms: Optional[float] = None
+
+
+class AIModelInfo(BaseModel):
+    id: str
+    name: str
+    prefix: str
+    needs_base_url: bool
+    default_base_url: Optional[str] = None
+    models: list[str] = Field(default_factory=list)
+
+
+class AIModelsResponse(BaseModel):
+    providers: list[AIModelInfo] = Field(default_factory=list)

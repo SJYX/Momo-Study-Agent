@@ -16,6 +16,12 @@ from fastapi import APIRouter, Depends, Path
 from web.backend.deps import get_active_user
 from web.backend.router_helpers import catch_api_errors
 from web.backend.schemas import (
+    AIConfigRequest,
+    AIConfigResponse,
+    AIModelInfo,
+    AIModelsResponse,
+    AITestRequest,
+    AITestResponse,
     ApiResponse,
     ProfileCreateRequest,
     ProfileCreateResponse,
@@ -30,6 +36,50 @@ from web.backend.schemas import (
 )
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+# ---------------------------------------------------------------------------
+# helpers — profile .env 读写
+# ---------------------------------------------------------------------------
+def _resolve_profile_path(username: str):
+    """解析用户 profile .env 路径。"""
+    from config import PROFILES_DIR
+
+    normalized = username.lower()
+    path = os.path.join(PROFILES_DIR, f"{normalized}.env")
+    if os.path.exists(path):
+        return path
+    for entry in os.listdir(PROFILES_DIR) if os.path.isdir(PROFILES_DIR) else []:
+        if entry.lower() == f"{normalized}.env":
+            return os.path.join(PROFILES_DIR, entry)
+    return None
+
+
+def _update_profile_env(profile_path: str, updates: dict):
+    """更新 profile .env 文件中的键值对。"""
+    lines = []
+    if os.path.exists(profile_path):
+        with open(profile_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    keys_written = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                new_lines.append(f"{key}={updates[key]}\n")
+                keys_written.add(key)
+                continue
+        new_lines.append(line)
+
+    for key, value in updates.items():
+        if key not in keys_written:
+            new_lines.append(f"{key}={value}\n")
+
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
 
 
 @router.get("", response_model=ApiResponse[UsersListResponse])
@@ -373,3 +423,110 @@ async def delete_user(
     except FileNotFoundError:
         return error_response("NOT_FOUND", f"用户 '{username}' 不存在", user_id=user)
     return ok_response({"deleted": username}, user_id=user)
+
+
+# ---------------------------------------------------------------------------
+# /api/users/{username}/ai-models  — 供应商 & 预设模型列表
+# ---------------------------------------------------------------------------
+@router.get("/{username}/ai-models", response_model=ApiResponse[AIModelsResponse])
+async def get_ai_models(
+    username: str = Path(...),
+    user: str = Depends(get_active_user),
+):
+    """获取所有供应商及其预设模型列表。"""
+    from core.litellm_presets import PROVIDERS
+
+    providers = [AIModelInfo(**p) for p in PROVIDERS]
+    return ok_response(AIModelsResponse(providers=providers).model_dump(), user_id=user)
+
+
+# ---------------------------------------------------------------------------
+# /api/users/{username}/ai-config  — 保存 AI 配置到 profile .env
+# ---------------------------------------------------------------------------
+@router.post("/{username}/ai-config", response_model=ApiResponse[AIConfigResponse])
+async def save_ai_config(
+    body: AIConfigRequest,
+    username: str = Path(...),
+    user: str = Depends(get_active_user),
+):
+    """保存 AI 配置到 profile .env。"""
+    profile_path = _resolve_profile_path(username)
+    if not profile_path:
+        return error_response("NOT_FOUND", f"Profile '{username}' not found", user_id=user)
+
+    env_updates = {
+        "AI_PROVIDER": body.provider,
+        "AI_API_KEY": body.api_key,
+        "AI_MODEL": body.model,
+    }
+    if body.base_url:
+        env_updates["AI_BASE_URL"] = body.base_url
+    else:
+        env_updates["AI_BASE_URL"] = ""
+
+    _update_profile_env(profile_path, env_updates)
+
+    from config import ACTIVE_USER
+
+    if ACTIVE_USER == username.lower():
+        from config import switch_user
+
+        switch_user(username)
+
+    return ok_response(
+        AIConfigResponse(
+            provider=body.provider,
+            model=body.model,
+            has_api_key=True,
+            base_url=body.base_url,
+        ).model_dump(),
+        user_id=user,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /api/users/{username}/ai-test  — 测试 AI 连接
+# ---------------------------------------------------------------------------
+@router.post("/{username}/ai-test", response_model=ApiResponse[AITestResponse])
+async def test_ai_connection(
+    body: AITestRequest,
+    username: str = Path(...),
+    user: str = Depends(get_active_user),
+):
+    """测试 AI 连接。"""
+    import time
+
+    from core.litellm_client import LiteLLMClient
+
+    model = body.model
+    if "/" not in model:
+        from core.litellm_presets import get_provider_prefix
+
+        prefix = get_provider_prefix(body.provider)
+        model = f"{prefix}{model}"
+
+    client = LiteLLMClient(model=model, api_key=body.api_key, base_url=body.base_url)
+    try:
+        started = time.time()
+        text, metadata = client.generate_with_instruction(
+            "Say 'hello' in one word.",
+            instruction="Reply with exactly one word, nothing else.",
+        )
+        latency_ms = (time.time() - started) * 1000
+
+        if text:
+            return ok_response(
+                AITestResponse(ok=True, message="连接成功", latency_ms=latency_ms).model_dump(),
+                user_id=user,
+            )
+        else:
+            error_msg = metadata.get("error", "未知错误")
+            return ok_response(
+                AITestResponse(ok=False, message=f"连接失败: {error_msg}").model_dump(),
+                user_id=user,
+            )
+    except Exception as e:
+        return ok_response(
+            AITestResponse(ok=False, message=f"连接失败: {str(e)}").model_dump(),
+            user_id=user,
+        )
