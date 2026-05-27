@@ -15,7 +15,6 @@ import argparse
 import os
 import sqlite3
 import sys
-from typing import Any, Dict, List
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
@@ -58,16 +57,15 @@ def resolve_db_path(username: str) -> str:
     sys.exit(1)
 
 
-def get_conflict_records(conn) -> List[Dict[str, Any]]:
+def get_conflict_records(conn: "sqlite3.Connection") -> list[dict]:
     """查询所有 sync_status=2 的记录。"""
-    conn.row_factory = None
+    conn.row_factory = sqlite3.Row
     cursor = conn.execute(
         "SELECT voc_id, spelling, basic_meanings, last_synced_content, "
         "content_origin, match_confidence, match_reason "
         "FROM ai_word_notes WHERE sync_status = 2"
     )
-    columns = [desc[0] for desc in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    return [dict(row) for row in cursor.fetchall()]
 
 
 def main() -> int:
@@ -81,6 +79,7 @@ def main() -> int:
     print()
 
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout=5000;")
     try:
         conflicts = get_conflict_records(conn)
         print(f"--- Phase 1: 本地比较 ---")
