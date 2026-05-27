@@ -182,6 +182,7 @@ def run_phase2(
                 conn.execute(
                     "UPDATE ai_word_notes SET sync_status = 1, "
                     "match_confidence = ?, match_reason = ?, "
+                    "last_synced_content = basic_meanings, "
                     "updated_at = datetime('now') WHERE voc_id = ?",
                     (confidence, f"api_{reason}", voc_id),
                 )
