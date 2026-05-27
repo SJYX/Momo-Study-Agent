@@ -86,6 +86,28 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
 # 当前使用的 AI 提供商: "gemini" 或 "mimo"
 AI_PROVIDER = os.getenv("AI_PROVIDER", "mimo")
 
+# 统一 AI 配置（LiteLLM）
+AI_API_KEY = os.getenv("AI_API_KEY")
+AI_MODEL = os.getenv("AI_MODEL")
+AI_BASE_URL = os.getenv("AI_BASE_URL")
+
+# 旧配置自动迁移（如果 AI_API_KEY 未设置，从旧 key 映射）
+if not AI_API_KEY:
+    if AI_PROVIDER == "gemini" and GEMINI_API_KEY:
+        AI_API_KEY = GEMINI_API_KEY
+    elif MIMO_API_KEY:
+        AI_API_KEY = MIMO_API_KEY
+
+if not AI_MODEL:
+    if AI_PROVIDER == "gemini" and GEMINI_MODEL:
+        AI_MODEL = GEMINI_MODEL
+    elif MIMO_MODEL:
+        AI_MODEL = MIMO_MODEL
+
+# mimo → openai 兼容映射
+if AI_PROVIDER == "mimo" and not AI_BASE_URL:
+    AI_BASE_URL = "https://api.xiaomimimo.com/v1"
+
 # 重试机制 (Retry Logic)
 MAX_RETRIES = 3
 RETRY_WAIT_S = [10, 25, 60]
@@ -148,6 +170,7 @@ def switch_user(username: str) -> str:
     global ACTIVE_USER, MOMO_TOKEN, GEMINI_API_KEY, GEMINI_MODEL, MIMO_API_KEY, MIMO_API_BASE, MIMO_MODEL
     global AI_PROVIDER, DB_PATH, TEST_DB_PATH, TURSO_DB_URL, TURSO_AUTH_TOKEN
     global TURSO_CACHE_DB_URL, TURSO_CACHE_AUTH_TOKEN  # NEW
+    global AI_API_KEY, AI_MODEL, AI_BASE_URL
 
     normalized, db_path, test_db_path = _switch_user_impl(
         username,
@@ -164,6 +187,29 @@ def switch_user(username: str) -> str:
     MIMO_API_BASE = os.getenv("MIMO_API_BASE") or "https://api.xiaomimimo.com/v1"
     MIMO_MODEL = os.getenv("MIMO_MODEL") or "mimo-v2-flash"
     AI_PROVIDER = os.getenv("AI_PROVIDER", "mimo")
+
+    # 统一 AI 配置（LiteLLM）
+    AI_API_KEY = os.getenv("AI_API_KEY")
+    AI_MODEL = os.getenv("AI_MODEL")
+    AI_BASE_URL = os.getenv("AI_BASE_URL")
+
+    # 旧配置自动迁移（如果 AI_API_KEY 未设置，从旧 key 映射）
+    if not AI_API_KEY:
+        if AI_PROVIDER == "gemini" and GEMINI_API_KEY:
+            AI_API_KEY = GEMINI_API_KEY
+        elif MIMO_API_KEY:
+            AI_API_KEY = MIMO_API_KEY
+
+    if not AI_MODEL:
+        if AI_PROVIDER == "gemini" and GEMINI_MODEL:
+            AI_MODEL = GEMINI_MODEL
+        elif MIMO_MODEL:
+            AI_MODEL = MIMO_MODEL
+
+    # mimo → openai 兼容映射
+    if AI_PROVIDER == "mimo" and not AI_BASE_URL:
+        AI_BASE_URL = "https://api.xiaomimimo.com/v1"
+
     TURSO_DB_URL = os.getenv("TURSO_DB_URL")
     TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
     TURSO_CACHE_DB_URL = os.getenv("TURSO_CACHE_DB_URL")
