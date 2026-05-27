@@ -6,7 +6,7 @@
  * - 创建/切换/删除/验证：useMutation + invalidate
  * - Wizard 表单字段保持本地 useState（属于 UI 输入状态，非服务端状态）
  */
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient, apiPost, apiPut } from '../api/client'
 import { queryKeys } from '../queries/queryClient'
@@ -28,6 +28,7 @@ import {
   X,
   Shield,
 } from 'lucide-react'
+import AIConfigCard from '../components/AIConfigCard'
 
 type WizardStep = 'idle' | 'form' | 'validating' | 'result'
 
@@ -172,55 +173,62 @@ export default function Users() {
       {data && (
         <div className="space-y-3 max-w-2xl">
           {users.map((u: UserProfile) => (
-            <div
-              key={u.username}
-              className={`bg-white rounded-lg shadow p-4 flex items-center gap-4 transition-all ${
-                u.is_active
-                  ? 'ring-2 ring-blue-500 cursor-default'
-                  : 'cursor-pointer hover:ring-2 hover:ring-blue-300 hover:shadow-md'
-              } ${switching === u.username ? 'opacity-60' : ''}`}
-              onClick={() => {
-                if (!u.is_active && !switching) handleSwitch(u.username)
-              }}
-            >
-              <div className="bg-gray-100 p-3 rounded-full">
-                {switching === u.username ? (
-                  <Loader2 size={20} className="text-blue-500 animate-spin" />
-                ) : (
-                  <User size={20} className="text-gray-600" />
-                )}
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{u.username}</span>
-                  {u.is_active && <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">当前</span>}
-                  {!u.is_active && switching === u.username && (
-                    <span className="text-xs text-blue-500">切换中...</span>
+            <React.Fragment key={u.username}>
+              <div
+                className={`bg-white rounded-lg shadow p-4 flex items-center gap-4 transition-all ${
+                  u.is_active
+                    ? 'ring-2 ring-blue-500 cursor-default'
+                    : 'cursor-pointer hover:ring-2 hover:ring-blue-300 hover:shadow-md'
+                } ${switching === u.username ? 'opacity-60' : ''}`}
+                onClick={() => {
+                  if (!u.is_active && !switching) handleSwitch(u.username)
+                }}
+              >
+                <div className="bg-gray-100 p-3 rounded-full">
+                  {switching === u.username ? (
+                    <Loader2 size={20} className="text-blue-500 animate-spin" />
+                  ) : (
+                    <User size={20} className="text-gray-600" />
                   )}
                 </div>
-                <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
-                  <span>AI: {u.ai_provider || '未配置'}</span>
-                  <span className="flex items-center gap-1">
-                    {u.has_momo_token ? <CheckCircle2 size={12} className="text-green-500" /> : <XCircle size={12} className="text-red-400" />}
-                    墨墨 Token
-                  </span>
-                  <span className="flex items-center gap-1">
-                    {u.has_ai_key ? <CheckCircle2 size={12} className="text-green-500" /> : <XCircle size={12} className="text-red-400" />}
-                    AI Key
-                  </span>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{u.username}</span>
+                    {u.is_active && <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">当前</span>}
+                    {!u.is_active && switching === u.username && (
+                      <span className="text-xs text-blue-500">切换中...</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
+                    <span>AI: {u.ai_provider || '未配置'}</span>
+                    <span className="flex items-center gap-1">
+                      {u.has_momo_token ? <CheckCircle2 size={12} className="text-green-500" /> : <XCircle size={12} className="text-red-400" />}
+                      墨墨 Token
+                    </span>
+                    <span className="flex items-center gap-1">
+                      {u.has_ai_key ? <CheckCircle2 size={12} className="text-green-500" /> : <XCircle size={12} className="text-red-400" />}
+                      AI Key
+                    </span>
+                  </div>
                 </div>
+                {!u.is_active && (
+                  <button
+                    onClick={e => { e.stopPropagation(); handleDelete(u.username) }}
+                    disabled={deleting === u.username}
+                    className="text-red-400 hover:text-red-600 disabled:opacity-40"
+                    title="删除用户"
+                  >
+                    {deleting === u.username ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                  </button>
+                )}
               </div>
-              {!u.is_active && (
-                <button
-                  onClick={e => { e.stopPropagation(); handleDelete(u.username) }}
-                  disabled={deleting === u.username}
-                  className="text-red-400 hover:text-red-600 disabled:opacity-40"
-                  title="删除用户"
-                >
-                  {deleting === u.username ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-                </button>
+              {u.is_active && (
+                <AIConfigCard
+                  username={u.username}
+                  currentProvider={u.ai_provider}
+                />
               )}
-            </div>
+            </React.Fragment>
           ))}
           {users.length === 0 && (
             <div className="text-center py-8 text-gray-400">暂无用户，点击"创建用户"开始</div>
