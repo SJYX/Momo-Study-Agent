@@ -387,3 +387,46 @@ export interface PreflightResponse {
   checks?: PreflightCheck[]
   blocking_items?: PreflightCheck[]
 }
+
+// ---------------------------------------------------------------------------
+// /api/users/{username}/ai-config — AI 供应商配置
+// ---------------------------------------------------------------------------
+export interface AIConfigRequest {
+  provider: string
+  api_key: string
+  model: string
+  base_url?: string
+}
+
+export interface AIConfigResponse {
+  provider: string
+  model: string
+  has_api_key: boolean
+  base_url?: string
+}
+
+export interface AITestRequest {
+  provider: string
+  api_key: string
+  model: string
+  base_url?: string
+}
+
+export interface AITestResponse {
+  ok: boolean
+  message: string
+  latency_ms?: number
+}
+
+export interface AIModelInfo {
+  id: string
+  name: string
+  prefix: string
+  needs_base_url: boolean
+  default_base_url?: string
+  models: string[]
+}
+
+export interface AIModelsResponse {
+  providers: AIModelInfo[]
+}
