@@ -198,9 +198,30 @@ def run_phase2(
     return fixed
 
 
+def _load_profile_env(username: str) -> None:
+    """加载用户 profile 的 .env 文件（dotenv）。"""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        print("WARNING: python-dotenv 未安装，无法加载 profile env")
+        return
+
+    profiles_dir = os.path.join(ROOT_DIR, "data", "profiles")
+    env_path = os.path.join(profiles_dir, f"{username.lower()}.env")
+    if not os.path.exists(env_path):
+        # 兼容大小写
+        for entry in os.listdir(profiles_dir) if os.path.isdir(profiles_dir) else []:
+            if entry.lower() == f"{username.lower()}.env":
+                env_path = os.path.join(profiles_dir, entry)
+                break
+    if os.path.exists(env_path):
+        load_dotenv(env_path, override=True)
+
+
 def main() -> int:
     args = parse_args()
     username = args.user
+    _load_profile_env(username)
     db_path = resolve_db_path(username)
 
     print(f"=== Conflict Reconciliation ===")
