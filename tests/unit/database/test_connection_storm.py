@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,11 +22,13 @@ def _enable_fake_pyturso(monkeypatch, tmp_path, conns):
 
     db_path = str(tmp_path / "main.db")
     call_count = {"value": 0}
+    call_lock = threading.Lock()
 
     def fake_connect(path, url, token, **kwargs):
         assert path == db_path
-        idx = min(call_count["value"], len(conns) - 1)
-        call_count["value"] += 1
+        with call_lock:
+            idx = min(call_count["value"], len(conns) - 1)
+            call_count["value"] += 1
         return conns[idx]
 
     fake_backend = MagicMock()
@@ -132,6 +135,7 @@ def test_with_read_session_invalidates_pool_on_schema_changed(monkeypatch, tmp_p
     assert result == "ok"
     assert attempts["value"] == 2
     assert call_count["value"] == 2
+    first.close.assert_called_once()
 
 
 def test_read_burst_uses_one_pyturso_connect_per_thread(monkeypatch, tmp_path):
@@ -149,7 +153,6 @@ def test_read_burst_uses_one_pyturso_connect_per_thread(monkeypatch, tmp_path):
 
 
 def test_read_pool_does_not_share_raw_connection_across_threads(monkeypatch, tmp_path):
-    import threading
     from database.connection import factory
 
     raw_conns = [MagicMock(), MagicMock()]

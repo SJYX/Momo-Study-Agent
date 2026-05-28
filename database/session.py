@@ -175,13 +175,11 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
                 _debug_log(f"{func.__name__} 异常: {e}", level="WARNING", module=func.__module__)
                 return default_return
             finally:
-                if not _recovery_attempted or '_recovery_attempted' in kwargs: 
-                    # 避免在重试的递归栈里重复关闭同一个连接（外层如果抛了异常才走到这）
-                    try:
-                        if c is not None:
-                            c.close()
-                    except Exception:
-                        pass
+                try:
+                    if c is not None:
+                        c.close()
+                except Exception:
+                    pass
         return wrapper
     return decorator
 

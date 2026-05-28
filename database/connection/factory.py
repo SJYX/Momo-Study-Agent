@@ -41,7 +41,6 @@ from .context import (
 
 
 # ── Read connection pool (pyturso MVCC 下安全,按线程隔离) ──
-_read_conn_pool_lock = threading.Lock()
 _read_conn_pool_tls = threading.local()
 
 
