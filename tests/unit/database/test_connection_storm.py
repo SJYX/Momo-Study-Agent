@@ -93,3 +93,42 @@ def test_close_read_conn_pool_closes_underlying_connections(monkeypatch, tmp_pat
     factory._close_read_conn_pool()
 
     raw_conn.close.assert_called_once()
+
+
+def test_with_read_session_invalidates_pool_on_schema_changed(monkeypatch, tmp_path):
+    from database.connection import factory
+    from database.session import DBSession, with_read_session
+
+    first = MagicMock()
+    second = MagicMock()
+    # Health check passes (SELECT 1), but cursor().execute() in DBSession fails
+    _orig_cursor = first.cursor
+
+    def _bad_cursor():
+        cur = _orig_cursor()
+        _orig_cur_exec = cur.execute
+
+        def _cur_exec(sql, *a, **kw):
+            if sql == "SELECT 1":
+                return _orig_cur_exec(sql, *a, **kw)
+            raise RuntimeError("database schema changed")
+
+        cur.execute = _cur_exec
+        return cur
+
+    first.cursor = _bad_cursor
+    factory, db_path, call_count = _enable_fake_pyturso(monkeypatch, tmp_path, [first, second])
+
+    attempts = {"value": 0}
+
+    @with_read_session(default_return="fallback")
+    def load_value(session: DBSession = None, db_path: str = None):
+        attempts["value"] += 1
+        session.execute("SELECT 42")
+        return "ok"
+
+    result = load_value(db_path=db_path)
+
+    assert result == "ok"
+    assert attempts["value"] == 2
+    assert call_count["value"] == 2

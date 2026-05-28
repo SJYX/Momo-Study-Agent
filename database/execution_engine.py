@@ -15,6 +15,8 @@ from database.connection import (
     _get_dedicated_write_conn,
     _close_main_write_conn_singleton,
     _close_hub_write_conn_singleton,
+    _close_read_conn_pool,
+    _invalidate_read_conn_pool,
     _is_main_db_path,
     _get_local_conn,
     HUB_DB_PATH,
@@ -73,7 +75,8 @@ def init_db_session_resources() -> None:
 
 
 def cleanup_db_session_resources() -> None:
-    """DB session 资源清理：关闭主库与 Hub 的写连接 singleton 句柄。"""
+    """DB session 资源清理：关闭主库、Hub 写连接 singleton 与当前线程读连接池。"""
+    _close_read_conn_pool()
     _close_main_write_conn_singleton()
     _close_hub_write_conn_singleton()
     _debug_log("DB session 资源清理完成", level="INFO")
@@ -82,6 +85,10 @@ def cleanup_db_session_resources() -> None:
 def _release_db_file_handles_for_recovery(db_path: str) -> None:
     import os
     abs_path = os.path.abspath(db_path or _config.DB_PATH)
+    try:
+        _invalidate_read_conn_pool(abs_path)
+    except Exception:
+        pass
     try:
         if abs_path == os.path.abspath(_config.DB_PATH):
             _close_main_write_conn_singleton()

@@ -126,6 +126,26 @@ def with_read_session(default_return: Any = None, fallback_on_corruption: bool =
                     
                 return res
             except Exception as e:
+                # schema changed → invalidate pool + retry with fresh connection
+                if "schema changed" in str(e).lower() and not _recovery_attempted:
+                    _debug_log(
+                        f"{func.__name__} 检测到 schema 变更，重建读连接后重试",
+                        level="WARNING",
+                        module=func.__module__,
+                    )
+                    try:
+                        from database.connection import _invalidate_read_conn_pool
+                        _invalidate_read_conn_pool(db_path)
+                    except Exception:
+                        try:
+                            if c is not None:
+                                c.close()
+                        except Exception:
+                            pass
+                    kwargs.pop("session", None)
+                    kwargs["_recovery_attempted"] = True
+                    return wrapper(*args, **kwargs)
+
                 if fallback_on_corruption and _is_sqlite_data_corruption_error(e):
                     if not _recovery_attempted:
                         get_logger().warning_throttled(
