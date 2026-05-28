@@ -17,53 +17,9 @@ from database.backends import HAS_PYTURSO
 # ── helpers from database.utils (no circular import) ──
 from database.utils import _debug_log
 
-# ── V007 format migration (lazy-imported inside connect) ──
-from database.utils import _backup_broken_database_file, _cleanup_stale_sidecars
-
-# Sentinel generation threshold: pyturso uses values near 10^18 as error sentinels.
-# Normal Turso generations are small integers (currently < 10^6).
-_CORRUPT_GENERATION_THRESHOLD = 10**15
-
-
-def _has_corrupt_sidecar_generation(db_path: str) -> bool:
-    """Check if .db-info sidecar has a sentinel/corrupt generation number.
-
-    pyturso writes generation ~10^18 when a sync error occurs. This sentinel
-    persists in the sidecar and causes subsequent pulls to request invalid
-    pages, triggering a Rust panic (btree.rs 'short read') that kills the
-    Python process before recovery can fire.
-
-    Returns True if the sidecar generation looks corrupt.
-    """
-    import json as _json
-
-    info_path = db_path + "-info"
-    if not os.path.exists(info_path):
-        return False
-
-    try:
-        with open(info_path, "r", encoding="utf-8") as f:
-            data = _json.load(f)
-
-        revision_str = ""
-        synced = data.get("synced_revision", {})
-        if isinstance(synced, dict):
-            revision_str = synced.get("revision", "")
-        if not revision_str:
-            return False
-
-        rev = _json.loads(revision_str) if isinstance(revision_str, str) else revision_str
-        generation = rev.get("generation", 0)
-        if generation > _CORRUPT_GENERATION_THRESHOLD:
-            _debug_log(
-                f"[pyturso] 检测到 sidecar 哨兵 generation={generation}，超过阈值 {_CORRUPT_GENERATION_THRESHOLD}",
-                level="WARNING",
-                module="database.backends._pyturso",
-            )
-            return True
-    except Exception:
-        pass
-    return False
+# 长轮询超时（毫秒）：首次 bootstrap 大库需要等服务端推送完成后才返回，
+# 但不应无限等待。90s 足够完成 10MB 级别的全量同步。
+_LONG_POLL_TIMEOUT_MS = 90_000
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -160,11 +116,25 @@ class PytursoBackend:
         _progress_thread = threading.Thread(target=_bootstrap_progress, daemon=True)
         _progress_thread.start()
         try:
-            db = turso.sync.connect(
-                db_path,
-                remote_url=url,
-                auth_token=token,
-            )
+            try:
+                db = turso.sync.connect(
+                    db_path,
+                    remote_url=url,
+                    auth_token=token,
+                    long_poll_timeout_ms=_LONG_POLL_TIMEOUT_MS,
+                )
+            except Exception as first_err:
+                _debug_log(
+                    f"[{db_label}] 首次 connect 超时/失败 ({first_err})，重试一次...",
+                    level="WARNING",
+                    module="database.backends._pyturso",
+                )
+                db = turso.sync.connect(
+                    db_path,
+                    remote_url=url,
+                    auth_token=token,
+                    long_poll_timeout_ms=_LONG_POLL_TIMEOUT_MS * 2,
+                )
         finally:
             _connect_done.set()
         _elapsed = time.time() - _t0
@@ -184,50 +154,6 @@ class PytursoBackend:
                 module="database.backends._pyturso",
             )
 
-        # ── Step 2.5: sidecar 健康检查 ──
-        # 如果 .db-info 包含哨兵 generation（~10^18），说明上次 pull 触发了
-        # pyturso 内部错误。必须把 .db + sidecar 全部移走后重新 bootstrap，
-        # 否则下次 pull 会再次触发 Rust panic (btree.rs short read)。
-        # 注意：只清 sidecar 而保留 .db 会导致 pyturso Rust 层页面状态不一致，
-        # 同样会 panic——所以必须用 _backup_broken_database_file 彻底移走。
-        if do_pull and _has_corrupt_sidecar_generation(db_path):
-            _debug_log(
-                f"[{db_label}] sidecar generation 异常，备份 .db 并重新 bootstrap...",
-                level="WARNING",
-                module="database.backends._pyturso",
-            )
-            backup = _backup_broken_database_file(
-                db_path, "哨兵 generation 触发完整重建"
-            )
-            if backup:
-                _debug_log(
-                    f"[{db_label}] 已备份到 {backup}",
-                    level="INFO",
-                    module="database.backends._pyturso",
-                )
-            # 关闭旧连接（如果 Step 2 返回了一个可用的 db 对象）
-            try:
-                db.close()
-            except Exception:
-                pass
-            # 从零开始 bootstrap：无 .db、无 sidecar → pyturso 全量拉取
-            db = turso.sync.connect(
-                db_path,
-                remote_url=url,
-                auth_token=token,
-            )
-            try:
-                db.execute("PRAGMA busy_timeout=30000;")
-                db.execute("PRAGMA synchronous=NORMAL;")
-            except Exception:
-                pass
-            _debug_log(
-                f"[{db_label}] 重新 bootstrap 完成",
-                level="INFO",
-                module="database.backends._pyturso",
-            )
-            return db
-
         # ── Step 3: 可选的 pull (拉增量) ──
         # 对刚 bootstrap 的库通常是 no-op (connect 已经同步过); 对已有 .db 的库
         # 用来拉远端增量。失败一律非致命——本地数据可读, 等下次 sync 再补。
@@ -245,18 +171,6 @@ class PytursoBackend:
                     level="WARNING",
                     module="database.backends._pyturso",
                 )
-                # Post-pull corruption check: if the failed pull left a sentinel
-                # generation, backup .db + sidecars so the next connect() won't
-                # hit the same btree.rs panic.
-                if _has_corrupt_sidecar_generation(db_path):
-                    _debug_log(
-                        f"[{db_label}] pull 失败后检测到 sidecar 哨兵，备份并清理",
-                        level="WARNING",
-                        module="database.backends._pyturso",
-                    )
-                    _backup_broken_database_file(
-                        db_path, "pull 失败后哨兵 generation 触发备份"
-                    )
 
         # ── Step 4: Full sync cycle if requested ──
         # 拆开 push / pull 单独计时,因为 connect(do_sync=True) 路径上
