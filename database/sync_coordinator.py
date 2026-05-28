@@ -99,8 +99,8 @@ class ProfileSyncCoordinator:
             延迟秒数（1.0 - 3.0）
         """
         if len(self._write_timestamps) < 5:
-            # 数据不足，使用最大延迟（保守策略）
-            return self._max_delay_adaptive
+            # 样本不足时保留调用方配置的基础 debounce 行为。
+            return self._debounce
 
         # 计算最近 10 次写入的平均间隔
         recent = self._write_timestamps[-10:]
