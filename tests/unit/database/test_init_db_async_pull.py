@@ -111,3 +111,42 @@ def test_init_db_local_only_does_not_kick_async_pull(tmp_path, monkeypatch):
     assert pull_calls == [], (
         f"local-only init_db should not call _kick_async_pull, but got {pull_calls!r}"
     )
+
+
+@pytest.mark.unit
+def test_init_db_cloud_path_does_not_use_write_singleton(tmp_path, monkeypatch):
+    monkeypatch.setenv("TURSO_DB_URL", "libsql://fake.turso.io")
+    monkeypatch.setenv("TURSO_AUTH_TOKEN", "fake-token")
+    monkeypatch.delenv("TURSO_HUB_DB_URL", raising=False)
+    monkeypatch.delenv("TURSO_HUB_AUTH_TOKEN", raising=False)
+
+    import database.schema
+    import database.connection.singleton as conn_singleton
+    import database.connection.context as conn_context
+
+    class _StubBackend:
+        name = "pyturso"
+
+        def connect(self, db_path, url, token, *, do_sync=False, do_pull=True):
+            c = sqlite3.connect(db_path, timeout=5.0)
+            c.execute("PRAGMA journal_mode=WAL;")
+            return c
+
+        def do_sync_on(self, conn):
+            pass
+
+    monkeypatch.setattr(conn_context, "_backend", _StubBackend())
+    monkeypatch.setattr(database.schema, "_kick_async_pull", lambda p: None)
+    monkeypatch.setattr(database.schema, "init_users_hub_tables", lambda: True)
+
+    called = {"value": False}
+
+    def fail_if_called(*args, **kwargs):
+        called["value"] = True
+        raise AssertionError("init_db must not call write singleton on foreground path")
+
+    monkeypatch.setattr(conn_singleton, "_get_main_write_conn_singleton", fail_if_called)
+
+    database.schema.init_db(str(tmp_path / "test.db"))
+
+    assert called["value"] is False
