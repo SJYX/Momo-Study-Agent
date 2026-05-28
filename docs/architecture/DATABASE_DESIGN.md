@@ -44,9 +44,9 @@
 
 ## 同步策略
 
-- `sync_databases()` 负责用户学习库的本地/云端双向同步。
-- 同步由 Turso 后端驱动执行（`pyturso` 或 `libsql`），应用层不做手工逐表增量比对。
-- `mark_processed()`、`save_ai_word_note()` 和 `save_ai_word_notes_batch()` 会优先写入可用的连接，再回退到本地。
+- `sync_databases()` 负责用户学习库的本地/云端同步；Hub 同步由 `sync_hub_databases()` 单独负责。
+- 同步由 Turso 后端驱动执行（当前实现只走 `pyturso`），应用层不做手工逐表增量比对。
+- `mark_processed()`、`save_ai_word_note()` 和 `save_ai_word_notes_batch()` 通过连接分发层写入，由连接层决定走本地连接还是云端连接。
 - Hub 同步是独立职责，不和用户学习库混写。
 
 ### 同步状态机优化（2026-05-26）
@@ -63,7 +63,7 @@
 
 **原因：** 业务层可感知 push 失败，避免本地显示"已同步"但云端无数据的问题
 
-### 带 co_origin 的笔记同步语义
+### 带 content_origin 的笔记同步语义
 
 **关键设计原则：** `sync_status` 仅代表**当前用户对该单词的云端同步状态**，与**内容来源**无关。
 
@@ -74,7 +74,7 @@
 
 **多用户查询命中时的处理：**
 
-当系统查询社区/历史库发现命中（co_origin ≠ ai_generated），_初始化时_ 直接标记为 `sync_status=1`：
+当系统查询社区/历史库发现命中（`content_origin` ≠ `ai_generated`），_初始化时_ 直接标记为 `sync_status=1`：
 - `content_origin = 'community_reused'` → `sync_status=1`（社区释义已在云端，无需当前用户再同步）
 - `content_origin = 'current_db_reused'` → `sync_status=1`（个人数据已同步过）
 - `content_origin = 'history_reused'` → `sync_status=1`（历史数据已同步）
@@ -91,13 +91,10 @@ WHERE sync_status = 0 AND content_origin = 'ai_generated'
 
 **状态更新持久化：**
 
-在双库模式（云端+本地缓存）下，`set_note_sync_status()` 确保两库同步：
-- 更新主库（云端或本地取决于连接）
-- 若主库是云端连接，同时更新本地缓存库
-- 确保下次查询不再重复提取
+`set_note_sync_status()` 通过当前连接写回 `sync_status`，具体落到本地还是云端由连接层决定；上层只依赖状态字段，不直接管理双写细节。
 
 - 待同步队列由 `ai_word_notes.sync_status` 持久化。
-- 新增 ai_generated 笔记默认 `sync_status=0`；co_origin 笔记默认 `sync_status=1`。
+- 新增 ai_generated 笔记默认 `sync_status=0`；`content_origin` 非 `ai_generated` 的笔记默认 `sync_status=1`。
 - 同步成功后可调用 `mark_note_synced(voc_id)` 将记录置为 `sync_status=1`。
 - 若云端已存在释义但内容与本地不一致，可将记录标记为 `sync_status=2` 以便后续冲突排查。
 - 对不可重试失败（非法资源 ID）或重试超限场景，标记 `sync_status=5`，避免无限重试。

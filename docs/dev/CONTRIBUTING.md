@@ -62,7 +62,7 @@ result = _row_to_dict(cur, row) if row else None
 
 ### 新增字段
 
-所有表结构变更都通过 PRAGMA user_version 迁移框架处理（Phase 6.2）：
+所有表结构变更都通过 PRAGMA user_version 迁移框架处理：
 
 ```python
 # database/migrations/V001_initial.py 中维护 _ADD_COLUMNS
@@ -79,7 +79,7 @@ _ADD_COLUMNS = [
 ```python
 from database.connection import _get_read_conn
 from config import DB_PATH
-conn = _get_read_conn(DB_PATH)  # 自动路由：有云端配置→Embedded Replica，无则纯本地 SQLite
+conn = _get_read_conn(DB_PATH)  # 自动路由：有云端配置→Turso 连接，无则纯本地 SQLite
 ```
 
 > `core/db_manager.py` 已于 2026-04-22 删除；老调用点如仍在用 `from core.db_manager import X` 写法，请改为 `from database.legacy import X`（drop-in 过渡门面），或**直接从 `database/` 具体子模块导入**。运行期守则见 [`../../database/README.md`](../../database/README.md) 的 Runtime Iron Rules。
@@ -88,7 +88,7 @@ conn = _get_read_conn(DB_PATH)  # 自动路由：有云端配置→Embedded Repl
 
 - 当前代码支持从 `TURSO_DB_URL` 读取完整连接地址。
 - 也支持仅配置 `TURSO_DB_HOSTNAME`，会自动补全为 `https://{hostname}`。
-- 必须同时提供 `TURSO_AUTH_TOKEN`，用于 `libsql.connect(url, auth_token=...)`。
+- 必须同时提供 `TURSO_AUTH_TOKEN`，供 Turso 后端建立连接时使用。
 - 新用户向导会尝试调用 Turso API `POST /v1/organizations/{organizationSlug}/databases` 创建数据库，并将结果写入该用户的 `.env` 配置。
 
 ### 中央 Hub 初始化
@@ -228,6 +228,6 @@ categorized = filter.get_weak_words_by_category(threshold)
 2. 实现功能
 3. 运行 `python -m py_compile <文件>` 验证语法
 4. 更新 `docs/dev/AI_CONTEXT.md` 中的"当前状态"节
-5. 若功能涉及日志或排障，补充 `docs/dev/LOGGING.md` 与 `docs/dev/QUICK_START.md`
+5. 若功能涉及日志或排障，补充 `docs/dev/LOGGING.md`，必要时把启动命令/环境准备同步到 `docs/dev/DEVELOPMENT.md`
 6. 若改动影响行为/配置/接口/流程，必须同步更新对应专项文档（如 `AUTO_SYNC.md`）
 7. 变更说明中列出“受影响文档清单”，确保评审可追踪

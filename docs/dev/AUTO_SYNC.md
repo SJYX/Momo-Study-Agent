@@ -7,7 +7,7 @@
 
 ## 概述
 
-系统在主流程关键节点自动触发同步，当前基于 Embedded Replicas 的 `conn.sync()` 完成帧级增量收敛。
+系统在主流程关键节点自动触发同步，当前基于 Turso 后端的 `push/pull` 完成本地与云端收敛。
 
 ## 同步优化（2026-05-26）
 
@@ -53,7 +53,7 @@
 ## 断点续传
 
 - 待同步队列通过 `ai_word_notes.sync_status` 和 `content_origin` 进行过滤和恢复（see `get_unsynced_notes()`）。
-- 断点续传依赖本地 schema 完整性（Phase 6.2 迁移框架通过 `PRAGMA user_version` 确保兼容）。
+- 断点续传依赖本地 schema 完整性（`PRAGMA user_version` 迁移框架确保兼容）。
 
 ### 退出收尾策略
 
@@ -186,8 +186,8 @@ def _run_sync_with_stage_logs(self, label: str, sync_func) -> dict:
 
 ## 本地并发写入配置
 
-当前应用放弃了完全依赖 `timeout` 解锁的主线阻塞并发，转为采用 **写操作队列 + 后台单例守护线程 (`_writer_daemon`)** 的序列化落盘方案，彻底告别了多线程 SQLite I/O 抢占。
-- 读操作已强制隔离为 ThreadLocal 专属连接。
+当前应用采用 **写操作队列 + 后台单例守护线程 (`_writer_daemon`)** 的序列化落盘方案，并保留独立读连接以避免读写互相阻塞。
+- 读操作通过连接管理层获取轻量读连接，不直接绕过封装。
 - 所有写入（除了事务锁紧情况）均被封装成消息投递入队。
 - （底层兜底）本地 SQLite 连接仍保持 `WAL` 模式、`synchronous=NORMAL` 与超时 `timeout=20.0s` 配置。
 

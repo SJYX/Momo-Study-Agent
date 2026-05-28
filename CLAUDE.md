@@ -3,29 +3,18 @@
 > 这里是 AI 助手进入项目的**第一页**：拿到地图 / 现状 / 红线摘要 / 调试入口。
 > 完整规则（MUST 清单、反模式、数据流）在 [`docs/dev/AI_CONTEXT.md`](docs/dev/AI_CONTEXT.md)——**那才是规则的唯一事实来源**。
 
-## 当前状态（2026-05-11）
+## 当前状态（2026-05-28）
 
 - 版本 1.0.0，Python 3.12+，Windows 优先。
 - CLI 为主入口（`python main.py`），Web 前端已完成集成（`feat/web-ui` 分支已合并到 main）。启动方式 `python main.py` 或 `python -m web.backend --user <name>`。
 - **系统成熟度**：
-  - 数据层：Embedded Replicas 迁移完毕（Phase 0–4），`conn.sync()` 取代手工增量；持久逻辑拆到 `database/` 包，所有模块动态读 `_config.DB_PATH`。
-  - 并发层：单写守护线程 + 进程锁稳定；优先队列调度（Phase 4）、防饿死保底、多用户活跃追踪已实现。
-  - 配置层：profile_loader 三阶段加载、pydantic-settings 模型、Kill Switch 特性开关（Phase 6.1/6.3）。
-  - Schema 迁移框架（Phase 6.2）建立，user_version 管理，V001 收纳所有历史 ALTER。
-  - 代码质量：pre-commit + ESLint 启用（Phase 6.4），37 个新单元测试。
-- **近期完成**（2026-05-11）：
-  - Phase 4：优先队列 + 防饿死 + 活跃 profile 追踪（per-profile pause）
-  - Phase 4.5：API 查询降重（COUNT 替代全量 fetch）
-  - Phase 5：日志系统整合（throttle 集中在 ContextLogger，清重复）
-  - Phase 6.1：Kill Switch 框架（3 个 flag）
-  - Phase 6.2：Schema 迁移框架（user_version runner + V001）
-  - Phase 6.3：配置现代化（profile_loader + pydantic-settings）
-  - Phase 6.4：代码质量门禁（pre-commit + ESLint 9）
-  - Bug Fix：修复所有模块的 DB_PATH 缓存反向 patch
-  - PLAYBOOK B4：前端协同（hover prefetch / 骨架屏 / 降级元数据 / Dashboard 迁 React Query）
-  - PLAYBOOK B5+B3：指标基础设施（core/metrics.py + /api/ops/metrics）+ 闲时引擎（SyncManager._is_idle）
+  - 数据层：主库与 Hub 已切到 `pyturso` 后端，连接管理拆到 `database/connection/` 包；读连接与写单例分流，业务代码不直接建连。
+  - 并发层：单写守护线程 + 进程锁稳定；优先队列调度、防饿死保底、多用户活跃追踪已实现。
+  - 配置层：profile_loader 三阶段加载、pydantic-settings 模型、Kill Switch 特性开关已上线。
+  - Schema 迁移框架已建立，`user_version` 管理和 V001 迁移保留。
+  - 代码质量：pre-commit + ESLint 启用，核心路径有持续回归测试覆盖。
 
-> 版本与阶段字段的 SSoT 是 `docs/dev/AI_CONTEXT.md §0.5`；本段与其保持同步。
+> 本页只保留当前会影响开发判断的状态；更完整的历史阶段记录请看 `docs/history/phases/`。
 
 ## 模块地图（10 秒扫完）
 
@@ -37,15 +26,15 @@
 | 墨墨 API | `core/maimemo_api.py` | 频控 `threading.Lock` 不能去掉 |
 | AI 生成 | `core/gemini_client.py` / `core/mimo_client.py` | 复用 `requests.Session` |
 | 智能迭代 | `core/iteration_manager.py` + `core/weak_word_filter.py` | 薄弱词必须走多维评分 |
-| 同步后台 | `core/sync_manager.py` + `core/sync_priority.py` | PriorityQueue 调度、防饿死保底（Phase 4）、闲时引擎 `_is_idle`（B3） |
+| 同步后台 | `core/sync_manager.py` + `core/sync_priority.py` | PriorityQueue 调度、防饿死保底、闲时引擎 `_is_idle` |
 | 活跃 profile | `core/active_profile_registry.py` | 多用户 Web 场景下暂停非活跃 profile 的 P3+ 同步 |
 | 运行期指标 | `core/metrics.py` | 进程内 RollingWindow + MetricsCollector（PLAYBOOK B5）；给 B3 闲时引擎与 `/api/ops/metrics` 用 |
-| 配置加载 | `config.py` + `core/profile_loader.py` + `core/settings.py` | 三阶段 env + pydantic 模型（Phase 6.3） |
-| 特性开关 | `core/feature_flags.py` | Kill Switch 框架，性能回退时一键关闭（Phase 6.1） |
-| 数据库读写 | `database/momo_words.py`（业务）、`database/connection.py`（连接+写队列+同步守护）、`database/schema.py`（表） | **直连 `database/`**；老调用点可通过 `database.legacy` 过渡 |
-| Schema 迁移 | `database/migrations/runner.py` + `database/migrations/V001_initial.py` | PRAGMA user_version 管理（Phase 6.2） |
+| 配置加载 | `config.py` + `core/profile_loader.py` + `core/settings.py` | 三阶段 env + pydantic 模型 |
+| 特性开关 | `core/feature_flags.py` | 性能回退时可一键关闭 |
+| 数据库读写 | `database/momo_words.py`（业务）、`database/connection/`（连接管理 + 读连接 + 写单例）、`database/execution_engine.py`（写队列 + 同步守护）、`database/schema.py`（表） | **直连 `database/`**；老调用点可通过 `database.legacy` 过渡 |
+| Schema 迁移 | `database/migrations/runner.py` + `database/migrations/V001_initial.py` | PRAGMA user_version 管理 |
 | 多用户 profile | `core/profile_manager.py` / `core/config_wizard.py` | 凭据永远只写 `data/profiles/<user>.env` |
-| 日志 | `core/logger.py` + `core/log_config.py` | 业务层禁 `print()`；使用 throttle 方法避免日志洪泛（Phase 5） |
+| 日志 | `core/logger.py` + `core/log_config.py` | 业务层禁 `print()`；使用 throttle 方法避免日志洪泛 |
 | 体检 | `tools/preflight_check.py` | 支持 text / json 双输出 |
 | Prompts | `docs/prompts/*.md` | 不要硬编码到 Python 字符串 |
 | Web 后端 | `web/backend/` | FastAPI ASGI；与 CLI 共享进程锁（互斥） |
@@ -53,9 +42,9 @@
 
 ## 三条红线（违反即停）
 
-1. **写入必须经写队列**：业务线程严禁直接调 `libsql.connect` 或 `INSERT/UPDATE`；所有写操作通过 `database/connection.py` 的 `_write_queue`/`_queue_write_operation` 投递，由后台守护线程序列化落盘。
+1. **写入必须经写队列**：业务线程严禁直接绕过数据库封装建连或直写；所有写操作通过 `database/execution_engine.py` 的写队列与调度路径提交，由后台守护线程序列化落盘。
 2. **Hub 与个人库严格隔离**：`TURSO_HUB_DB_URL` 只装用户元数据/鉴权/审计；`TURSO_DB_URL` 只装学习数据；凭据不落个人库，学习记录不落 Hub。
-3. **Prompt 必须外置**：生产 prompt 只能放 `docs/prompts/*.md`，由 `config.py` 路径常量读取——禁止在 Python 长字符串里硬编码 prompt。
+3. **Prompt 必须外置**：生产 prompt 仍然只放 `docs/prompts/*.md`，由 `config.py` 路径常量读取——禁止在 Python 长字符串里硬编码 prompt。
 
 > 完整 MUST 清单（含游标协议、`row_factory` 禁令、同步状态机、schema 兼容等 6 大节）见 [`docs/dev/AI_CONTEXT.md §3`](docs/dev/AI_CONTEXT.md)。
 

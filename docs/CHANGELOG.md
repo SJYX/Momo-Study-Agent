@@ -2,6 +2,8 @@
 
 记录 Momo Study Agent 项目文档的变更历史。
 
+> 这是一份历史账本，不是当前实现规范。当前行为与边界以 `docs/dev/AI_CONTEXT.md`、`docs/architecture/ARCHITECTURE.md` 和 `docs/dev/SYNC_PRIORITY_MATRIX.md` 为准。
+
 ## 2026-05-21
 
 ### libsql 技术债全面清理

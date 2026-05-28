@@ -2,7 +2,7 @@
 
 ## 目标
 
-将"同步任务"从可能影响前端加载的后台活动，改造成有明确优先级、可降级的调度体系。
+将"同步任务"从可能影响前端加载的后台活动，改造成有明确优先级、可降级的调度体系。本文件是执行层矩阵；路线与阶段依赖见 `SYNC_OPTIMIZATION_PLAYBOOK.md`，实现总览见 `REFACTOR_PROGRESS.md`。
 
 核心原则：
 
@@ -203,4 +203,4 @@
 
 ---
 
-*本文档自 2026-05-08 修订，对齐代码现状（per-profile SyncManager）与 REFACTOR_PROGRESS Phase 4/4.5 范围。*
+*本文档自 2026-05-08 修订，对齐代码现状（per-profile SyncManager）与 REFACTOR_PROGRESS Phase 4/4.5 范围。执行层细节优先以这里为准。*

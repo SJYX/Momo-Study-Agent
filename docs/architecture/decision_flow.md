@@ -75,7 +75,7 @@ flowchart TD
 - 有差异时，询问是否立即合并。
 - 每次任务完成后，`_trigger_post_run_sync()` 会触发后台同步。
 - 退出时再次执行同步，避免最后一批数据丢失。
-- 同步实现通过 `database/backends/` 自动选择后端（优先 `pyturso`，回退 `libsql`）。
+- 同步实现通过 `database/backends/` 驱动当前的 `pyturso` 路线；`libsql` 仅保留为历史兼容参考。
 
 ```mermaid
 flowchart TD
@@ -111,7 +111,7 @@ flowchart TD
 
 - `TURSO_DB_URL` + `TURSO_AUTH_TOKEN` 存在：启用云端数据库同步。
 - 不存在：使用本地 SQLite，云同步功能失效。
-- 若 `pyturso` 与 `libsql` 都不可用：即便配置了 Turso，也退回本地。
+- 若 `pyturso` 不可用：即便配置了 Turso，也退回本地。
 
 ### 7.3 管理员权限分支
 
@@ -127,7 +127,7 @@ flowchart TD
 2. `core/profile_manager.py`：理解用户选择与现有用户分支。
 3. `core/config_wizard.py`：分析新用户创建、云数据库启用与 Hub 初始化分支。
 4. `main.py`：查看运行时菜单与主流程分支。
-5. `database/connection.py` + `database/momo_words.py`：掌握单例连接、写队列、云/本地写入分支与 `sync_databases()` 实现（`core/db_manager.py` 已于 2026-04-22 删除）。
+5. `database/connection/` + `database/momo_words.py`：掌握连接工厂、写队列、云/本地写入分支与 `sync_databases()` 实现。
 6. `core/iteration_manager.py`：理解 AI 迭代决策分支。
 
 ---

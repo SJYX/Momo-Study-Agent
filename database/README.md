@@ -1,6 +1,6 @@
 # database Package Architecture
 
-This package splits the old `db_manager.py` into clear layers while preserving runtime behavior and improving safety in Embedded Replica mode.
+This package splits the old `db_manager.py` into clear layers while preserving runtime behavior and documenting the current pyturso runtime.
 
 > `core/db_manager.py` has been removed (2026-04-22). New code should depend on the specific submodules directly.
 
@@ -23,7 +23,7 @@ This made it easy to accidentally re-introduce unsafe connection patterns and ha
 Responsibilities:
 
 - Connection lifecycle and context resolution
-- Embedded Replica connect/retry logic
+- pyturso connect/retry logic and read/write path dispatch
 - Main DB and Hub DB singleton write connections
 - Writer queue and background writer thread
 - Background sync daemon
@@ -107,36 +107,30 @@ Dependencies:
 - **绝对禁止多开套娃**：不得使用 `subprocess.run` 重新拉起带不同环境变量的主程序。环境变量热重载必须在内存中用 `importlib.reload()` 解决（参考 `main.py` 的早启动钩子）。
 - **强制物理锁**：入口文件在连接任何数据库之前，必须通过 `msvcrt` (Windows) 或 `fcntl` (Unix) 抢占 `data/.process.lock`。抢锁失败必须立即 `sys.exit(1)`。
 
-### 2. 连接级防御（Singleton Connection）
+### 2. 连接级防御（Read/Write Path Dispatch）
 
-- **全局单例**：对同一个本地副本 `.db` 文件，全局只能保持**唯一一个**持久化 `pyturso` 连接对象。
-- **禁止私自建连**：业务代码绝对禁止直接调用 `turso.sync.connect(DB_PATH)`。所有读写必须走 `connection.py` 提供的单例接口（如 `_get_read_conn`）。
+- **写单例只用于同步窄路径**：`_get_main_write_conn_singleton()` 和 `_get_hub_write_conn_singleton()` 只在 `do_sync=True` 的窄路径下复用；普通业务写入仍应通过连接工厂按需获取连接。
+- **读连接按需独立获取**：查询路径使用 `_get_read_conn()` / `_get_local_read_conn()`，不要把读路径绑定到写单例。
+- **禁止私自建连**：业务代码不得绕过 `database/connection/` 直接打开 Turso/SQLite 连接。
 
-### 3. 游标与读锁协议 🌟（最易犯错点）
+### 3. 游标协议 🌟（最易犯错点）
 
-SQLite 的 `SELECT` 会隐式开启共享读事务。不显式清理将永久锁死 WAL 文件、导致 `conn.sync()` 崩溃。
+查询操作必须明确关闭游标，避免长时间持有连接状态：
 
-任何查询操作必须严格遵循以下 `try...finally` 模板：
-
-- **必选 1**：包裹在单例线程锁（`with conn_lock:`）内。
-- **必选 2**：`finally` 块中 `cur.close()`——清除 `SQLITE_ROW` 状态。
-- **必选 3**：查询结束后 `c.commit()`——释放底层读锁。
-- **禁忌**：绝对禁止匿名游标（如 `conn.execute("SELECT ...")`）。
+- **必选 1**：使用显式游标对象，不要把复杂查询塞进匿名 `conn.execute(...)` 链式调用里。
+- **必选 2**：`finally` 块中 `cur.close()`，确保语句状态及时释放。
+- **必选 3**：如果查询后还会继续持有连接，请尽早返回或进入下一段明确的短事务。
 
 正确模板：
 
 ```python
 c = connection._get_read_conn(DB_PATH)
-conn_lock = connection._get_singleton_conn_op_lock(c)
-if conn_lock is not None:
-    with conn_lock:
-        cur = c.cursor()
-        try:
-            cur.execute("SELECT ...")
-            res = cur.fetchone()  # 或 fetchall()
-        finally:
-            cur.close()  # 第一道防线：重置语句状态
-        c.commit()        # 第二道防线：释放底层读锁
+cur = c.cursor()
+try:
+  cur.execute("SELECT ...")
+  res = cur.fetchone()  # 或 fetchall()
+finally:
+  cur.close()
 ```
 
 ### 4. 写事务与自愈机制
@@ -145,9 +139,9 @@ if conn_lock is not None:
 - **回滚兜底**：写操作 `try...except` 中发生任何异常必须 `conn.rollback()`。
 - **静默自愈（Poisoned Connection Recovery）**：底层抛出 `invalid state, started with Txn` / `WalConflict` / `stream not found` / `hrana 断连` 异常时，说明单例已损坏或被云端踢出。守护线程必须捕获这些关键字，强制 `_close_main_write_conn_singleton()` 销毁旧连接，下一次循环静默重建重试。
 
-### 5. GC Hack（conn.sync() 前强制回收）
+### 5. 同步清理
 
-调用底层 `conn.sync()` 同步增量帧到云端**之前**，必须强制 `import gc; gc.collect()`。此举物理销毁业务层可能因漏写 `cur.close()` 而游荡在内存中的僵尸游标对象，确保 WAL 文件处于绝对干净的解锁状态。
+当前 pyturso 后端不依赖手动 `gc.collect()` 作为同步前置条件。同步清理由 `backend.do_sync_on(conn)` 和连接关闭流程负责；真正要防的是漏关游标和越层直连。
 
 ### 6. 本地 WAL 并发配置（生产值）
 
@@ -161,7 +155,7 @@ if conn_lock is not None:
 | `wal_autocheckpoint` | `1000` | 每 1000 页自动 checkpoint，避免 WAL 文件无限增长 |
 | 连接 `timeout` | `20.0` | 写入竞争兜底超时 |
 
-落地点：`_open_local_connection`、`_connect_embedded_replica`、`_get_hub_local_conn._open_local_connection`（均在 `connection.py`）。
+落地点：`_open_local_connection`、`_get_local_read_conn`、`_get_hub_local_conn._open_local_connection`（均在 `connection.py`）。
 
 ### 7. 批量写入重试守则
 
@@ -170,40 +164,18 @@ if conn_lock is not None:
 
 `_writer_daemon` 遇 WAL 冲突时**保留 batch**、睡 500ms 等 replica 同步窗口；其它异常则**清空 batch** 避免重复处理。这两种策略配合保证批量写入最终落库且不阻塞守护线程。
 
-## Critical Safety Rule: Embedded Replica Single Connection Rule
+## Critical Safety Rule: Read/Write Path Separation
 
 This rule is mandatory.
 
-In Embedded Replica mode, for the same replica file:
-
-- Do NOT open extra pyturso connections for read paths.
-- Do NOT keep thread-local read connections.
-- Do NOT create any additional `turso.sync.connect(local_replica_path)` handles alongside the active syncing singleton.
-
-### Required Behavior
-
-- Main DB reads and writes must reuse the process singleton:
-  - `_get_main_write_conn_singleton(...)`
-- Hub DB reads and writes must reuse the process singleton:
-  - `_get_hub_write_conn_singleton(...)`
-- `_get_read_conn_impl(...)` must return main singleton in Embedded Replica mode.
-- Hub fetch helpers must read through hub singleton.
-
-### Forbidden Patterns
-
-- ThreadLocal read connection caches for pyturso replicas
-- `_get_pyturso_local_read_conn(...)` style APIs for primary replica files
-- Any code path that opens a second live connection to the same syncing replica file
+- Main DB reads use `_get_read_conn()` / `_get_local_read_conn()` and are independent from the write singleton.
+- Main DB sync / flush paths may use `_get_main_write_conn_singleton(do_sync=True)`.
+- Hub reads use `_get_hub_local_conn()` / `_get_hub_write_conn_singleton()` according to the same read/write split.
+- No code path should bypass `database/connection/` and open raw connection handles directly.
 
 ## WalConflict Root Cause Summary
 
-`WalConflict` appears when multiple pyturso connection instances compete on the same replica file while one is actively syncing WAL frames. The Rust core enforces strict file-level synchronization assumptions that are violated by multi-instance access.
-
-The fix is architectural, not just retry-based:
-
-- one replica file
-- one live pyturso connection singleton
-- all operations serialized via connection-level locks and/or queueing
+`WalConflict` historically came from mixing long-lived connection reuse with background sync on the same file. The current fix is architectural: keep sync on the write/sync path, keep reads on separate short-lived read connections, and close cursors promptly.
 
 ## Dependency Direction (No Circular Imports)
 
@@ -227,8 +199,7 @@ Avoid reverse imports (e.g. `connection` importing `hub_users` or `momo_words`).
 
 Before merging DB-related changes, verify:
 
-- No new ThreadLocal read connection logic exists for Embedded Replicas.
-- No helper opens extra pyturso local connections to active replica files.
-- `_get_read_conn_impl` still funnels to main singleton in cloud mode.
-- Hub reads still use hub singleton.
+- No helper opens raw connection handles outside `database/connection/`.
+- `_get_read_conn_impl` still dispatches to the read path for normal reads and to the write singleton only for `do_sync=True`.
+- Hub reads still respect the same read/write split.
 - New business modules only depend on `connection/utils/schema` and do not redefine connection logic.

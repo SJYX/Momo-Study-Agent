@@ -9,7 +9,7 @@
 | --- | --- |
 | 规则红线（MUST / 反模式 / 数据流） | [`AI_CONTEXT.md`](AI_CONTEXT.md) — **唯一事实来源** |
 | 项目地图 / 当前状态摘要 | [`../../CLAUDE.md`](../../CLAUDE.md)（AI 会话首页）/ [`../../AGENTS.md`](../../AGENTS.md)（Codex Agent 入口） |
-| 启动命令 / 环境准备 | [`QUICK_START.md`](QUICK_START.md) |
+| 启动命令 / 环境准备 | 本页下方“快速起步” |
 | 系统架构与数据流 | [`../architecture/ARCHITECTURE.md`](../architecture/ARCHITECTURE.md) |
 | 表结构 + sync_status / WordState 状态机 | [`../architecture/DATABASE_DESIGN.md`](../architecture/DATABASE_DESIGN.md) |
 | 启动分支决策（用户/云端/管理员） | [`../architecture/decision_flow.md`](../architecture/decision_flow.md) |
@@ -20,10 +20,27 @@
 | --- | --- |
 | 同步机制（前后台策略、队列、退出收尾） | [`AUTO_SYNC.md`](AUTO_SYNC.md) |
 | 同步优化历史决策与场景矩阵 | [`SYNC_OPTIMIZATION_PLAYBOOK.md`](SYNC_OPTIMIZATION_PLAYBOOK.md) / [`SYNC_PRIORITY_MATRIX.md`](SYNC_PRIORITY_MATRIX.md) |
-| 日志系统接入与级别 | [`LOGGING.md`](LOGGING.md) / [`LOGGING_LEVELS.md`](LOGGING_LEVELS.md) |
+| 日志系统接入与级别 | [`LOGGING.md`](LOGGING.md) |
 | 历史决策记录（为什么不那样做） | [`DECISIONS.md`](DECISIONS.md) |
 | 贡献规范 / 新增 AI 提供商 / 凭证处理 | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | 运行期 WAL / 游标 / 重试铁律 | [`../../database/README.md`](../../database/README.md) |
+
+## 快速起步
+
+如果你只是想尽快跑起来，按这个最短路径即可：
+
+```bash
+pip install -r requirements.txt
+python tools/preflight_check.py --user <username>
+python -m pytest tests/ -v --tb=short -m "not slow"
+python main.py
+```
+
+说明：
+
+- 先确认 `.env` 或 profile 配置已就绪。
+- 若要验证同步链路行为，先读 `AUTO_SYNC.md` 再改流程。
+- 这部分只保留最短可执行路径，不再单独维护 `QUICK_START.md`。
 
 ## 子领域工作区
 

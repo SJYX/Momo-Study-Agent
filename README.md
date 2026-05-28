@@ -27,8 +27,8 @@
 │   ├── utils.py                 # 通用工具函数
 │   ├── weak_word_filter.py      # 易错词过滤与标记
 │   └── __init__.py
-├── database/    # 数据持久化：连接、业务分层、单例与 WAL 防御
-│   ├── connection.py            # 全局单例连接与锁、后台守护线程
+├── database/    # 数据持久化：连接管理、业务分层、单例与 WAL 防御
+│   ├── connection/              # 连接管理包：上下文、工厂、写单例
 │   ├── backends/                # Turso 后端适配层（pyturso + protocol）
 │   ├── hub_users.py             # Hub 用户业务与加密存储
 │   ├── legacy.py                # 兼容旧版数据结构
@@ -55,7 +55,7 @@
   负责所有写入请求的串行化与批量提交，确保 WAL 文件无竞争写锁，极大降低并发死锁与冲突概率。
 
 - **云端同步线程（_sync_daemon）**  
-  定时将本地变更同步到云端副本（后端由 `database/backends/` 自动选择：使用 `pyturso`）。同步前强制 gc.collect()，彻底清理悬空游标，确保同步安全。
+  定时将本地变更同步到云端副本（后端由 `database/backends/` 自动选择：使用 `pyturso`）。同步前会做必要的资源收尾与回收，确保连接状态稳定。
 
 - **双守护线程协作**  
   写线程与同步线程均为全局单例，互斥调度，保证本地与云端状态一致且无 WAL 冲突。

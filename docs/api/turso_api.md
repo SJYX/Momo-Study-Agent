@@ -1,19 +1,19 @@
 # Turso Python API Reference (pyturso)
 
-> 本文档聚焦 `pyturso` 及 `turso.sync` 的核心 API，适用于本地/嵌入式数据库与同步场景。
+> 本文档聚焦当前代码实际使用的 `pyturso` / `turso.sync` 路线。`libsql` 与 Embedded Replicas 仅保留为历史兼容参考。
 >
 > 来源: https://docs.turso.tech/llms.txt (2026-05-22 更新)
 
 ---
 
-## 1. 包选择: pyturso vs libsql
+## 1. 包选择: pyturso vs libsql（历史对照）
 
 | 特性 | `pyturso` | `libsql` |
 |------|-----------|----------|
 | 适用场景 | 本地/嵌入式数据库、同步 | 已有 libsql 代码库 |
 | 引擎 | Turso Database (全新重写) | libSQL (SQLite fork) |
 | 并发写入 | 支持 (MVCC) | 不支持 |
-| 同步 | push/pull (local-first) | Embedded Replicas (写入走云端主库) |
+| 同步 | push/pull (local-first) | 旧 Embedded Replicas 方案 |
 | API | Python `sqlite3` 兼容 | Python `sqlite3` 兼容 |
 
 **新项目推荐使用 `pyturso`** — 基于 Turso Database 引擎，支持并发写入和 local-first 同步。
@@ -197,7 +197,7 @@ pip install sqlalchemy-libsql
 ```python
 from sqlalchemy import create_engine
 
-# Embedded Replicas (推荐)
+# Embedded Replicas（历史说明）
 engine = create_engine(
     "sqlite+libsql:///embedded.db",
     connect_args={

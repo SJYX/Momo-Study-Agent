@@ -1,6 +1,6 @@
 # DECISIONS.md — 设计决策日志
 
-记录所有"为什么不那样做"的决策，防止未来重蹈覆辙。每次大功能迭代后更新。
+记录所有"为什么不那样做"的决策，防止未来重蹈覆辙。这里是历史决策归档，不是当前实现规范；当前行为请以 `AI_CONTEXT.md` / `ARCHITECTURE.md` 为准。每次大功能迭代后更新。
 
 ---
 
@@ -33,7 +33,7 @@
 **场景**: SQLite 查询结果映射为字典
 **否定方案**: `conn.row_factory = sqlite3.Row`
 **采用方案**: `_row_to_dict(cursor, row)` 兼容函数
-**原因**: Turso 的 `libsql.Connection` 对象（`builtins.Connection`）不支持 `row_factory` 属性赋值，直接抛出 `AttributeError`，导致选项 3 意外崩溃。
+**原因**: 当时的 `libsql.Connection` 对象（`builtins.Connection`）不支持 `row_factory` 属性赋值，直接抛出 `AttributeError`，导致选项 3 意外崩溃。该经验保留为历史教训，当前代码以 `_row_to_dict(cursor, row)` 为准。
 
 ---
 

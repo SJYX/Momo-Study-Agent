@@ -10,7 +10,7 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 
 1. `main.py`：主流程编排，负责菜单、任务分发、退出收尾。
 2. `core/study_workflow.py`：业务核心总线（AI 并发、任务过滤、批量落库投递）。
-3. `database/connection.py` + `database/momo_words.py`：持久层读写入口（单例连接 + 写队列 + SQL 业务函数）。
+3. `database/connection/` + `database/momo_words.py`：持久层读写入口（连接管理 + 写队列 + SQL 业务函数）。
 4. `core/maimemo_api.py`：墨墨 API 封装与限流控制。
 5. `docs/dev/AUTO_SYNC.md`：同步链路、前后台边界、退出策略。
 
@@ -25,21 +25,13 @@ AI_CONTEXT.md - Momo Study Agent 核心系统上下文与 AI 指令
 > 本节每次发版或大 PR 合入后更新；`CLAUDE.md` 的「当前状态」以此为准。
 
 - **版本**：1.0.0；Python 3.12+。
-- **数据层**：Embedded Replicas 迁移（Phase 0–4）已完成；`conn.sync()` 已取代手工增量同步；所有持久层操作经 `database/` 包。
-- **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定。优先队列调度（Phase 4）、防饿死保底、ActiveProfileRegistry 多用户追踪已实现。
-- **配置层**：profile_loader 三阶段加载（Phase 6.3a）、pydantic-settings 模型（Phase 6.3b）、Kill Switch 特性开关框架（Phase 6.1）已实现。
-- **Schema 迁移**：PRAGMA user_version 管理框架（Phase 6.2）建立，V001 迁移收纳所有历史 ALTER 语句。
-- **代码质量**：pre-commit + ESLint 9 启用（Phase 6.4），37 个新单元测试。
-- **最近完成**（2026-05-11）：
-  - Phase 4：PriorityQueue (P1/P2/P3/P4) + 防饿死保底（连续 5 个 P1 强制轮转）
-  - Phase 4.5：API 查询降重（COUNT 替代全量 fetch），sync/stats 端点 P95 <100ms
-  - Phase 5：日志系统整合（ContextLogger 中央 throttle + structured logging）
-  - Phase 6.1：Kill Switch（AUTO_WARMUP_SYNC_ENABLED / SYNC_STATUS_HEAVY_QUERY_ENABLED / BACKGROUND_RETRY_ENABLED）
-  - Phase 6.2：Schema 迁移框架（apply_migrations + V001_initial）
-  - Phase 6.3：配置现代化（profile_loader 三阶段 env 加载 + Settings pydantic 模型）
-  - Phase 6.4：质量门禁（pre-commit: ruff + hooks；ESLint 9 flat config）
-  - Bug Fix：core/weak_word_filter + database/community_lookup 改为动态 `_config.DB_PATH` 读取
-- **近期不碰**：`docs/prompts/`（生产 prompt）、`docs/api/`（API 参考）。
+- **数据层**：主库与 Hub 使用 Turso 后端；连接管理拆到 `database/connection/` 包，读连接与写单例分流，业务代码不直接建连。
+- **并发层**：读写分离 + 单写守护线程 + 进程锁已稳定。优先队列调度、防饿死保底、ActiveProfileRegistry 多用户追踪已实现。
+- **配置层**：profile_loader、pydantic-settings、Kill Switch 已上线。
+- **Schema 迁移**：`PRAGMA user_version` 迁移框架与 V001 仍在用。
+- **代码质量**：pre-commit + ESLint 9 已启用，核心路径有持续测试覆盖。
+
+> 历史阶段记录保留在 `docs/history/phases/`，这里仅保留当前会影响开发判断的事实。
 
 ## 1. 核心架构与边界
 
@@ -63,7 +55,7 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 - 后台同步：`core/sync_manager.py`
   - 职责：高性能后台同步队列维护、墨墨同步网络调度及冲突回写处理。
 - 持久层：`database/` 包（5 个子模块）
-  - `database/connection.py`：Embedded Replica 单例连接、写队列、后台写守护线程、后台云同步线程。
+  - `database/connection/`：连接管理、写队列、后台写守护线程、后台云同步线程。
   - `database/momo_words.py`：主库业务 SQL（word notes、processed、progress、`sync_databases` / `sync_hub_databases`）。
   - `database/hub_users.py`：Hub 用户业务 SQL。
   - `database/schema.py`：建表与迁移（`_create_tables` / `init_db`）。
@@ -99,7 +91,7 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
     - Turso 的 pyturso (以及旧的 libsql) Connection 对象不支持 `sqlite3.Row` 对象和 `row_factory` 赋值（详见 DEC-003）。
     - 查询结果统一走 `_row_to_dict(cursor, row)` 映射为字典。
 3. 严禁业务线程直连写库，必须使用读写分离的高并发架构。
-    - 读操作：必须使用线程专属的 `_get_thread_local_read_conn()` （防争抢与连接损坏）。
+    - 读操作：必须走 `_get_read_conn()` / `_get_local_read_conn()`，不要绕过连接管理层直接建连。
     - 写操作：必须投递给 `_write_queue`（如 `_queue_write_operation`），由后台守护线程单线程序列化执行。禁止业务代码里直接建立普通连接并随意 `INSERT/UPDATE`。
     - 底层仍需执行 `PRAGMA journal_mode=WAL` 和 `timeout=20.0` 作为最终兜底。
 4. 批量写入优先。
@@ -132,7 +124,7 @@ Momo Study Agent 是一个自动化英语学习系统，连接墨墨背单词 Op
 3. `maimemo_api.py` 频控逻辑必须有 `threading.Lock()` 保护。
 4. 墨墨写入支持 `force_create=True` 快路径；“释义已存在”按成功处理。
 5. 所有外部网络请求必须显式 `timeout`（通常 6-12 秒）。
-6. 同步主路径必须使用 Embedded Replicas 的 `conn.sync()`；禁止恢复手工逐表增量同步函数模式（如 `_sync_table` 一类实现）。
+6. 同步主路径必须使用 `backend.do_sync_on(conn)`（pyturso 路径内部为 push/pull/checkpoint）；禁止恢复手工逐表增量同步函数模式（如 `_sync_table` 一类实现）。
 
 ### 3.4 安全与通用规范
 
