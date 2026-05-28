@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple  # noqa: F401
 
@@ -39,23 +40,111 @@ from .context import (
 )
 
 
-def _get_local_read_conn(db_path: Optional[str] = None) -> Any:
-    """打开一个只读连接。
+# ── Read connection pool (pyturso MVCC 下安全,按线程隔离) ──
+_read_conn_pool_lock = threading.Lock()
+_read_conn_pool_tls = threading.local()
 
-    在 pyturso 模式下，统一使用免 pull 的 pyturso 引擎连接，以防与标准 sqlite3 冲突损坏数据。
-    在普通 SQLite 模式下，打开轻量级只读 sqlite3 连接。
+
+def _normalize_db_path(db_path: str) -> str:
+    return os.path.abspath(db_path)
+
+
+class _ReadConnectionLease:
+    """Lightweight proxy: close() releases the lease, pool cleanup closes raw conn."""
+
+    def __init__(self, raw_conn: Any, db_path: str):
+        self._raw_conn = raw_conn
+        self._db_path = db_path
+        self._closed = False
+
+    @property
+    def raw_connection(self) -> Any:
+        return self._raw_conn
+
+    def close(self) -> None:
+        self._closed = True
+
+    def __enter__(self) -> "_ReadConnectionLease":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __getattr__(self, name: str) -> Any:
+        if self._closed:
+            self._closed = False
+        return getattr(self._raw_conn, name)
+
+
+def _get_thread_read_pool() -> dict[str, Any]:
+    pool = getattr(_read_conn_pool_tls, "pool", None)
+    if pool is None:
+        pool = {}
+        _read_conn_pool_tls.pool = pool
+    return pool
+
+
+def _close_raw_conn(conn: Any) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _invalidate_read_conn_pool(db_path: str) -> None:
+    """Invalidate this thread's pooled read connection for db_path."""
+    normalized_path = _normalize_db_path(db_path)
+    pool = _get_thread_read_pool()
+    raw_conn = pool.pop(normalized_path, None)
+    if raw_conn is not None:
+        _close_raw_conn(raw_conn)
+
+
+def _close_read_conn_pool() -> None:
+    """Close this thread's pooled read connections."""
+    pool = _get_thread_read_pool()
+    conns = list(pool.values())
+    pool.clear()
+    for conn in conns:
+        _close_raw_conn(conn)
+
+
+def _get_local_read_conn(db_path: Optional[str] = None) -> Any:
+    """打开一个只读连接（pyturso 下带连接池复用 + lease 代理）。
+
+    在 pyturso 模式下，复用线程本地的 pyturso 引擎连接，避免每次读操作都触发
+    完整的 turso.sync.connect() + create() + connect() 流程。
+    返回 _ReadConnectionLease 代理：caller 调 close() 只释放 lease，不关闭底层连接。
+    在普通 SQLite 模式下，打开轻量级只读 sqlite3 连接（无池化）。
     """
     path = db_path or _config.DB_PATH
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 
     ctx = _resolve_conn_context(path)
     if (HAS_PYTURSO) and ctx.get("url") and ctx.get("token"):
-        conn = _get_backend().connect(path, ctx["url"], ctx["token"], do_sync=False, do_pull=False)
+        normalized_path = _normalize_db_path(path)
+        pool = _get_thread_read_pool()
+        raw_conn = pool.get(normalized_path)
+
+        if raw_conn is not None:
+            try:
+                raw_conn.execute("SELECT 1")
+                return _ReadConnectionLease(raw_conn, normalized_path)
+            except Exception:
+                _debug_log(
+                    f"读连接池失效，重建: {normalized_path}",
+                    level="WARNING",
+                )
+                pool.pop(normalized_path, None)
+                _close_raw_conn(raw_conn)
+
+        raw_conn = _get_backend().connect(path, ctx["url"], ctx["token"], do_sync=False, do_pull=False)
         try:
-            conn.execute("PRAGMA query_only=ON;")
+            raw_conn.execute("PRAGMA query_only=ON;")
         except Exception:
             pass
-        return conn
+        pool[normalized_path] = raw_conn
+        return _ReadConnectionLease(raw_conn, normalized_path)
 
     conn = sqlite3.connect(path, timeout=5.0)
     conn.row_factory = sqlite3.Row

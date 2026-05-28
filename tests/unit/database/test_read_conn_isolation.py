@@ -24,6 +24,17 @@ from database.connection import singleton as conn_singleton
 from database.backends import get_active_backend
 
 
+@pytest.fixture(autouse=True)
+def _clean_read_pool():
+    from database.connection import factory
+
+    if hasattr(factory, "_close_read_conn_pool"):
+        factory._close_read_conn_pool()
+    yield
+    if hasattr(factory, "_close_read_conn_pool"):
+        factory._close_read_conn_pool()
+
+
 @pytest.fixture
 def tmp_db(tmp_path):
     """创建一个临时 SQLite 数据库文件。"""
@@ -167,9 +178,10 @@ class TestBackendAwareRouting:
 
         conn = conn_mod._get_read_conn_impl(tmp_db)
         try:
-            # 在 pyturso 模式下，应该返回 pyturso 后端连接而不是标准 sqlite3 连接，以防数据损坏
-            assert conn is mock_backend.connect.return_value
-            assert conn is not conn_singleton._main_write_conn_singleton
+            # 在 pyturso 模式下，应返回 lease 代理，底层连接来自 pyturso 后端
+            assert hasattr(conn, "raw_connection")
+            assert conn.raw_connection is mock_backend.connect.return_value
+            assert conn.raw_connection is not conn_singleton._main_write_conn_singleton
         finally:
             conn.close()
 

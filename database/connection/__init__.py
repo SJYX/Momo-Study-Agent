@@ -38,6 +38,7 @@ from .context import (
 
 # 连接工厂与读路径
 from .factory import (
+    _close_read_conn_pool,
     _get_conn,
     _get_hub_conn,
     _get_hub_local_conn,
@@ -47,6 +48,7 @@ from .factory import (
     _get_read_conn_impl,
     _hub_fetch_all_dicts,
     _hub_fetch_one_dict,
+    _invalidate_read_conn_pool,
     _run_with_managed_connection,
     _should_use_local_only_connection,
     _wrap_and_track_connection,
