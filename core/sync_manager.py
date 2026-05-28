@@ -13,7 +13,6 @@ from core.sync_priority import Priority
 from database.momo_words import (
     get_local_word_note,
     mark_processed,
-    mark_note_synced,
     set_note_sync_status,
 )
 from database.utils import clean_for_maimemo
@@ -348,14 +347,6 @@ class SyncManager:
                             sync_result.get("cloud_interpretation", "") if isinstance(sync_result, dict) else interpretation
                         ) or synced_content
                         # 立即写入数据库，不再使用写合并缓冲
-                        try:
-                            if self.db_path:
-                                mark_note_synced(voc_id, spell, db_path=self.db_path)
-                            else:
-                                mark_note_synced(voc_id, spell)
-                        except Exception as persist_error:
-                            self.logger.warning(f"⚠️ {spell} processed 标记写入失败: {persist_error}")
-
                         if self.db_path:
                             ok = set_note_sync_status(voc_id, 1, db_path=self.db_path, match_confidence=match_confidence, match_reason=match_reason, last_synced_content=synced_content)
                         else:
@@ -385,14 +376,6 @@ class SyncManager:
                                 match_reason = "3-way-merged"
                                 synced_content = clean_for_maimemo(interpretation)
                                 # 立即写入数据库，不再使用写合并缓冲
-                                try:
-                                    if self.db_path:
-                                        mark_note_synced(voc_id, spell, db_path=self.db_path)
-                                    else:
-                                        mark_note_synced(voc_id, spell)
-                                except Exception as persist_error:
-                                    self.logger.warning(f"⚠️ {spell} 3-Way Merge processed 标记写入失败: {persist_error}")
-
                                 if self.db_path:
                                     ok = set_note_sync_status(voc_id, 1, db_path=self.db_path, match_confidence=match_confidence, match_reason=match_reason, last_synced_content=synced_content)
                                 else:
