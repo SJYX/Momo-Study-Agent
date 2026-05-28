@@ -132,3 +132,45 @@ def test_with_read_session_invalidates_pool_on_schema_changed(monkeypatch, tmp_p
     assert result == "ok"
     assert attempts["value"] == 2
     assert call_count["value"] == 2
+
+
+def test_read_burst_uses_one_pyturso_connect_per_thread(monkeypatch, tmp_path):
+    from database.connection import factory
+
+    raw_conn = MagicMock()
+    factory, db_path, call_count = _enable_fake_pyturso(monkeypatch, tmp_path, [raw_conn])
+
+    for _ in range(10):
+        conn = factory._get_read_conn(db_path)
+        conn.execute("SELECT 1")
+        conn.close()
+
+    assert call_count["value"] == 1
+
+
+def test_read_pool_does_not_share_raw_connection_across_threads(monkeypatch, tmp_path):
+    import threading
+    from database.connection import factory
+
+    raw_conns = [MagicMock(), MagicMock()]
+    factory, db_path, call_count = _enable_fake_pyturso(monkeypatch, tmp_path, raw_conns)
+
+    barrier = threading.Barrier(2)
+    results = []
+
+    def worker():
+        barrier.wait(timeout=5)
+        conn = factory._get_read_conn(db_path)
+        conn.execute("SELECT 1")
+        results.append(conn.raw_connection)
+        conn.close()
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert len(results) == 2
+    assert results[0] is not results[1]
+    assert call_count["value"] == 2
