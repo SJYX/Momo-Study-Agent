@@ -160,11 +160,11 @@ def test_generate_with_instruction_passes_temperature_and_max_tokens():
 
 def test_generate_with_instruction_temperature_overridable_via_env():
     from core.litellm_client import LiteLLMClient
-    client = LiteLLMClient(model="openai/test", api_key="key")
     mock_litellm = MagicMock()
     mock_litellm.completion.return_value = _make_response("ok")
-    with patch("core.litellm_client._get_litellm", return_value=mock_litellm):
-        with patch.dict("os.environ", {"AI_TEMPERATURE": "0.2", "AI_MAX_TOKENS": "8192"}):
+    with patch.dict("os.environ", {"AI_TEMPERATURE": "0.2", "AI_MAX_TOKENS": "8192"}):
+        client = LiteLLMClient(model="openai/test", api_key="key")
+        with patch("core.litellm_client._get_litellm", return_value=mock_litellm):
             client.generate_with_instruction("prompt")
     kwargs = mock_litellm.completion.call_args.kwargs
     assert kwargs["temperature"] == 0.2
@@ -261,3 +261,40 @@ def test_extract_json_array_handles_nested():
 def test_extract_json_array_no_array_returns_input():
     from core.litellm_client import _extract_json_array
     assert _extract_json_array("just prose, no brackets") == "just prose, no brackets"
+
+
+def test_client_passes_exact_completion_kwargs():
+    from unittest.mock import MagicMock, patch
+    from core.litellm_client import LiteLLMClient
+
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = "ok"
+    response.choices[0].finish_reason = "stop"
+    response.usage = MagicMock()
+    response.usage.prompt_tokens = 1
+    response.usage.completion_tokens = 2
+    response.usage.total_tokens = 3
+    response.id = "req-1"
+
+    with patch("core.litellm_client._get_litellm") as get_llm:
+        llm = MagicMock()
+        llm.completion.return_value = response
+        get_llm.return_value = llm
+
+        client = LiteLLMClient(
+            provider_id="mimo",
+            protocol="anthropic",
+            model="mimo-v2-flash",
+            api_key="secret",
+            base_url=None,
+        )
+        text, meta = client.generate_with_instruction("hello", "reply with ok")
+
+    assert text == "ok"
+    assert meta["request_id"] == "req-1"
+    llm.completion.assert_called_once()
+    kwargs = llm.completion.call_args.kwargs
+    assert kwargs["model"] == "anthropic/mimo-v2-flash"
+    assert kwargs["api_key"] == "secret"
+    assert kwargs["api_base"] == "https://api.xiaomimimo.com/v1"

@@ -28,7 +28,6 @@ def _build_ai_client_from_snapshot(cfg_snapshot):
     that (Web typically returns a 503 / config-incomplete badge).
     """
     from core.litellm_client import LiteLLMClient
-    from core.litellm_presets import get_provider_prefix
 
     api_key = cfg_snapshot.ai_api_key or ""
     if not api_key:
@@ -37,12 +36,13 @@ def _build_ai_client_from_snapshot(cfg_snapshot):
             f"provider={cfg_snapshot.ai_provider})"
         )
 
-    model = cfg_snapshot.ai_model or ""
-    if model and "/" not in model:
-        model = f"{get_provider_prefix(cfg_snapshot.ai_provider)}{model}"
-
-    base_url = cfg_snapshot.ai_base_url or None
-    return LiteLLMClient(model=model, api_key=api_key, base_url=base_url)
+    return LiteLLMClient(
+        provider_id=cfg_snapshot.ai_provider,
+        protocol=cfg_snapshot.ai_protocol,
+        model=cfg_snapshot.ai_model or "",
+        api_key=api_key,
+        base_url=cfg_snapshot.ai_base_url or None,
+    )
 
 
 @dataclass

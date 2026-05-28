@@ -393,6 +393,7 @@ export interface PreflightResponse {
 // ---------------------------------------------------------------------------
 export interface AIConfigRequest {
   provider: string
+  protocol?: string
   api_key: string
   model: string
   base_url?: string
@@ -400,6 +401,7 @@ export interface AIConfigRequest {
 
 export interface AIConfigResponse {
   provider: string
+  protocol?: string
   model: string
   has_api_key: boolean
   base_url?: string
@@ -407,6 +409,7 @@ export interface AIConfigResponse {
 
 export interface AITestRequest {
   provider: string
+  protocol?: string
   api_key: string
   model: string
   base_url?: string
@@ -425,6 +428,8 @@ export interface AIModelInfo {
   needs_base_url: boolean
   default_base_url?: string
   models: string[]
+  supported_protocols: string[]
+  default_protocol?: string
 }
 
 export interface AIModelsResponse {

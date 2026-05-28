@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from dotenv import dotenv_values
 
+from core.litellm_presets import get_default_protocol as _get_default_protocol
 from core.profile_loader import (
     USER_SCOPED_KEYS,
     normalize_username as _normalize_username,
@@ -41,8 +42,9 @@ class ProfileConfig:
     mimo_api_key: str = ""
     mimo_api_base: str = ""
     mimo_model: str = ""
-    # 统一 AI 配置（LiteLLM 迁移后；AIConfigCard 写入这三个字段）。
+    # 统一 AI 配置（LiteLLM 迁移后；AIConfigCard 写入这几个字段）。
     # 未显式设置时由 load_profile_config 从 legacy 字段映射。
+    ai_protocol: str = "openai"
     ai_api_key: str = ""
     ai_model: str = ""
     ai_base_url: str = ""
@@ -90,6 +92,7 @@ def load_profile_config(profile_name: str) -> ProfileConfig:
     db_path, test_db_path = _resolve_user_db_paths(normalized, data_dir)
 
     provider = (merged.get("AI_PROVIDER") or "mimo").strip().lower()
+    ai_protocol = (merged.get("AI_PROTOCOL") or _get_default_protocol(provider) or "openai").strip().lower()
     gemini_api_key = merged.get("GEMINI_API_KEY", "") or ""
     gemini_model = merged.get("GEMINI_MODEL", "") or ""
     mimo_api_key = merged.get("MIMO_API_KEY", "") or ""
@@ -125,6 +128,7 @@ def load_profile_config(profile_name: str) -> ProfileConfig:
         env_path=env_path or os.path.join(profiles_dir, f"{normalized}.env"),
         momo_token=merged.get("MOMO_TOKEN", "") or "",
         ai_provider=provider,
+        ai_protocol=ai_protocol,
         gemini_api_key=gemini_api_key,
         gemini_model=gemini_model,
         mimo_api_key=mimo_api_key,

@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 USER_SCOPED_KEYS: List[str] = [
     "MOMO_TOKEN",
     "AI_PROVIDER",
+    "AI_PROTOCOL",
     "AI_API_KEY",
     "AI_MODEL",
     "AI_BASE_URL",

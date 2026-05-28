@@ -455,13 +455,60 @@ async def get_ai_models(
     """获取所有供应商及其预设模型列表。"""
     from core.litellm_presets import PROVIDERS
 
-    providers = [AIModelInfo(**p) for p in PROVIDERS]
-    return ok_response(AIModelsResponse(providers=providers).model_dump(), user_id=user)
+    # Normalize provider dicts into AIModelInfo shape expected by frontend
+    normalized = []
+    for p in PROVIDERS:
+        provider_info = {
+            "id": p.get("id"),
+            "name": p.get("name"),
+            "prefix": p.get("protocol_prefixes", {}).get(p.get("default_protocol"), None),
+            "needs_base_url": bool(p.get("default_base_url")),
+            "default_base_url": p.get("default_base_url"),
+            "models": p.get("models", []),
+            "supported_protocols": p.get("supported_protocols", []),
+            "default_protocol": p.get("default_protocol"),
+            "protocol_prefixes": p.get("protocol_prefixes", {}),
+        }
+        normalized.append(AIModelInfo(**provider_info))
+
+    return ok_response(AIModelsResponse(providers=[m.model_dump() for m in normalized]).model_dump(), user_id=user)
 
 
 # ---------------------------------------------------------------------------
-# /api/users/{username}/ai-config  — 保存 AI 配置到 profile .env
+# /api/users/{username}/ai-config  — 读取/保存 AI 配置
 # ---------------------------------------------------------------------------
+@router.get("/{username}/ai-config", response_model=ApiResponse[AIConfigResponse])
+async def get_ai_config(
+    username: str = Path(...),
+    user: str = Depends(get_active_user),
+):
+    """读取当前 profile 的 AI 配置。"""
+    from dotenv import dotenv_values
+
+    profile_path = _resolve_profile_path(username)
+    if not profile_path:
+        return error_response("NOT_FOUND", f"Profile '{username}' not found", user_id=user)
+
+    env = dotenv_values(profile_path)
+    provider = (env.get("AI_PROVIDER") or "mimo").strip().lower()
+    from core.litellm_presets import get_default_protocol
+    protocol = (env.get("AI_PROTOCOL") or get_default_protocol(provider) or "openai").strip().lower()
+    model = (env.get("AI_MODEL") or "").strip()
+    api_key = (env.get("AI_API_KEY") or "").strip()
+    base_url = (env.get("AI_BASE_URL") or "").strip() or None
+
+    return ok_response(
+        AIConfigResponse(
+            provider=provider,
+            protocol=protocol,
+            model=model,
+            has_api_key=bool(api_key),
+            base_url=base_url,
+        ).model_dump(),
+        user_id=user,
+    )
+
+
 @router.post("/{username}/ai-config", response_model=ApiResponse[AIConfigResponse])
 async def save_ai_config(
     body: AIConfigRequest,
@@ -475,6 +522,7 @@ async def save_ai_config(
 
     env_updates = {
         "AI_PROVIDER": body.provider,
+        "AI_PROTOCOL": body.protocol or "",
         "AI_API_KEY": body.api_key,
         "AI_MODEL": body.model,
     }
@@ -504,6 +552,7 @@ async def save_ai_config(
     return ok_response(
         AIConfigResponse(
             provider=body.provider,
+            protocol=body.protocol,
             model=body.model,
             has_api_key=True,
             base_url=body.base_url,
@@ -526,14 +575,14 @@ async def test_ai_connection(
 
     from core.litellm_client import LiteLLMClient
 
-    model = body.model
-    if "/" not in model:
-        from core.litellm_presets import get_provider_prefix
-
-        prefix = get_provider_prefix(body.provider)
-        model = f"{prefix}{model}"
-
-    client = LiteLLMClient(model=model, api_key=body.api_key, base_url=body.base_url)
+    # Construct provider/protocol-aware client so normalization runs server-side
+    client = LiteLLMClient(
+        provider_id=body.provider,
+        protocol=body.protocol,
+        model=body.model,
+        api_key=body.api_key,
+        base_url=body.base_url,
+    )
     try:
         started = time.time()
         text, metadata = client.generate_with_instruction(

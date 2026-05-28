@@ -549,6 +549,7 @@ class PreflightResponse(BaseModel):
 # ---------------------------------------------------------------------------
 class AIConfigRequest(BaseModel):
     provider: str
+    protocol: Optional[str] = None
     api_key: str
     model: str
     base_url: Optional[str] = None
@@ -566,6 +567,7 @@ class AIConfigRequest(BaseModel):
 
 class AIConfigResponse(BaseModel):
     provider: str
+    protocol: Optional[str] = None
     model: str
     has_api_key: bool
     base_url: Optional[str] = None
@@ -573,6 +575,7 @@ class AIConfigResponse(BaseModel):
 
 class AITestRequest(BaseModel):
     provider: str
+    protocol: Optional[str] = None
     api_key: str
     model: str
     base_url: Optional[str] = None
@@ -597,10 +600,14 @@ class AITestResponse(BaseModel):
 class AIModelInfo(BaseModel):
     id: str
     name: str
-    prefix: str
-    needs_base_url: bool
+    prefix: Optional[str] = None
+    needs_base_url: Optional[bool] = False
     default_base_url: Optional[str] = None
     models: list[str] = Field(default_factory=list)
+    # protocol-aware fields
+    supported_protocols: list[str] = Field(default_factory=list)
+    default_protocol: Optional[str] = None
+    protocol_prefixes: dict = Field(default_factory=dict)
 
 
 class AIModelsResponse(BaseModel):

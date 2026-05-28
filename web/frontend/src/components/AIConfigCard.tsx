@@ -2,7 +2,7 @@
  * AIConfigCard — AI 供应商设置卡片
  * 挂载在 /users 页面，per-user 配置 AI provider/model/key/base_url。
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Eye, EyeOff, CheckCircle2, XCircle } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
@@ -42,6 +42,7 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
 
   // Form state
   const [provider, setProvider] = useState(currentProvider || "");
+  const [protocol, setProtocol] = useState("");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -50,7 +51,14 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
   // Test result
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; latency?: number } | null>(null);
 
-  // Fetch provider presets
+  // Fetch saved config + provider presets
+  const savedApplied = useRef(false);
+  const prevProviderRef = useRef<string>("");
+  const { data: savedConfigResponse } = useQuery({
+    queryKey: ["ai-config", username],
+    queryFn: () => apiGet<AIConfigResponse>(`/api/users/${username}/ai-config`),
+  });
+
   const { data: modelsResponse } = useQuery({
     queryKey: ["ai-models", username],
     queryFn: () => apiGet<AIModelsResponse>(`/api/users/${username}/ai-models`),
@@ -60,19 +68,46 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
   const providers = modelsData?.providers || [];
   const selectedProvider = providers.find((p) => p.id === provider);
   const availableModels = selectedProvider?.models || [];
+  const availableProtocols = selectedProvider?.supported_protocols || [];
+
+  // Populate form from saved config on first load
+  useEffect(() => {
+    const saved = savedConfigResponse?.data;
+    if (saved && !savedApplied.current) {
+      savedApplied.current = true;
+      const p = saved.provider || "";
+      prevProviderRef.current = p;
+      if (p) setProvider(p);
+      if (saved.protocol) setProtocol(saved.protocol);
+      if (saved.model) setModel(saved.model);
+      if (saved.base_url) setBaseUrl(saved.base_url);
+      // API key not returned (has_api_key only), keep empty for security
+    }
+  }, [savedConfigResponse]);
+
+  // Reset savedApplied when username changes (user navigates between profiles)
+  useEffect(() => {
+    savedApplied.current = false;
+    prevProviderRef.current = "";
+  }, [username]);
 
   // Sync local provider state when the parent re-renders with a different
   // currentProvider (e.g. after the users() query refetches post-save).
   useEffect(() => {
-    setProvider(currentProvider || "");
+    if (!savedApplied.current) {
+      setProvider(currentProvider || "");
+    }
   }, [currentProvider]);
 
-  // When provider OR the providers list resolves, refresh model/baseUrl
-  // defaults. Without `providers` in deps, the first render runs before the
-  // ai-models query resolves and selectedProvider is undefined, so the model
-  // field never populates from the preset list.
+  // When provider changes (user action), reset fields to presets.
+  // Only fires on explicit provider switch, not on initial mount.
   useEffect(() => {
+    const prev = prevProviderRef.current;
+    prevProviderRef.current = provider;
+    // Skip if provider didn't change (initial render or same value)
+    if (prev === provider) return;
     if (selectedProvider) {
+      setProtocol(selectedProvider.default_protocol || availableProtocols[0] || "");
       // Auto-fill default base_url only when the provider requires one;
       // otherwise CLEAR any stale value (e.g. dashscope URL left over from
       // a previous qwen selection must not leak into a gemini config).
@@ -85,6 +120,7 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
         setModel(selectedProvider.models[0]);
       }
     } else {
+      setProtocol("");
       setModel("");
       setBaseUrl("");
     }
@@ -123,12 +159,12 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
   });
 
   const handleSave = () => {
-    saveMutation.mutate({ provider, api_key: apiKey, model, base_url: baseUrl || undefined });
+    saveMutation.mutate({ provider, protocol, api_key: apiKey, model, base_url: baseUrl || undefined });
   };
 
   const handleTest = () => {
     setTestResult(null);
-    testMutation.mutate({ provider, api_key: apiKey, model, base_url: baseUrl || undefined });
+    testMutation.mutate({ provider, protocol, api_key: apiKey, model, base_url: baseUrl || undefined });
   };
 
   return (
@@ -156,6 +192,24 @@ export default function AIConfigCard({ username, currentProvider }: Props) {
             ))}
           </select>
         </div>
+
+        {/* Protocol selector */}
+        {provider && availableProtocols.length > 0 && (
+          <div>
+            <label className="block text-xs font-medium text-text-secondary mb-1">
+              协议
+            </label>
+            <select
+              className={inputCls}
+              value={protocol}
+              onChange={(e) => setProtocol(e.target.value)}
+            >
+              {availableProtocols.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Model — combobox: 预设下拉 + 可自由输入 */}
         {provider && (

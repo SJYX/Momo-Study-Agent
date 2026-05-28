@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Tuple
 
@@ -13,20 +14,31 @@ import json_repair
 
 from config import MAX_RETRIES, PROMPT_FILE, RETRY_WAIT_S
 
-# litellm 延迟导入：模块级 import 耗时 ~13s，推迟到首次 API 调用时加载
+# litellm 后台预加载：模块导入时即启动 daemon 线程加载 litellm，
+# 首次 AI 调用时大概率已加载完毕，消除 ~2-3s 的冷启动延迟。
 _litellm = None
-_litellm_configured = False
+_litellm_ready = threading.Event()
+
+
+def _preload_litellm():
+    """后台线程：导入 litellm 并抑制调试日志。"""
+    global _litellm
+    try:
+        import litellm as _m
+        _m.suppress_debug_info = True
+        _litellm = _m
+    except Exception:
+        pass
+    finally:
+        _litellm_ready.set()
+
+
+threading.Thread(target=_preload_litellm, name="litellm-preload", daemon=True).start()
 
 
 def _get_litellm():
-    """延迟加载 litellm 并抑制调试日志。"""
-    global _litellm, _litellm_configured
-    if _litellm is None:
-        import litellm as _m
-        _litellm = _m
-        if not _litellm_configured:
-            _litellm.suppress_debug_info = True
-            _litellm_configured = True
+    """获取已加载的 litellm 模块。等待后台预加载完成。"""
+    _litellm_ready.wait()
     return _litellm
 
 
@@ -53,17 +65,64 @@ def _extract_json_array(text: str) -> str:
 
 
 class LiteLLMClient:
-    """统一 AI 客户端，支持 10+ 供应商。"""
+    """统一 AI 客户端，支持 10+ 供应商。
 
-    def __init__(self, model: str, api_key: str, base_url: str = None):
+    Constructor supports both legacy style `LiteLLMClient(model, api_key, base_url)`
+    and new style `LiteLLMClient(provider_id=..., protocol=..., model=..., api_key=..., base_url=...)`.
+    """
+
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        *,
+        provider_id: str | None = None,
+        protocol: str | None = None,
+    ):
         if not api_key:
             raise ValueError("API key is required")
+
+        # New-style: provider-aware
+        self.provider_id = provider_id
+        self.protocol = protocol
+
         self.model = model
         # 兼容历史属性名：study_workflow 等调用方读 .model_name
         self.model_name = model
         self.api_key = api_key
         self.base_url = base_url
         self.prompt_file = PROMPT_FILE
+
+        # 缓存 env var（进程生命周期内不变）
+        try:
+            self._temperature = float(os.getenv("AI_TEMPERATURE", "0.7"))
+        except (TypeError, ValueError):
+            self._temperature = 0.7
+        try:
+            self._max_tokens = int(os.getenv("AI_MAX_TOKENS", "64000"))
+        except (TypeError, ValueError):
+            self._max_tokens = 64000
+
+        # Pre-resolve normalized kwargs so generate_with_instruction 不需要每次重新计算
+        self._resolved_model = self.model
+        self._resolved_api_key = self.api_key
+        self._resolved_api_base = self.base_url
+        if self.provider_id:
+            try:
+                from core.litellm_config import normalize_litellm_request
+                resolved = normalize_litellm_request(
+                    provider_id=self.provider_id,
+                    protocol=self.protocol,
+                    model=self.model or "",
+                    api_key=self.api_key or "",
+                    base_url=self.base_url,
+                )
+                self._resolved_model = resolved.model
+                self._resolved_api_key = resolved.api_key
+                self._resolved_api_base = resolved.api_base
+            except Exception:
+                pass
 
     def _load_instruction(self) -> str:
         """加载系统提示词。"""
@@ -82,26 +141,15 @@ class LiteLLMClient:
             {"role": "user", "content": prompt},
         ]
 
-        # 旧 MimoClient 的核心生成参数——丢失会导致大批次被默认 max_tokens(~4096)截断。
-        # 允许通过环境变量覆盖以适配不同供应商上限。
-        try:
-            temperature = float(os.getenv("AI_TEMPERATURE", "0.7"))
-        except (TypeError, ValueError):
-            temperature = 0.7
-        try:
-            max_tokens = int(os.getenv("AI_MAX_TOKENS", "64000"))
-        except (TypeError, ValueError):
-            max_tokens = 64000
-
         kwargs = {
-            "model": self.model,
+            "model": self._resolved_model,
             "messages": messages,
-            "api_key": self.api_key,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            "api_key": self._resolved_api_key,
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
         }
-        if self.base_url:
-            kwargs["api_base"] = self.base_url
+        if self._resolved_api_base:
+            kwargs["api_base"] = self._resolved_api_base
 
         last_error = ""
         last_error_type = ""

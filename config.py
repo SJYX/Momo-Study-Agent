@@ -86,6 +86,7 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
 
 # 当前使用的 AI 提供商: "gemini" 或 "mimo"
 AI_PROVIDER = os.getenv("AI_PROVIDER", "mimo")
+AI_PROTOCOL = os.getenv("AI_PROTOCOL", "openai")
 
 # 统一 AI 配置（LiteLLM）
 AI_API_KEY = os.getenv("AI_API_KEY")
