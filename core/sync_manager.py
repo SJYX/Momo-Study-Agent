@@ -410,7 +410,7 @@ class SyncManager:
                         if isinstance(sync_result, dict):
                             reason = str(sync_result.get("reason", "") or "").lower()
 
-                        # 非法资源 ID 属于不可重试失败：写回 5=failed，避免反复重试刷屏。
+                        # 不可重试失败：写回 5=failed 或保留待同步，避免反复重试刷屏。
                         if reason in {"invalid_res_id", "common_invalid_res_id"}:
                             if self.db_path:
                                 ok = set_note_sync_status(voc_id, 5, db_path=self.db_path, match_confidence=match_confidence, match_reason=reason)
@@ -420,6 +420,12 @@ class SyncManager:
                                 self.logger.warning(f"⚠️ {spell} 非法 voc_id 状态写回未命中")
                             self.logger.warning(f"⚠️ {spell} voc_id={voc_id} 在墨墨侧非法，已标记为 failed 并停止重试")
                             self._log_row_status(spell, "error", "sync_failed", "同步失败", error="invalid_res_id")
+                            continue
+
+                        # 创建数量限制属于本会话不可恢复：跳过重试，保留待同步（sync_status 不变）
+                        if reason in {"limit_reached", "create_limitation"}:
+                            self.logger.warning(f"⚠️ {spell} 达到墨墨创建限制，本会话跳过，保留待同步")
+                            self._log_row_status(spell, "warning", "sync_deferred", "已达创建限制，待下会话同步", error=reason)
                             continue
 
                         # 其他非成功结果（瞬态失败），最多重试 3 次

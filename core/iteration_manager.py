@@ -223,17 +223,17 @@ class IterationManager:
             if sync_res and sync_res.get("success"):
                 self.logger.info(f"  ✅ {spell} 选优助记已同步至墨墨 (Score: {score})", module="iteration_manager", function="_handle_level_1_selection")
 
-                # 3. 同步到墨墨释义（如果需要）
-                # 提取简短释义用于同步
-                brief_meaning = word.get("meanings", "")
-                if brief_meaning:
-                    if len(brief_meaning) > MAIMEMO_BRIEF_MEANING_MAX_LENGTH:
-                        brief_meaning = brief_meaning[:MAIMEMO_BRIEF_MEANING_MAX_LENGTH] + "..."
-                    sync_interpretation_res = self.momo.sync_interpretation(voc_id, brief_meaning, tags=["雅思", "考研"], spell=spell)
-                    if sync_interpretation_res:
-                        self.logger.info(f"  ✅ {spell} 释义已同步至墨墨", module="iteration_manager", function="_handle_level_1_selection")
-                    else:
-                        self.logger.warning(f"  ⚠️ {spell} 释义同步失败", module="iteration_manager", function="_handle_level_1_selection")
+                # 3. 同步到墨墨释义（如果未达到限制）
+                if not (hasattr(self.momo, 'creation_limit_reached') and self.momo.creation_limit_reached):
+                    brief_meaning = word.get("meanings", "")
+                    if brief_meaning:
+                        if len(brief_meaning) > MAIMEMO_BRIEF_MEANING_MAX_LENGTH:
+                            brief_meaning = brief_meaning[:MAIMEMO_BRIEF_MEANING_MAX_LENGTH] + "..."
+                        sync_interpretation_res = self.momo.sync_interpretation(voc_id, brief_meaning, tags=["雅思", "考研"], spell=spell)
+                        if sync_interpretation_res:
+                            self.logger.info(f"  ✅ {spell} 释义已同步至墨墨", module="iteration_manager", function="_handle_level_1_selection")
+                        else:
+                            self.logger.warning(f"  ⚠️ {spell} 释义同步失败", module="iteration_manager", function="_handle_level_1_selection")
 
                 self._update_it_state(voc_id, 1, f"AI Scored {score}: {res.get('justification')}", iteration_data=iteration_context)
         except Exception as e:

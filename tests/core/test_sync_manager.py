@@ -86,5 +86,53 @@ def test_sync_manager_shutdown_graceful(mock_deps):
     assert not sm.sync_worker_thread.is_alive()
     assert sm._sync_worker_stopped is True
 
+
+def test_sync_manager_limit_reached_no_retry(mock_deps):
+    """limit_reached 不可重试：应立即跳过，不再入队重试。"""
+    logger, momo_api, _ = mock_deps
+
+    momo_api.sync_interpretation.return_value = {
+        "sync_status": 0,
+        "reason": "limit_reached",
+        "success": False,
+    }
+
+    with patch("core.sync_manager.get_local_word_note", return_value=None), \
+         patch("core.sync_manager.set_note_sync_status", return_value=True):
+
+        sm = SyncManager(logger, momo_api)
+        sm.queue_maimemo_sync("v1", "apple", "n. 苹果", ["test"])
+
+        sm.sync_queue.join()
+        sm.shutdown()
+
+        # API 仅被调用一次（不重试）
+        momo_api.sync_interpretation.assert_called_once()
+
+
+def test_sync_manager_invalid_res_id_no_retry(mock_deps):
+    """invalid_res_id 不可重试：应标记 failed 并停止。"""
+    logger, momo_api, _ = mock_deps
+
+    momo_api.sync_interpretation.return_value = {
+        "sync_status": 0,
+        "reason": "invalid_res_id",
+        "success": False,
+    }
+
+    with patch("core.sync_manager.get_local_word_note", return_value=None), \
+         patch("core.sync_manager.set_note_sync_status", return_value=True) as mock_set:
+
+        sm = SyncManager(logger, momo_api)
+        sm.queue_maimemo_sync("v1", "apple", "n. 苹果", ["test"])
+
+        sm.sync_queue.join()
+        sm.shutdown()
+
+        # API 仅被调用一次（不重试）
+        momo_api.sync_interpretation.assert_called_once()
+        # sync_status=5 写回标记 failed
+        mock_set.assert_called_with("v1", 5, match_confidence=None, match_reason="invalid_res_id")
+
 if __name__ == "__main__":
     pytest.main([__file__])
