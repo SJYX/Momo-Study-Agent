@@ -540,12 +540,11 @@ async def save_ai_config(
 
         switch_user(username)
 
-    # 失效缓存的 UserContext：缓存里的 ai_client 还持有旧 api_key，
-    # 不 cleanup 会让下一次 study/today 任务用过期凭据。
+    # 仅刷新 AI 组件（momo_api / ai_client / workflow），不断开 DB 连接。
     try:
         import web.backend.deps as _deps
         if _deps._context_manager is not None:
-            _deps._context_manager.cleanup(username.lower())
+            _deps._context_manager.refresh_ai(username)
     except Exception:
         pass
 

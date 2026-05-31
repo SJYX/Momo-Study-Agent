@@ -144,6 +144,55 @@ class UserContextManager:
         except Exception:
             pass
 
+    @staticmethod
+    def _build_ai_components(ctx: UserContext, cfg_snapshot) -> None:
+        """(重)构建 AI 业务组件：momo_api / ai_client / workflow。
+
+        只替换 AI 相关字段，不动 DB 连接、同步协调器、日志等基础设施。
+        """
+        from core.maimemo_api import MaiMemoAPI
+        ctx.momo_api = MaiMemoAPI(cfg_snapshot.momo_token)
+        ctx.ai_client = _build_ai_client_from_snapshot(cfg_snapshot)
+
+        from core.study_workflow import StudyWorkflow
+
+        class _NullUI:
+            def __getattr__(self, name):
+                return lambda *a, **kw: None
+
+        ctx.workflow = StudyWorkflow(
+            logger=ctx.logger,
+            ai_client=ctx.ai_client,
+            momo_api=ctx.momo_api,
+            ui_manager=_NullUI(),
+            db_path=cfg_snapshot.db_path,
+        )
+
+    def refresh_ai(self, profile_name: str) -> None:
+        """仅重建指定 profile 的 AI 组件（momo_api / ai_client / workflow）。
+
+        保留 DB 连接、同步协调器、日志等基础设施不断连。
+        save_ai_config 应调用此方法替代 cleanup()。
+        """
+        profile_key = profile_name.strip().lower()
+
+        with self._lock:
+            ctx = self._contexts.get(profile_key)
+        if ctx is None:
+            return
+
+        from web.backend.profile_config import load_profile_config
+        cfg_snapshot = load_profile_config(profile_key)
+        self._build_ai_components(ctx, cfg_snapshot)
+
+        try:
+            ctx.logger.info(
+                f"[Web] profile '{profile_name}' AI 组件已刷新: {cfg_snapshot.ai_provider}/{cfg_snapshot.ai_model}",
+                module="user_context",
+            )
+        except Exception:
+            pass
+
     def _create_context(self, profile_name: str) -> UserContext:
         """从 profile_config 加载配置，创建 DB 路径、Turso 凭据和 AI Client。
         由于内部会实例化大量重对象（包括 API Clients 和 工作流引擎），耗时较长。
@@ -165,26 +214,6 @@ class UserContextManager:
         logger = setup_logger(cfg_snapshot.profile_name, environment=environment, config_file=config_file)
         session_id = str(uuid.uuid4())
         logger.set_context(session_id=session_id)
-
-        from core.maimemo_api import MaiMemoAPI
-        momo_api = MaiMemoAPI(cfg_snapshot.momo_token)
-
-        # 统一 AI 客户端构造：仅依赖 cfg_snapshot.ai_*（已含 legacy 回退）。
-        ai_client = _build_ai_client_from_snapshot(cfg_snapshot)
-
-        from core.study_workflow import StudyWorkflow
-
-        class _NullUI:
-            def __getattr__(self, name):
-                return lambda *a, **kw: None
-
-        workflow = StudyWorkflow(
-            logger=logger,
-            ai_client=ai_client,
-            momo_api=momo_api,
-            ui_manager=_NullUI(),
-            db_path=cfg_snapshot.db_path,
-        )
 
         from web.backend.tasks import TaskRegistry
         from web.backend.logger_bridge import LoggerBridge
@@ -212,9 +241,6 @@ class UserContextManager:
         ctx = UserContext(
             profile_name=cfg_snapshot.profile_name,
             logger=logger,
-            momo_api=momo_api,
-            ai_client=ai_client,
-            workflow=workflow,
             task_registry=task_registry,
             logger_bridge=logger_bridge,
             db_path=cfg_snapshot.db_path,
@@ -223,6 +249,9 @@ class UserContextManager:
             turso_auth_token=cfg_snapshot.turso_auth_token,
             sync_coordinator=coordinator,
         )
+
+        # 构建 AI 业务组件（momo_api / ai_client / workflow）
+        self._build_ai_components(ctx, cfg_snapshot)
 
         # Fix E5: 暖库走同步路径,根本不进 "db_init_in_progress" 状态,
         # 中间件就不会返回 503,前端 SyncGate 不会闪现。

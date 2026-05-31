@@ -174,7 +174,7 @@ class TestListUsersHasAiKey:
 # Fix #5 — save_ai_config must cleanup() the user's UserContext after
 # switch_user, otherwise the cached ai_client keeps stale credentials.
 # ===========================================================================
-class TestSaveAiConfigCleansContext:
+class TestSaveAiConfigRefreshesAi:
     def test_save_ai_config_writes_unified_vars(self, client, tmp_path, monkeypatch):
         profiles_dir = tmp_path / "profiles"
         profiles_dir.mkdir()
@@ -195,10 +195,9 @@ class TestSaveAiConfigCleansContext:
         assert "AI_API_KEY=sk-ant" in content
         assert "AI_MODEL=claude-sonnet-4-20250514" in content
 
-    def test_save_ai_config_calls_cleanup_for_active_user(self, client, tmp_path, monkeypatch):
-        """After saving AI config for the active user, the in-memory context
-        must be invalidated so the next request rebuilds ai_client with the
-        fresh key."""
+    def test_save_ai_config_refreshes_ai_components(self, client, tmp_path, monkeypatch):
+        """After saving AI config, refresh_ai() is called (not cleanup()) to
+        rebuild only AI components without disconnecting DB."""
         from unittest.mock import MagicMock
 
         profiles_dir = tmp_path / "profiles"
@@ -211,7 +210,7 @@ class TestSaveAiConfigCleansContext:
         monkeypatch.setattr(cfg, "ACTIVE_USER", "alice")
         monkeypatch.setattr(cfg, "switch_user", lambda u: u)
 
-        # Patch the context manager so we can observe cleanup() calls.
+        # Patch the context manager so we can observe refresh_ai() calls.
         import web.backend.deps as deps
         fake_mgr = MagicMock()
         monkeypatch.setattr(deps, "_context_manager", fake_mgr)
@@ -221,9 +220,9 @@ class TestSaveAiConfigCleansContext:
             json={"provider": "gemini", "api_key": "AIza-new", "model": "gemini-2.5-pro"},
         ).json()
         assert body["ok"] is True
-        fake_mgr.cleanup.assert_called_once()
-        # Cleanup should target "alice" (lowercased)
-        called_with = fake_mgr.cleanup.call_args[0][0]
+        fake_mgr.refresh_ai.assert_called_once()
+        # refresh_ai should target "alice"
+        called_with = fake_mgr.refresh_ai.call_args[0][0]
         assert called_with.lower() == "alice"
 
     def test_save_ai_config_handles_no_trailing_newline(self, client, tmp_path, monkeypatch):

@@ -462,6 +462,10 @@ class MaiMemoAPI:
                     get_logger().warning(f"[*] {word标识} - 墨墨未创建该释义，保留待同步", module="maimemo_api")
             if status_info["reason"] == "empty":
                 status_info["reason"] = empty_reason
+            # limit_reached = 本地有内容但推不上去，语义等同冲突(sync_status=2)，不应重试
+            if empty_reason == "limit_reached" and status_info["sync_status"] != 1:
+                status_info["sync_status"] = 2
+                status_info["reason"] = "limit_reached"
             return _finish(
                 status_info["sync_status"],
                 status_info["reason"],
